@@ -40,6 +40,9 @@ func (m *MiddlewareChain) Wrap() Middleware {
 
 // ApplyMiddleware wraps h with the provided middleware in declaration order.
 func ApplyMiddleware(h Handler, m ...Middleware) Handler {
+	if len(m) == 0 {
+		return h
+	}
 	for i := len(m) - 1; i >= 0; i-- {
 		if m[i] != nil {
 			h = m[i](h)

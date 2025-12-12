@@ -12,12 +12,12 @@ A unified HTTP framework abstraction layer for Go that provides a consistent int
 
 ## Features
 
-- 🔄 **Framework Agnostic**: Write once, run on any supported framework
-- 🛠 **Unified Interface**: Consistent API across different HTTP frameworks
-- 🔧 **Middleware Support**: Framework-independent middleware chain
-- 📡 **Context Abstraction**: Unified request/response handling
-- ⚡ **Zero Overhead**: Minimal performance impact
-- 🎯 **Type Safe**: Full Go generics support for configuration
+- **Framework Agnostic**: Write once, run on any supported framework
+- **Unified Interface**: Consistent API across different HTTP frameworks
+- **Middleware Support**: Framework-independent middleware chain
+- **Context Abstraction**: Unified request/response handling
+- **Zero Overhead**: Minimal performance impact
+- **Type Safe**: Full Go generics support for configuration
 
 ## Installation
 

@@ -3,6 +3,7 @@ package fiberx
 import (
 	"bufio"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -88,6 +89,10 @@ func (c *fiberContext) FormValues() map[string][]string {
 		out[key] = append(out[key], string(valueBytes))
 	}
 	return out
+}
+
+func (c *fiberContext) FormFile(name string) (*multipart.FileHeader, error) {
+	return c.ctx.FormFile(name)
 }
 
 func (c *fiberContext) Header(key string) string {

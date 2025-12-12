@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"time"
 
@@ -21,9 +22,6 @@ type hertzContext struct {
 }
 
 func newHertzContext(ctx context.Context, rc *app.RequestContext, eh httpx.ErrorHandler) *hertzContext {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	return &hertzContext{
 		ctx:          rc,
 		baseCtx:      ctx,
@@ -99,6 +97,10 @@ func (c *hertzContext) FormValues() map[string][]string {
 		return nil
 	}
 	return out
+}
+
+func (c *hertzContext) FormFile(name string) (*multipart.FileHeader, error) {
+	return c.ctx.FormFile(name)
 }
 
 func (c *hertzContext) Header(key string) string {

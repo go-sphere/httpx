@@ -3,8 +3,11 @@ package httpx
 import (
 	"context"
 	"io"
+	"mime/multipart"
 	"net/http"
 )
+
+type H map[string]any
 
 // Request exposes a common, read-only view over incoming HTTP requests.
 type Request interface {
@@ -20,6 +23,7 @@ type Request interface {
 
 	FormValue(key string) string
 	FormValues() map[string][]string
+	FormFile(name string) (*multipart.FileHeader, error)
 
 	Header(key string) string
 	Cookie(name string) (string, error)

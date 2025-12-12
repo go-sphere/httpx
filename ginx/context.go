@@ -2,6 +2,7 @@ package ginx
 
 import (
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -69,6 +70,10 @@ func (c *ginContext) FormValue(key string) string {
 func (c *ginContext) FormValues() map[string][]string {
 	_ = c.ctx.Request.ParseForm()
 	return c.ctx.Request.PostForm
+}
+
+func (c *ginContext) FormFile(name string) (*multipart.FileHeader, error) {
+	return c.ctx.FormFile(name)
 }
 
 func (c *ginContext) Header(key string) string {

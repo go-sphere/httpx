@@ -1,6 +1,9 @@
 package httpx
 
-import "net/http"
+import (
+	"io/fs"
+	"net/http"
+)
 
 // Handler is the canonical function signature for framework adapters.
 type Handler func(Context) error
@@ -8,21 +11,37 @@ type Handler func(Context) error
 // ErrorHandler receives the terminal error from a Handler.
 type ErrorHandler func(Context, error)
 
-// Router is the common routing interface backed by gin/fiber/echo/chi/hertz.
-type Router interface {
+// MiddlewareScope attaches middleware to the current scope.
+type MiddlewareScope interface {
 	Use(...Middleware)
+}
+
+// Grouper creates a nested router scope.
+type Grouper interface {
 	Group(prefix string, m ...Middleware) Router
+}
+
+// Registrar registers handlers on a router scope.
+type Registrar interface {
 	Handle(method, path string, h Handler)
 	Any(path string, h Handler)
 	Static(prefix, root string)
-	Mount(path string, h http.Handler)
+	StaticFS(prefix string, fs fs.FS)
 }
 
-// Engine defines a lightweight interface for routing HTTP requests with extensible error and fallback handling capabilities.
+// Router is a full-featured route scope.
+type Router interface {
+	MiddlewareScope
+	Grouper
+	Registrar
+}
+
+// Engine is the entrypoint: it can serve HTTP, apply global middleware,
+// and create groups, but cannot register routes directly.
 type Engine interface {
-	Router
 	http.Handler
-	RegisterErrorHandler(ErrorHandler)
+	MiddlewareScope
+	Grouper
 }
 
 // Config controls router adapter creation.
@@ -32,18 +51,25 @@ type Config[E any] struct {
 	Engine       E // framework-specific passthrough (e.g., *gin.Engine, *fiber.App, *echo.Echo, *chi.Mux)
 }
 
-// Option configures a EngineFactory Config.
+// Option defines a functional option for configuring a Config instance.
 type Option[E any] func(*Config[E])
 
 // NewConfig builds a Config with the given options.
 func NewConfig[E any](opts ...Option[E]) *Config[E] {
-	var cfg Config[E]
+	conf := &Config[E]{}
 	for _, opt := range opts {
 		if opt != nil {
-			opt(&cfg)
+			opt(conf)
 		}
 	}
-	return &cfg
+	if conf.ErrorHandler == nil {
+		conf.ErrorHandler = func(ctx Context, err error) {
+			if !ctx.IsAborted() {
+				_ = ctx.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			}
+		}
+	}
+	return conf
 }
 
 // WithErrorHandler installs a terminal error handler.

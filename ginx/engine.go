@@ -7,50 +7,43 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-var _ httpx.Engine = (*engine)(nil)
+var _ httpx.Engine = (*Engine)(nil)
 
-type engine struct {
-	*router
+type Option = httpx.Option[*gin.Engine]
+type Engine struct {
+	engine       *gin.Engine
+	middleware   *httpx.MiddlewareChain
+	errorHandler httpx.ErrorHandler
 }
 
 // New constructs a gin-backed Engine using core options.
-func New(opts ...httpx.Option[*gin.Engine]) httpx.Engine {
+func New(opts ...Option) httpx.Engine {
 	conf := httpx.NewConfig(opts...)
 	if conf.Engine == nil {
 		conf.Engine = gin.Default()
 	}
 	middleware := httpx.NewMiddlewareChain()
 	middleware.Use(conf.Middleware.Middlewares()...)
-	errorHandler := resolveErrorHandler(conf.ErrorHandler)
-	return &engine{
-		router: &router{
-			engine:       conf.Engine,
-			group:        conf.Engine.Group("/"),
-			middleware:   middleware,
-			errorHandler: errorHandler,
-		},
+	return &Engine{
+		engine:       conf.Engine,
+		middleware:   middleware,
+		errorHandler: conf.ErrorHandler,
 	}
 }
 
-func (e *engine) RegisterErrorHandler(h httpx.ErrorHandler) {
-	handler := resolveErrorHandler(h)
-	e.errorHandler = handler
+func (e *Engine) Use(middleware ...httpx.Middleware) {
+	e.middleware.Use(middleware...)
 }
 
-func (e *engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	middleware := e.middleware.Clone()
+	middleware.Use(m...)
+	return &Router{
+		group:        e.engine.Group(prefix),
+		middleware:   middleware,
+		errorHandler: e.errorHandler,
+	}
+}
+func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	e.engine.ServeHTTP(w, req)
-}
-
-func resolveErrorHandler(h httpx.ErrorHandler) httpx.ErrorHandler {
-	if h != nil {
-		return h
-	}
-	return func(ctx httpx.Context, err error) {
-		if err == nil {
-			return
-		}
-		if !ctx.IsAborted() {
-			_ = ctx.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-	}
 }
