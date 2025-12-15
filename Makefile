@@ -21,12 +21,16 @@ TAG ?=
 
 tags-root:
 	@if [ -z "$(TAG)" ]; then echo "TAG not set. Use TAG=v0.0.1 make tags"; exit 1; fi
-	git tag -a ${TAG} -m "$(TAG)"
+	git tag -s ${TAG} -m "$(TAG)"
 	git push origin --tags
+	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx@$(TAG)"
 
 tags-subs:
 	@if [ -z "$(TAG)" ]; then echo "TAG not set. Use TAG=v0.0.1 make tags"; exit 1; fi
-	git tag -a ginx/$(TAG) -m "ginx $(TAG)"
-	git tag -a fiberx/$(TAG) -m "fiberx $(TAG)"
-	git tag -a hertzx/$(TAG) -m "hertzx $(TAG)"
+	git tag -s ginx/$(TAG) -m "ginx/$(TAG)"
+	git tag -s fiberx/$(TAG) -m "fiberx/$(TAG)"
+	git tag -s hertzx/$(TAG) -m "hertzx/$(TAG)"
 	git push origin --tags
+	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx/ginx@$(TAG)"
+	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx/fiberx@$(TAG)"
+	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx/hertzx@$(TAG)"
