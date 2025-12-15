@@ -4,7 +4,7 @@ import (
 	"context"
 	"net"
 
-	"github.com/go-sphere/sphere/server/httpx"
+	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -82,6 +82,7 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	middleware := e.middleware.Clone()
 	middleware.Use(m...)
 	return &Router{
+		basePath:     joinPaths("/", prefix),
 		group:        e.engine.Group(prefix),
 		middleware:   middleware,
 		errorHandler: e.errorHandler,

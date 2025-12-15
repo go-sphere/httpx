@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-sphere/sphere/server/httpx"
+	"github.com/go-sphere/httpx"
 )
 
 var _ httpx.Engine = (*Engine)(nil)

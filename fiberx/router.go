@@ -3,9 +3,10 @@ package fiberx
 import (
 	"errors"
 	"io/fs"
+	"path"
 	"strings"
 
-	"github.com/go-sphere/sphere/server/httpx"
+	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/static"
 )
@@ -13,6 +14,7 @@ import (
 var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
+	basePath     string
 	group        fiber.Router
 	middleware   *httpx.MiddlewareChain
 	errorHandler httpx.ErrorHandler
@@ -22,8 +24,13 @@ func (r *Router) Use(m ...httpx.Middleware) {
 	r.middleware.Use(m...)
 }
 
+func (r *Router) BasePath() string {
+	return r.basePath
+}
+
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	child := &Router{
+		basePath:     joinPaths(r.basePath, prefix),
 		group:        r.group.Group(prefix),
 		middleware:   r.middleware.Clone(),
 		errorHandler: r.errorHandler,
@@ -89,4 +96,23 @@ func ToMiddleware(middleware fiber.Handler, order httpx.MiddlewareOrder) httpx.M
 			}
 		}
 	}
+}
+
+func joinPaths(absolutePath, relativePath string) string {
+	if relativePath == "" {
+		return absolutePath
+	}
+	finalPath := path.Join(absolutePath, relativePath)
+	appendSlash := lastChar(relativePath) == '/' && lastChar(finalPath) != '/'
+	if appendSlash {
+		return finalPath + "/"
+	}
+	return finalPath
+}
+
+func lastChar(str string) uint8 {
+	if str == "" {
+		panic("The length of the string can't be 0")
+	}
+	return str[len(str)-1]
 }

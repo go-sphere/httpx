@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/go-sphere/sphere/server/httpx"
+	"github.com/go-sphere/httpx"
 )
 
 var _ httpx.Engine = (*Engine)(nil)

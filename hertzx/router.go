@@ -11,7 +11,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/cloudwego/hertz/pkg/route"
-	"github.com/go-sphere/sphere/server/httpx"
+	"github.com/go-sphere/httpx"
 )
 
 var _ httpx.Router = (*Router)(nil)
@@ -24,6 +24,10 @@ type Router struct {
 
 func (r *Router) Use(m ...httpx.Middleware) {
 	r.middleware.Use(m...)
+}
+
+func (r *Router) BasePath() string {
+	return r.group.BasePath()
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {

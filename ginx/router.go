@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-sphere/sphere/server/httpx"
+	"github.com/go-sphere/httpx"
 )
 
 var _ httpx.Router = (*Router)(nil)
@@ -19,6 +19,10 @@ type Router struct {
 
 func (r *Router) Use(m ...httpx.Middleware) {
 	r.middleware.Use(m...)
+}
+
+func (r *Router) BasePath() string {
+	return r.group.BasePath()
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {

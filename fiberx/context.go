@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-sphere/sphere/server/httpx"
+	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 )
 

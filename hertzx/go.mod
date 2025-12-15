@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/cloudwego/hertz v0.10.3
-	github.com/go-sphere/sphere v0.0.2-beta.3
+	github.com/go-sphere/httpx v0.0.2-beta.1
 )
 
 require (
@@ -22,11 +22,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.27.1 // indirect
-	go.uber.org/zap/exp v0.3.0 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
