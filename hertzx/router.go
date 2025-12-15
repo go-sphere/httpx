@@ -2,6 +2,7 @@ package hertzx
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"net/http"
 	"path"
@@ -10,7 +11,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/cloudwego/hertz/pkg/route"
-	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/sphere/server/httpx"
 )
 
 var _ httpx.Router = (*Router)(nil)
@@ -66,6 +67,35 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 		hc := newHertzContext(ctx, rc, r.errorHandler)
 		if err := handler(hc); err != nil {
 			(r.errorHandler)(hc, err)
+		}
+	}
+}
+
+func ToMiddleware(middleware app.Handler, order httpx.MiddlewareOrder) httpx.Middleware {
+	return func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			hc, ok := ctx.(*hertzContext)
+			if !ok {
+				return errors.New("hertzContext required")
+			}
+			switch order {
+			case httpx.MiddlewareBeforeNext:
+				middleware.ServeHTTP(hc.baseCtx, hc.ctx)
+				if hc.ctx.IsAborted() {
+					return nil
+				}
+				return next(ctx)
+			default:
+				err := next(ctx)
+				if err != nil {
+					return err
+				}
+				if hc.ctx.IsAborted() {
+					return nil
+				}
+				middleware.ServeHTTP(hc.baseCtx, hc.ctx)
+				return nil
+			}
 		}
 	}
 }

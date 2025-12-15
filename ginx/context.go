@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
-	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/sphere/server/httpx"
 )
 
 var _ httpx.Context = (*ginContext)(nil)
@@ -40,6 +40,10 @@ func (c *ginContext) FullPath() string {
 	return c.ctx.FullPath()
 }
 
+func (c *ginContext) ClientIP() string {
+	return c.ctx.ClientIP()
+}
+
 func (c *ginContext) Param(key string) string {
 	return c.ctx.Param(key)
 }
@@ -63,6 +67,10 @@ func (c *ginContext) Queries() map[string][]string {
 	return c.ctx.Request.URL.Query()
 }
 
+func (c *ginContext) RawQuery() string {
+	return c.ctx.Request.URL.RawQuery
+}
+
 func (c *ginContext) FormValue(key string) string {
 	return c.ctx.Request.FormValue(key)
 }
@@ -74,6 +82,10 @@ func (c *ginContext) FormValues() map[string][]string {
 
 func (c *ginContext) FormFile(name string) (*multipart.FileHeader, error) {
 	return c.ctx.FormFile(name)
+}
+
+func (c *ginContext) GetBodyRaw() ([]byte, error) {
+	return c.ctx.GetRawData()
 }
 
 func (c *ginContext) Header(key string) string {
@@ -116,45 +128,28 @@ func (c *ginContext) Status(code int) {
 	c.ctx.Status(code)
 }
 
-func (c *ginContext) JSON(code int, v any) error {
+func (c *ginContext) JSON(code int, v any) {
 	c.ctx.JSON(code, v)
-	return nil
 }
 
-func (c *ginContext) Text(code int, s string) error {
+func (c *ginContext) Text(code int, s string) {
 	c.ctx.String(code, s)
-	return nil
 }
 
-func (c *ginContext) Bytes(code int, b []byte, contentType string) error {
+func (c *ginContext) Bytes(code int, b []byte, contentType string) {
 	c.ctx.Data(code, contentType, b)
-	return nil
 }
 
-func (c *ginContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
-	if contentType != "" {
-		c.ctx.Header("Content-Type", contentType)
-	}
-	c.ctx.Status(code)
-	if fn == nil {
-		return nil
-	}
-	var callErr error
-	c.ctx.Stream(func(w io.Writer) bool {
-		callErr = fn(w)
-		return false
-	})
-	return callErr
+func (c *ginContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
+	c.ctx.DataFromReader(code, int64(size), contentType, r, nil)
 }
 
-func (c *ginContext) File(path string) error {
+func (c *ginContext) File(path string) {
 	c.ctx.File(path)
-	return nil
 }
 
-func (c *ginContext) Redirect(code int, location string) error {
+func (c *ginContext) Redirect(code int, location string) {
 	c.ctx.Redirect(code, location)
-	return nil
 }
 
 func (c *ginContext) SetHeader(key, value string) {
@@ -206,11 +201,15 @@ func (c *ginContext) AbortWithStatus(code int) {
 	c.ctx.AbortWithStatus(code)
 }
 
-func (c *ginContext) AbortWithError(code int, err error) {
+func (c *ginContext) AbortWithStatusError(code int, err error) {
 	if err != nil && c.errorHandler != nil {
 		c.errorHandler(c, err)
 	}
 	c.ctx.AbortWithStatus(code)
+}
+
+func (c *ginContext) AbortWithStatusJSON(code int, obj interface{}) {
+	c.ctx.AbortWithStatusJSON(code, obj)
 }
 
 func (c *ginContext) IsAborted() bool {

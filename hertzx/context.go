@@ -1,7 +1,6 @@
 package hertzx
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"mime/multipart"
@@ -10,7 +9,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/sphere/server/httpx"
 )
 
 var _ httpx.Context = (*hertzContext)(nil)
@@ -41,6 +40,10 @@ func (c *hertzContext) Path() string {
 
 func (c *hertzContext) FullPath() string {
 	return c.ctx.FullPath()
+}
+
+func (c *hertzContext) ClientIP() string {
+	return c.ctx.ClientIP()
 }
 
 func (c *hertzContext) Param(key string) string {
@@ -75,6 +78,10 @@ func (c *hertzContext) Queries() map[string][]string {
 	return out
 }
 
+func (c *hertzContext) RawQuery() string {
+	return string(c.ctx.Request.QueryString())
+}
+
 func (c *hertzContext) FormValue(key string) string {
 	return string(c.ctx.FormValue(key))
 }
@@ -101,6 +108,10 @@ func (c *hertzContext) FormValues() map[string][]string {
 
 func (c *hertzContext) FormFile(name string) (*multipart.FileHeader, error) {
 	return c.ctx.FormFile(name)
+}
+
+func (c *hertzContext) GetBodyRaw() ([]byte, error) {
+	return c.ctx.Request.BodyE()
 }
 
 func (c *hertzContext) Header(key string) string {
@@ -143,57 +154,32 @@ func (c *hertzContext) Status(code int) {
 	c.ctx.Status(code)
 }
 
-func (c *hertzContext) JSON(code int, v any) error {
+func (c *hertzContext) JSON(code int, v any) {
 	c.ctx.JSON(code, v)
-	return nil
 }
 
-func (c *hertzContext) Text(code int, s string) error {
+func (c *hertzContext) Text(code int, s string) {
 	c.ctx.String(code, s)
-	return nil
 }
 
-func (c *hertzContext) Bytes(code int, b []byte, contentType string) error {
+func (c *hertzContext) Bytes(code int, b []byte, contentType string) {
 	c.ctx.Data(code, contentType, b)
-	return nil
 }
 
-func (c *hertzContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
 	if contentType != "" {
 		c.ctx.SetContentType(contentType)
 	}
-	if code > 0 {
-		c.ctx.Status(code)
-	}
-	if fn == nil {
-		return nil
-	}
-	pr, pw := io.Pipe()
-	c.ctx.Response.SetBodyStream(pr, -1)
-	go func() {
-		writer := bufio.NewWriter(pw)
-		if err := fn(writer); err != nil {
-			if c.errorHandler != nil {
-				c.errorHandler(c, err)
-			}
-			_ = writer.Flush()
-			_ = pw.CloseWithError(err)
-			return
-		}
-		_ = writer.Flush()
-		_ = pw.Close()
-	}()
-	return nil
+	c.ctx.Status(code)
+	c.ctx.SetBodyStream(r, size)
 }
 
-func (c *hertzContext) File(path string) error {
+func (c *hertzContext) File(path string) {
 	c.ctx.File(path)
-	return nil
 }
 
-func (c *hertzContext) Redirect(code int, location string) error {
+func (c *hertzContext) Redirect(code int, location string) {
 	c.ctx.Redirect(code, []byte(location))
-	return nil
 }
 
 func (c *hertzContext) SetHeader(key, value string) {
@@ -259,11 +245,15 @@ func (c *hertzContext) AbortWithStatus(code int) {
 	c.ctx.AbortWithStatus(code)
 }
 
-func (c *hertzContext) AbortWithError(code int, err error) {
+func (c *hertzContext) AbortWithStatusError(code int, err error) {
 	if err != nil && c.errorHandler != nil {
 		c.errorHandler(c, err)
 	}
 	c.ctx.AbortWithStatus(code)
+}
+
+func (c *hertzContext) AbortWithStatusJSON(code int, obj interface{}) {
+	c.ctx.AbortWithStatusJSON(code, obj)
 }
 
 func (c *hertzContext) IsAborted() bool {

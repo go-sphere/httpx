@@ -1,10 +1,11 @@
 package fiberx
 
 import (
+	"errors"
 	"io/fs"
 	"strings"
 
-	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/sphere/server/httpx"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/static"
 )
@@ -56,5 +57,36 @@ func (r *Router) toFiberHandler(h httpx.Handler) fiber.Handler {
 			(r.errorHandler)(ctx, err)
 		}
 		return nil
+	}
+}
+
+func ToMiddleware(middleware fiber.Handler, order httpx.MiddlewareOrder) httpx.Middleware {
+	return func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			fc, ok := ctx.(*fiberContext)
+			if !ok {
+				return errors.New("fiberContext required")
+			}
+			switch order {
+			case httpx.MiddlewareAfterNext:
+				err := next(ctx)
+				if err != nil {
+					return err
+				}
+				if fc.IsAborted() {
+					return nil
+				}
+				return middleware(fc.ctx)
+			default:
+				err := middleware(fc.ctx)
+				if err != nil {
+					return err
+				}
+				if fc.IsAborted() {
+					return nil
+				}
+				return next(ctx)
+			}
+		}
 	}
 }

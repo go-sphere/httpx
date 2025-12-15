@@ -1,11 +1,12 @@
 package ginx
 
 import (
+	"errors"
 	"io/fs"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/sphere/server/httpx"
 )
 
 var _ httpx.Router = (*Router)(nil)
@@ -51,7 +52,36 @@ func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 	return func(gc *gin.Context) {
 		ctx := newGinContext(gc, r.errorHandler)
 		if err := handler(ctx); err != nil {
-			(r.errorHandler)(ctx, err)
+			r.errorHandler(ctx, err)
+		}
+	}
+}
+
+func ToMiddleware(middleware gin.HandlerFunc, order httpx.MiddlewareOrder) httpx.Middleware {
+	return func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			gc, ok := ctx.(*ginContext)
+			if !ok {
+				return errors.New("ginContext required")
+			}
+			switch order {
+			case httpx.MiddlewareAfterNext:
+				err := next(ctx)
+				if err != nil {
+					return err
+				}
+				if gc.ctx.IsAborted() {
+					return nil
+				}
+				middleware(gc.ctx)
+				return nil
+			default:
+				middleware(gc.ctx)
+				if gc.ctx.IsAborted() {
+					return nil
+				}
+				return next(ctx)
+			}
 		}
 	}
 }

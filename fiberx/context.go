@@ -1,14 +1,13 @@
 package fiberx
 
 import (
-	"bufio"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"sync/atomic"
 	"time"
 
-	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/sphere/server/httpx"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -39,6 +38,10 @@ func (c *fiberContext) Path() string {
 
 func (c *fiberContext) FullPath() string {
 	return c.ctx.FullPath()
+}
+
+func (c *fiberContext) ClientIP() string {
+	return c.ctx.IP()
 }
 
 func (c *fiberContext) Param(key string) string {
@@ -74,6 +77,10 @@ func (c *fiberContext) Queries() map[string][]string {
 	return out
 }
 
+func (c *fiberContext) RawQuery() string {
+	return string(c.ctx.Request().URI().QueryString())
+}
+
 func (c *fiberContext) FormValue(key string) string {
 	return c.ctx.FormValue(key)
 }
@@ -93,6 +100,10 @@ func (c *fiberContext) FormValues() map[string][]string {
 
 func (c *fiberContext) FormFile(name string) (*multipart.FileHeader, error) {
 	return c.ctx.FormFile(name)
+}
+
+func (c *fiberContext) GetBodyRaw() ([]byte, error) {
+	return c.ctx.BodyRaw(), nil
 }
 
 func (c *fiberContext) Header(key string) string {
@@ -135,49 +146,56 @@ func (c *fiberContext) Status(code int) {
 	c.ctx.Status(code)
 }
 
-func (c *fiberContext) JSON(code int, v any) error {
-	return c.ctx.Status(code).JSON(v)
+func (c *fiberContext) JSON(code int, v any) {
+	err := c.ctx.Status(code).JSON(v)
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
 }
 
-func (c *fiberContext) Text(code int, s string) error {
-	return c.ctx.Status(code).SendString(s)
+func (c *fiberContext) Text(code int, s string) {
+	err := c.ctx.Status(code).SendString(s)
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
 }
 
-func (c *fiberContext) Bytes(code int, b []byte, contentType string) error {
+func (c *fiberContext) Bytes(code int, b []byte, contentType string) {
 	if contentType != "" {
 		c.ctx.Set(fiber.HeaderContentType, contentType)
 	}
-	return c.ctx.Status(code).Send(b)
+	err := c.ctx.Status(code).Send(b)
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
 }
 
-func (c *fiberContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+func (c *fiberContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
 	if contentType != "" {
 		c.ctx.Set(fiber.HeaderContentType, contentType)
 	}
-	c.ctx.Status(code)
-	if fn == nil {
-		return nil
+	err := c.ctx.Status(code).SendStream(r, size)
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
 	}
-	c.ctx.Response().SetBodyStreamWriter(func(w *bufio.Writer) {
-		if err := fn(w); err != nil {
-			if c.errorHandler != nil {
-				c.errorHandler(c, err)
-			}
-		}
-	})
-	return nil
 }
 
-func (c *fiberContext) File(path string) error {
-	return c.ctx.SendFile(path)
+func (c *fiberContext) File(path string) {
+	err := c.ctx.SendFile(path)
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
 }
 
-func (c *fiberContext) Redirect(code int, location string) error {
+func (c *fiberContext) Redirect(code int, location string) {
 	redirect := c.ctx.Redirect()
 	if code > 0 {
 		redirect.Status(code)
 	}
-	return redirect.To(location)
+	err := redirect.To(location)
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
 }
 
 func (c *fiberContext) SetHeader(key, value string) {
@@ -253,11 +271,18 @@ func (c *fiberContext) AbortWithStatus(code int) {
 	c.Abort()
 }
 
-func (c *fiberContext) AbortWithError(code int, err error) {
+func (c *fiberContext) AbortWithStatusError(code int, err error) {
 	if err != nil && c.errorHandler != nil {
 		c.errorHandler(c, err)
 	}
 	c.AbortWithStatus(code)
+}
+
+func (c *fiberContext) AbortWithStatusJSON(code int, obj interface{}) {
+	err := c.ctx.Status(code).JSON(obj)
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
 }
 
 func (c *fiberContext) IsAborted() bool {

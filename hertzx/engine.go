@@ -1,13 +1,10 @@
 package hertzx
 
 import (
-	"io"
-	"net/http"
+	"context"
 
-	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/cloudwego/hertz/pkg/common/adaptor"
-	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/sphere/server/httpx"
 )
 
 var _ httpx.Engine = (*Engine)(nil)
@@ -47,45 +44,10 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
-func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	pool := e.engine.GetCtxPool()
-	ctx := pool.Get().(*app.RequestContext)
-	ctx.ResetWithoutConn()
-	defer func() {
-		ctx.ResetWithoutConn()
-		pool.Put(ctx)
-	}()
+func (e *Engine) Start() error {
+	return e.engine.Run()
+}
 
-	if err := adaptor.CopyToHertzRequest(req, &ctx.Request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	e.engine.ServeHTTP(req.Context(), ctx)
-
-	resp := &ctx.Response
-	resp.Header.VisitAll(func(k, v []byte) {
-		w.Header().Add(string(k), string(v))
-	})
-
-	status := resp.StatusCode()
-	if status == 0 {
-		status = http.StatusOK
-	}
-	w.WriteHeader(status)
-
-	if resp.MustSkipBody() {
-		_ = resp.CloseBodyStream()
-		return
-	}
-
-	if resp.IsBodyStream() {
-		_, _ = io.Copy(w, resp.BodyStream())
-		_ = resp.CloseBodyStream()
-		return
-	}
-
-	if body := resp.Body(); len(body) > 0 {
-		_, _ = w.Write(body)
-	}
+func (e *Engine) Stop(ctx context.Context) error {
+	return e.engine.Shutdown(ctx)
 }
