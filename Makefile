@@ -19,9 +19,13 @@ lint:
 
 TAG ?=
 
-tags:
+tags-root:
 	@if [ -z "$(TAG)" ]; then echo "TAG not set. Use TAG=v0.0.1 make tags"; exit 1; fi
 	git tag -a ${TAG} -m "$(TAG)"
+	git push origin --tags
+
+tags-subs:
+	@if [ -z "$(TAG)" ]; then echo "TAG not set. Use TAG=v0.0.1 make tags"; exit 1; fi
 	git tag -a ginx/$(TAG) -m "ginx $(TAG)"
 	git tag -a fiberx/$(TAG) -m "fiberx $(TAG)"
 	git tag -a hertzx/$(TAG) -m "hertzx $(TAG)"
