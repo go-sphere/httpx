@@ -82,5 +82,5 @@ type Context interface {
 	StateStore
 	Aborter
 	context.Context
-	Next() error
+	Next()
 }
