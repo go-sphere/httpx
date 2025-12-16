@@ -19,13 +19,13 @@ lint:
 
 TAG ?=
 
-tags-root:
+add-tag:
 	@if [ -z "$(TAG)" ]; then echo "TAG not set. Use TAG=v0.0.1 make tags"; exit 1; fi
 	git tag -s ${TAG} -m "$(TAG)"
 	git push origin --tags
 	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx@$(TAG)"
 
-tags-subs:
+add-tags:
 	@if [ -z "$(TAG)" ]; then echo "TAG not set. Use TAG=v0.0.1 make tags"; exit 1; fi
 	git tag -s ginx/$(TAG) -m "ginx/$(TAG)"
 	git tag -s fiberx/$(TAG) -m "fiberx/$(TAG)"
