@@ -3,16 +3,13 @@ package hertzx
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	herrors "github.com/cloudwego/hertz/pkg/common/errors"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/go-sphere/httpx"
 )
 
@@ -151,65 +148,6 @@ func (c *hertzContext) BodyReader() io.ReadCloser {
 	return httpx.NewReadCloser(bytes.NewReader(body), nil)
 }
 
-// Request helpers not defined on httpx.Request but kept for compatibility.
-
-func (c *hertzContext) Scheme() string {
-	if scheme := c.ctx.URI().Scheme(); len(scheme) > 0 {
-		return string(scheme)
-	}
-	if proto := string(c.ctx.Request.Header.Peek("X-Forwarded-Proto")); proto != "" {
-		return proto
-	}
-	return "http"
-}
-
-func (c *hertzContext) Host() string {
-	return string(c.ctx.Host())
-}
-
-func (c *hertzContext) Proto() string {
-	return c.ctx.Request.Header.GetProtocol()
-}
-
-func (c *hertzContext) ContentLength() int64 {
-	return int64(c.ctx.Request.Header.ContentLength())
-}
-
-func (c *hertzContext) UserAgent() string {
-	return string(c.ctx.Request.Header.UserAgent())
-}
-
-func (c *hertzContext) Referer() string {
-	return string(c.ctx.Request.Header.Peek(consts.HeaderReferer))
-}
-
-func (c *hertzContext) FormValues() (map[string][]string, error) {
-	args := c.ctx.PostArgs()
-	var out map[string][]string
-	if args.Len() > 0 {
-		out = make(map[string][]string, args.Len())
-		args.VisitAll(func(k, v []byte) {
-			key := string(k)
-			out[key] = append(out[key], string(v))
-		})
-	}
-	form, err := c.ctx.MultipartForm()
-	if err != nil {
-		if !errors.Is(err, herrors.ErrNoMultipartForm) {
-			return nil, err
-		}
-	}
-	if form != nil {
-		if out == nil {
-			out = make(map[string][]string, len(form.Value))
-		}
-		for k, v := range form.Value {
-			out[k] = append(out[k], v...)
-		}
-	}
-	return out, nil
-}
-
 // Binder (httpx.Binder)
 
 func (c *hertzContext) BindJSON(dst any) error {
@@ -289,25 +227,6 @@ func (c *hertzContext) SetCookie(cookie *http.Cookie) {
 		cookie.Secure,
 		cookie.HttpOnly,
 	)
-}
-
-// Responder helpers not defined on httpx.Responder.
-
-func (c *hertzContext) Stream(code int, contentType string, fn func(io.Writer) error) {
-	if contentType != "" {
-		c.ctx.SetContentType(contentType)
-	}
-	if code > 0 {
-		c.ctx.Status(code)
-	}
-	reader, writer := io.Pipe()
-	go func() {
-		defer func() { _ = writer.Close() }()
-		if err := fn(writer); err != nil {
-			_ = writer.CloseWithError(err)
-		}
-	}()
-	c.ctx.SetBodyStream(reader, -1)
 }
 
 // StateStore (httpx.StateStore)

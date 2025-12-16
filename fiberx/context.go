@@ -2,7 +2,6 @@ package fiberx
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
-	"github.com/valyala/fasthttp"
 )
 
 var _ httpx.Context = (*fiberContext)(nil)
@@ -132,58 +130,6 @@ func (c *fiberContext) BodyReader() io.ReadCloser {
 	return httpx.NewReadCloser(bytes.NewReader(body), nil)
 }
 
-// Request helpers not defined on httpx.Request but kept for compatibility.
-
-func (c *fiberContext) Scheme() string {
-	return c.ctx.Protocol()
-}
-
-func (c *fiberContext) Host() string {
-	return c.ctx.Hostname()
-}
-
-func (c *fiberContext) Proto() string {
-	return string(c.ctx.Request().Header.Protocol())
-}
-
-func (c *fiberContext) ContentLength() int64 {
-	return int64(c.ctx.Request().Header.ContentLength())
-}
-
-func (c *fiberContext) UserAgent() string {
-	return string(c.ctx.Request().Header.UserAgent())
-}
-
-func (c *fiberContext) Referer() string {
-	return string(c.ctx.Request().Header.Referer())
-}
-
-func (c *fiberContext) FormValues() (map[string][]string, error) {
-	args := c.ctx.Request().PostArgs()
-	var out map[string][]string
-	if args.Len() > 0 {
-		out = make(map[string][]string, args.Len())
-		for k, v := range args.All() {
-			out[string(k)] = append(out[string(k)], string(v))
-		}
-	}
-	form, err := c.ctx.MultipartForm()
-	if err != nil {
-		if !errors.Is(err, fasthttp.ErrNoMultipartForm) {
-			return nil, err
-		}
-	}
-	if form != nil {
-		if out == nil {
-			out = make(map[string][]string, len(form.Value))
-		}
-		for k, v := range form.Value {
-			out[k] = append(out[k], v...)
-		}
-	}
-	return out, nil
-}
-
 // Binder (httpx.Binder)
 
 func (c *fiberContext) BindJSON(dst any) error {
@@ -262,28 +208,6 @@ func (c *fiberContext) SetCookie(cookie *http.Cookie) {
 	if s := cookie.String(); s != "" {
 		c.ctx.Response().Header.Add(fiber.HeaderSetCookie, s)
 	}
-}
-
-// Responder helpers not defined on httpx.Responder.
-
-func (c *fiberContext) Stream(code int, contentType string, fn func(io.Writer) error) {
-	if contentType != "" {
-		c.ctx.Set(fiber.HeaderContentType, contentType)
-	}
-	if code > 0 {
-		c.ctx.Status(code)
-	}
-	if code > 0 {
-		c.ctx.Status(code)
-	}
-	reader, writer := io.Pipe()
-	go func() {
-		defer func() { _ = writer.Close() }()
-		if err := fn(writer); err != nil {
-			_ = writer.CloseWithError(err)
-		}
-	}()
-	c.ctx.Response().SetBodyStream(reader, -1)
 }
 
 // StateStore (httpx.StateStore)

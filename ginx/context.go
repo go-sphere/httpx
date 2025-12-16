@@ -131,55 +131,6 @@ func (c *ginContext) BodyReader() io.ReadCloser {
 	return http.NoBody
 }
 
-// Request helpers not defined on httpx.Request but kept for compatibility.
-
-func (c *ginContext) Scheme() string {
-	if scheme := c.ctx.Request.URL.Scheme; scheme != "" {
-		return scheme
-	}
-	if c.ctx.Request.TLS != nil {
-		return "https"
-	}
-	if proto := c.ctx.GetHeader("X-Forwarded-Proto"); proto != "" {
-		return proto
-	}
-	return "http"
-}
-
-func (c *ginContext) Host() string {
-	return c.ctx.Request.Host
-}
-
-func (c *ginContext) Proto() string {
-	return c.ctx.Request.Proto
-}
-
-func (c *ginContext) ContentLength() int64 {
-	return c.ctx.Request.ContentLength
-}
-
-func (c *ginContext) UserAgent() string {
-	return c.ctx.Request.UserAgent()
-}
-
-func (c *ginContext) Referer() string {
-	return c.ctx.Request.Referer()
-}
-
-func (c *ginContext) FormValues() (map[string][]string, error) {
-	if err := c.ctx.Request.ParseForm(); err != nil {
-		return nil, err
-	}
-	if len(c.ctx.Request.PostForm) == 0 {
-		return nil, nil
-	}
-	out := make(map[string][]string, len(c.ctx.Request.PostForm))
-	for k, v := range c.ctx.Request.PostForm {
-		out[k] = append([]string(nil), v...)
-	}
-	return out, nil
-}
-
 // Binder (httpx.Binder)
 
 func (c *ginContext) BindJSON(dst any) error {
@@ -249,21 +200,6 @@ func (c *ginContext) SetCookie(cookie *http.Cookie) {
 		return
 	}
 	http.SetCookie(c.ctx.Writer, cookie)
-}
-
-// Responder helpers not defined on httpx.Responder.
-
-func (c *ginContext) Stream(code int, contentType string, fn func(io.Writer) error) {
-	if contentType != "" {
-		c.ctx.Header("Content-Type", contentType)
-	}
-	if code > 0 {
-		c.ctx.Status(code)
-	}
-	c.ctx.Stream(func(w io.Writer) bool {
-		_ = fn(w)
-		return false
-	})
 }
 
 // StateStore (httpx.StateStore)
