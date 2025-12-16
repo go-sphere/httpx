@@ -38,61 +38,47 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	methods := []string{strings.ToUpper(method)}
-	r.group.Add(methods, path, r.adaptHandler(h))
+	handler, handlers := splitHandlers(r.adaptHandler(h))
+	r.group.Add(methods, path, handler, handlers...)
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
-	r.group.All(path, r.adaptHandler(h))
+	handler, handlers := splitHandlers(r.adaptHandler(h))
+	r.group.All(path, handler, handlers...)
 }
 
 func (r *Router) Static(prefix, root string) {
-	r.group.Use([]any{prefix, r.combineHandlers(static.New(root))})
+	r.group.Use(append([]any{prefix}, r.combineHandlers(static.New(root))...)...)
 }
 
 func (r *Router) StaticFS(prefix string, fs fs.FS) {
-	r.group.Use([]any{prefix, r.combineHandlers(static.New("", static.Config{FS: fs}))})
+	r.group.Use(append([]any{prefix}, r.combineHandlers(static.New("", static.Config{FS: fs}))...))
 }
 
-func (r *Router) combineHandlers(h fiber.Handler) fiber.Handler {
-	mid := make([]httpx.Middleware, len(r.middlewares))
-	copy(mid, r.middlewares)
-	return func(fc fiber.Ctx) error {
-		ctx := newFiberContext(fc, r.errorHandler)
-		for _, m := range mid {
-			err := m(ctx)
-			if err != nil {
-				r.errorHandler(ctx, err)
-			}
-			if ctx.IsAborted() {
-				return err
-			}
-		}
-		if err := h(ctx.ctx); err != nil {
-			r.errorHandler(ctx, err)
-		}
-		return nil
+func (r *Router) combineHandlers(h fiber.Handler) []any {
+	mid := make([]any, 0, len(r.middlewares)+1)
+	for _, m := range r.middlewares {
+		mid = append(mid, adaptMiddleware(m, r.errorHandler))
 	}
+	mid = append(mid, h)
+	return mid
 }
 
-func (r *Router) adaptHandler(h httpx.Handler) fiber.Handler {
-	mid := make([]httpx.Middleware, len(r.middlewares))
-	copy(mid, r.middlewares)
-	return func(fc fiber.Ctx) error {
-		ctx := newFiberContext(fc, r.errorHandler)
-		for _, m := range mid {
-			err := m(ctx)
-			if err != nil {
-				r.errorHandler(ctx, err)
-			}
-			if ctx.IsAborted() {
-				return err
-			}
-		}
-		if err := h(ctx); err != nil {
-			r.errorHandler(ctx, err)
-		}
-		return nil
+func (r *Router) adaptHandler(h httpx.Handler) []any {
+	return r.combineHandlers(func(ctx fiber.Ctx) error {
+		fc := newFiberContext(ctx, r.errorHandler)
+		return h(fc)
+	})
+}
+
+func splitHandlers(handlers []any) (any, []any) {
+	if len(handlers) == 0 {
+		return nil, nil
 	}
+	if len(handlers) == 1 {
+		return handlers[0], nil
+	}
+	return handlers[0], handlers[1:]
 }
 
 func joinPaths(absolutePath, relativePath string) string {

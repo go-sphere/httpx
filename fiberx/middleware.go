@@ -7,6 +7,32 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+func adaptMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) fiber.Handler {
+	return func(ctx fiber.Ctx) error {
+		fc := &fiberContext{
+			ctx:          ctx,
+			errorHandler: errorHandler,
+		}
+		if err := middleware(fc); err != nil {
+			if errorHandler != nil {
+				errorHandler(fc, err)
+			}
+		}
+		return nil
+	}
+}
+
+func adaptMiddlewares(middlewares []httpx.Middleware, errorHandler httpx.ErrorHandler) []fiber.Handler {
+	if len(middlewares) == 0 {
+		return nil
+	}
+	fMid := make([]fiber.Handler, len(middlewares))
+	for i, m := range middlewares {
+		fMid[i] = adaptMiddleware(m, errorHandler)
+	}
+	return fMid
+}
+
 func cloneMiddlewares(middlewares []httpx.Middleware, extra ...httpx.Middleware) []httpx.Middleware {
 	out := make([]httpx.Middleware, len(middlewares)+len(extra))
 	copy(out, middlewares)
