@@ -19,7 +19,7 @@ type Router struct {
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(toMiddlewares(m, r.errorHandler))
+	r.group.Use(toMiddlewares(m, r.errorHandler)...)
 }
 
 func (r *Router) BasePath() string {
@@ -27,13 +27,11 @@ func (r *Router) BasePath() string {
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
-	child := &Router{
+	return &Router{
 		basePath:     joinPaths(r.basePath, prefix),
 		group:        r.group.Group(prefix, toMiddlewares(m, r.errorHandler)...),
 		errorHandler: r.errorHandler,
 	}
-	child.Use(m...)
-	return child
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {

@@ -23,6 +23,9 @@ func toMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) 
 }
 
 func toMiddlewares(middlewares []httpx.Middleware, errorHandler httpx.ErrorHandler) []app.HandlerFunc {
+	if len(middlewares) == 0 {
+		return nil
+	}
 	gMid := make([]app.HandlerFunc, len(middlewares))
 	for i, m := range middlewares {
 		gMid[i] = toMiddleware(m, errorHandler)

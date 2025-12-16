@@ -29,12 +29,10 @@ func (r *Router) BasePath() string {
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
-	child := &Router{
+	return &Router{
 		group:        r.group.Group(prefix, toMiddlewares(m, r.errorHandler)...),
 		errorHandler: r.errorHandler,
 	}
-	child.Use(m...)
-	return child
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
