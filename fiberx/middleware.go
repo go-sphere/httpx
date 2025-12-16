@@ -13,10 +13,7 @@ func adaptMiddleware(middleware httpx.Middleware) fiber.Handler {
 			ctx: ctx,
 		}
 		middleware(fc)
-		if fc.IsAborted() {
-			return nil
-		}
-		return ctx.Next()
+		return nil
 	}
 }
 
