@@ -26,7 +26,7 @@ func NewConfig(opts ...Option) *Config {
 	if conf.engine == nil {
 		conf.engine = gin.Default()
 	}
-	if conf.server != nil {
+	if conf.server == nil {
 		conf.server = &http.Server{
 			Addr: ":8080",
 		}
