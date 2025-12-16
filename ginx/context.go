@@ -290,34 +290,6 @@ func (c *ginContext) IsAborted() bool {
 	return c.ctx.IsAborted()
 }
 
-// Aborter helpers not defined on httpx.Aborter.
-
-func (c *ginContext) AbortWithStatus(code int) {
-	c.ctx.AbortWithStatus(code)
-}
-
-func (c *ginContext) AbortWithStatusError(code int, err error) {
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
-	c.ctx.AbortWithStatus(code)
-}
-
-func (c *ginContext) AbortWithError(err error) {
-	if err == nil {
-		c.Abort()
-		return
-	}
-	if c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
-	c.Abort()
-}
-
-func (c *ginContext) AbortWithStatusJSON(code int, obj interface{}) {
-	c.ctx.AbortWithStatusJSON(code, obj)
-}
-
 // Context (context.Context + Next)
 
 func (c *ginContext) Deadline() (deadline time.Time, ok bool) {

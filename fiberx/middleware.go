@@ -18,7 +18,10 @@ func adaptMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandle
 				errorHandler(fc, err)
 			}
 		}
-		return nil
+		if IsAborted(ctx) {
+			return nil
+		}
+		return ctx.Next()
 	}
 }
 

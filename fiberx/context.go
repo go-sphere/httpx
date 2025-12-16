@@ -337,44 +337,6 @@ func (c *fiberContext) IsAborted() bool {
 	return false
 }
 
-// Aborter helpers not defined on httpx.Aborter.
-
-func (c *fiberContext) AbortWithStatus(code int) {
-	c.Abort()
-	if code > 0 {
-		c.ctx.Status(code)
-	}
-}
-
-func (c *fiberContext) AbortWithError(err error) {
-	if err == nil {
-		c.Abort()
-		return
-	}
-	if c.errorHandler != nil {
-		c.errorHandler(c, err)
-	} else {
-		c.AbortWithStatus(http.StatusInternalServerError)
-		return
-	}
-	c.Abort()
-}
-
-func (c *fiberContext) AbortWithStatusError(code int, err error) {
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
-	c.AbortWithStatus(code)
-}
-
-func (c *fiberContext) AbortWithStatusJSON(code int, obj interface{}) {
-	c.Abort()
-	err := c.ctx.Status(code).JSON(obj)
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
-}
-
 // Context (context.Context + Next)
 
 func (c *fiberContext) Deadline() (deadline time.Time, ok bool) {
@@ -403,4 +365,13 @@ func (c *fiberContext) Next() error {
 		return nil
 	}
 	return c.ctx.Next()
+}
+
+func IsAborted(ctx fiber.Ctx) bool {
+	locals := ctx.Locals(ContextAbortKey)
+	if locals == nil {
+		return false
+	}
+	flag, ok := locals.(bool)
+	return ok && flag
 }

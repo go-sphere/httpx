@@ -335,37 +335,6 @@ func (c *hertzContext) IsAborted() bool {
 	return c.ctx.IsAborted()
 }
 
-// Aborter helpers not defined on httpx.Aborter.
-
-func (c *hertzContext) AbortWithStatus(code int) {
-	c.ctx.AbortWithStatus(code)
-}
-
-func (c *hertzContext) AbortWithError(err error) {
-	if err == nil {
-		c.Abort()
-		return
-	}
-	if c.errorHandler != nil {
-		c.errorHandler(c, err)
-	} else {
-		c.AbortWithStatus(http.StatusInternalServerError)
-		return
-	}
-	c.Abort()
-}
-
-func (c *hertzContext) AbortWithStatusError(code int, err error) {
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
-	c.ctx.AbortWithStatus(code)
-}
-
-func (c *hertzContext) AbortWithStatusJSON(code int, obj interface{}) {
-	c.ctx.AbortWithStatusJSON(code, obj)
-}
-
 // Context (context.Context + Next)
 
 func (c *hertzContext) Deadline() (deadline time.Time, ok bool) {
