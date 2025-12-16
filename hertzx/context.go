@@ -1,6 +1,7 @@
 package hertzx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -142,7 +143,14 @@ func (c *hertzContext) BodyRaw() ([]byte, error) {
 }
 
 func (c *hertzContext) BodyReader() io.ReadCloser {
-	return httpx.NewReadCloser(c.ctx.Request.BodyStream(), c.ctx.Request.CloseBodyStream)
+	if stream := c.ctx.Request.BodyStream(); stream != nil {
+		return httpx.NewReadCloser(stream, c.ctx.Request.CloseBodyStream)
+	}
+	body := c.ctx.Request.Body()
+	if len(body) == 0 {
+		return http.NoBody
+	}
+	return httpx.NewReadCloser(bytes.NewReader(body), nil)
 }
 
 // Request helpers not defined on httpx.Request but kept for compatibility.

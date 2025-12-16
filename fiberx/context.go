@@ -1,6 +1,7 @@
 package fiberx
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -123,7 +124,14 @@ func (c *fiberContext) BodyRaw() ([]byte, error) {
 }
 
 func (c *fiberContext) BodyReader() io.ReadCloser {
-	return httpx.NewReadCloser(c.ctx.Request().BodyStream(), c.ctx.Request().CloseBodyStream)
+	if stream := c.ctx.Request().BodyStream(); stream != nil {
+		return httpx.NewReadCloser(stream, c.ctx.Request().CloseBodyStream)
+	}
+	body := c.ctx.Body()
+	if len(body) == 0 {
+		return http.NoBody
+	}
+	return httpx.NewReadCloser(bytes.NewReader(body), nil)
 }
 
 // Request helpers not defined on httpx.Request but kept for compatibility.
