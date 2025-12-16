@@ -34,3 +34,14 @@ tags-subs:
 	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx/ginx@$(TAG)"
 	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx/fiberx@$(TAG)"
 	echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx go get github.com/go-sphere/httpx/hertzx@$(TAG)"
+
+del-tags:
+	@if [ -z "$(TAG)" ]; then echo "TAG not set. Use TAG=v0.0.1 make del-tags"; exit 1; fi
+	git tag -d ${TAG} || true
+	git tag -d ginx/$(TAG) || true
+	git tag -d fiberx/$(TAG) || true
+	git tag -d hertzx/$(TAG) || true
+	git push origin --delete ${TAG} || true
+	git push origin --delete ginx/$(TAG) || true
+	git push origin --delete fiberx/$(TAG) || true
+	git push origin --delete hertzx/$(TAG) || true
