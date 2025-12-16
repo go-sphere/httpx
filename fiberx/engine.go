@@ -11,8 +11,9 @@ import (
 var _ httpx.Engine = (*Engine)(nil)
 
 type Config struct {
-	httpx.Config[*fiber.App]
-	listen func(*fiber.App) error
+	engine       *fiber.App
+	listen       func(*fiber.App) error
+	errorHandler httpx.ErrorHandler
 }
 
 type Option func(*Config)
@@ -22,20 +23,23 @@ func NewConfig(opts ...Option) *Config {
 	for _, opt := range opts {
 		opt(&conf)
 	}
-	if conf.Engine == nil {
-		conf.Engine = fiber.New()
+	if conf.engine == nil {
+		conf.engine = fiber.New()
 	}
 	if conf.listen != nil {
 		conf.listen = func(app *fiber.App) error {
 			return app.Listen(":8080")
 		}
 	}
+	if conf.errorHandler == nil {
+		conf.errorHandler = httpx.DefaultErrorHandler
+	}
 	return &conf
 }
 
-func WithOptions(options ...httpx.Option[*fiber.App]) Option {
+func WithEngine(engine *fiber.App) Option {
 	return func(conf *Config) {
-		conf.Apply(options...)
+		conf.engine = engine
 	}
 }
 
@@ -55,6 +59,12 @@ func WithListener(ln net.Listener, config ...fiber.ListenConfig) Option {
 	}
 }
 
+func WithErrorHandler(handler httpx.ErrorHandler) Option {
+	return func(conf *Config) {
+		conf.errorHandler = handler
+	}
+}
+
 type Engine struct {
 	engine       *fiber.App
 	middleware   *httpx.MiddlewareChain
@@ -64,12 +74,10 @@ type Engine struct {
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
-	middleware := httpx.NewMiddlewareChain()
-	middleware.Use(conf.Middleware.Middlewares()...)
 	return &Engine{
-		engine:       conf.Engine,
-		middleware:   middleware,
-		errorHandler: conf.ErrorHandler,
+		engine:       conf.engine,
+		middleware:   httpx.NewMiddlewareChain(),
+		errorHandler: conf.errorHandler,
 		listen:       conf.listen,
 	}
 }

@@ -9,24 +9,51 @@ import (
 
 var _ httpx.Engine = (*Engine)(nil)
 
+type Config struct {
+	engine       *server.Hertz
+	errorHandler httpx.ErrorHandler
+}
+
+type Option func(*Config)
+
+func NewConfig(opts ...Option) *Config {
+	conf := Config{}
+	for _, opt := range opts {
+		opt(&conf)
+	}
+	if conf.engine == nil {
+		conf.engine = server.Default()
+	}
+	if conf.errorHandler == nil {
+		conf.errorHandler = httpx.DefaultErrorHandler
+	}
+
+	return &conf
+}
+func WithEngine(engine *server.Hertz) Option {
+	return func(conf *Config) {
+		conf.engine = engine
+	}
+}
+
+func WithErrorHandler(handler httpx.ErrorHandler) Option {
+	return func(conf *Config) {
+		conf.errorHandler = handler
+	}
+}
+
 type Engine struct {
 	engine       *server.Hertz
 	middleware   *httpx.MiddlewareChain
 	errorHandler httpx.ErrorHandler
 }
 
-func New(opts ...httpx.Option[*server.Hertz]) *Engine {
-	conf := httpx.NewConfig(opts...)
-	if conf.Engine == nil {
-		conf.Engine = server.Default()
-	}
-
-	middleware := httpx.NewMiddlewareChain()
-	middleware.Use(conf.Middleware.Middlewares()...)
+func New(opts ...Option) *Engine {
+	conf := NewConfig(opts...)
 	return &Engine{
-		engine:       conf.Engine,
-		middleware:   middleware,
-		errorHandler: conf.ErrorHandler,
+		engine:       conf.engine,
+		middleware:   httpx.NewMiddlewareChain(),
+		errorHandler: conf.errorHandler,
 	}
 }
 
