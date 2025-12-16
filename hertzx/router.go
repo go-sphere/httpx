@@ -83,13 +83,7 @@ func ToMiddleware(middleware app.Handler, order httpx.MiddlewareOrder) httpx.Mid
 				return errors.New("hertzContext required")
 			}
 			switch order {
-			case httpx.MiddlewareBeforeNext:
-				middleware.ServeHTTP(hc.baseCtx, hc.ctx)
-				if hc.ctx.IsAborted() {
-					return nil
-				}
-				return next(ctx)
-			default:
+			case httpx.MiddlewareAfterNext:
 				err := next(ctx)
 				if err != nil {
 					return err
@@ -99,6 +93,12 @@ func ToMiddleware(middleware app.Handler, order httpx.MiddlewareOrder) httpx.Mid
 				}
 				middleware.ServeHTTP(hc.baseCtx, hc.ctx)
 				return nil
+			default:
+				middleware.ServeHTTP(hc.baseCtx, hc.ctx)
+				if hc.ctx.IsAborted() {
+					return nil
+				}
+				return next(ctx)
 			}
 		}
 	}
