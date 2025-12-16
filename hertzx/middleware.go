@@ -8,7 +8,7 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-func toMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) app.HandlerFunc {
+func adaptMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) app.HandlerFunc {
 	return func(c context.Context, ctx *app.RequestContext) {
 		fc := &hertzContext{
 			ctx:          ctx,
@@ -22,18 +22,18 @@ func toMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) 
 	}
 }
 
-func toMiddlewares(middlewares []httpx.Middleware, errorHandler httpx.ErrorHandler) []app.HandlerFunc {
+func adaptMiddlewares(middlewares []httpx.Middleware, errorHandler httpx.ErrorHandler) []app.HandlerFunc {
 	if len(middlewares) == 0 {
 		return nil
 	}
 	gMid := make([]app.HandlerFunc, len(middlewares))
 	for i, m := range middlewares {
-		gMid[i] = toMiddleware(m, errorHandler)
+		gMid[i] = adaptMiddleware(m, errorHandler)
 	}
 	return gMid
 }
 
-func MiddlewareAdapter(middleware app.HandlerFunc) httpx.Middleware {
+func AdaptHertzMiddleware(middleware app.HandlerFunc) httpx.Middleware {
 	return func(ctx httpx.Context) error {
 		fc, ok := ctx.(*hertzContext)
 		if !ok {

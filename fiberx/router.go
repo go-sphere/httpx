@@ -15,11 +15,12 @@ var _ httpx.Router = (*Router)(nil)
 type Router struct {
 	basePath     string
 	group        fiber.Router
+	middlewares  []httpx.Middleware
 	errorHandler httpx.ErrorHandler
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(toMiddlewares(m, r.errorHandler)...)
+	r.middlewares = append(r.middlewares, m...)
 }
 
 func (r *Router) BasePath() string {
@@ -27,40 +28,56 @@ func (r *Router) BasePath() string {
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
-	group := r.group.Group(prefix)
-	group.Use(toMiddlewares(m, r.errorHandler)...)
 	return &Router{
 		basePath:     joinPaths(r.basePath, prefix),
-		group:        group,
+		group:        r.group.Group(prefix),
+		middlewares:  cloneMiddlewares(r.middlewares, m...),
 		errorHandler: r.errorHandler,
 	}
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	methods := []string{strings.ToUpper(method)}
-	r.group.Add(methods, path, r.toFiberHandler(h))
+	handler, handlers := r.adaptHandler(h)
+	r.group.Add(methods, path, handler, handlers...)
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
-	r.group.All(path, r.toFiberHandler(h))
+	handler, handlers := r.adaptHandler(h)
+	r.group.All(path, handler, handlers...)
 }
 
 func (r *Router) Static(prefix, root string) {
-	r.group.Use(prefix, static.New(root))
+	handlers := []any{prefix}
+	handlers = append(handlers, r.combineHandlers(static.New(root)))
+	r.group.Use(handlers...)
 }
 
 func (r *Router) StaticFS(prefix string, fs fs.FS) {
-	r.group.Use(prefix, static.Config{FS: fs})
+	handlers := []any{prefix}
+	handlers = append(handlers, r.combineHandlers(static.New("", static.Config{FS: fs})))
+	r.group.Use(handlers...)
 }
 
-func (r *Router) toFiberHandler(h httpx.Handler) fiber.Handler {
-	return func(fc fiber.Ctx) error {
+func (r *Router) combineHandlers(h fiber.Handler) []any {
+	return append(adaptMiddlewares(r.middlewares, r.errorHandler), h)
+}
+
+func (r *Router) adaptHandler(h httpx.Handler) (any, []any) {
+	handlers := r.combineHandlers(func(fc fiber.Ctx) error {
 		ctx := newFiberContext(fc, r.errorHandler)
 		if err := h(ctx); err != nil {
-			(r.errorHandler)(ctx, err)
+			r.errorHandler(ctx, err)
 		}
 		return nil
+	})
+	if len(handlers) == 0 {
+		return nil, nil
 	}
+	if len(handlers) == 1 {
+		return handlers[0], nil
+	}
+	return handlers[0], handlers[1:]
 }
 
 func joinPaths(absolutePath, relativePath string) string {

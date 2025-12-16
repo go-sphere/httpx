@@ -56,12 +56,12 @@ func New(opts ...Option) *Engine {
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.engine.Use(toMiddlewares(middleware, e.errorHandler)...)
+	e.engine.Use(adaptMiddlewares(middleware, e.errorHandler)...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:        e.engine.Group(prefix, toMiddlewares(m, e.errorHandler)...),
+		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errorHandler)...),
 		errorHandler: e.errorHandler,
 	}
 }

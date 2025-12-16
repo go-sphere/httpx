@@ -200,7 +200,8 @@ func (c *hertzContext) FormValues() (map[string][]string, error) {
 		if !errors.Is(err, herrors.ErrNoMultipartForm) {
 			return nil, err
 		}
-	} else if form != nil {
+	}
+	if form != nil {
 		if out == nil {
 			out = make(map[string][]string, len(form.Value))
 		}

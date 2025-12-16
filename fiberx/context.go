@@ -174,7 +174,8 @@ func (c *fiberContext) FormValues() (map[string][]string, error) {
 		if !errors.Is(err, fasthttp.ErrNoMultipartForm) {
 			return nil, err
 		}
-	} else if form != nil {
+	}
+	if form != nil {
 		if out == nil {
 			out = make(map[string][]string, len(form.Value))
 		}
