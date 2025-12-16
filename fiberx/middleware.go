@@ -7,6 +7,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+type ErrorHandler func(ctx httpx.Context, err error)
+
 func adaptMiddleware(middleware httpx.Middleware) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		fc := &fiberContext{
@@ -24,12 +26,18 @@ func cloneMiddlewares(middlewares []httpx.Middleware, extra ...httpx.Middleware)
 	return out
 }
 
-func AdaptFiberMiddleware(middleware fiber.Handler) httpx.Middleware {
+func AdaptFiberMiddleware(middleware fiber.Handler, errorHandler ErrorHandler) httpx.Middleware {
 	return func(ctx httpx.Context) {
 		fc, ok := ctx.(*fiberContext)
 		if !ok {
 			panic(fmt.Sprintf("AdaptFiberMiddleware: invalid context type %T", ctx))
 		}
-		_ = middleware(fc.ctx)
+		if fc.IsAborted() {
+			return
+		}
+		err := middleware(fc.ctx)
+		if err != nil && errorHandler != nil {
+			errorHandler(fc, err)
+		}
 	}
 }
