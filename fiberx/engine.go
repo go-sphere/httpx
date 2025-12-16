@@ -11,9 +11,8 @@ import (
 var _ httpx.Engine = (*Engine)(nil)
 
 type Config struct {
-	engine       *fiber.App
-	listen       func(*fiber.App) error
-	errorHandler httpx.ErrorHandler
+	engine *fiber.App
+	listen func(*fiber.App) error
 }
 
 type Option func(*Config)
@@ -30,9 +29,6 @@ func NewConfig(opts ...Option) *Config {
 		conf.listen = func(app *fiber.App) error {
 			return app.Listen(":8080")
 		}
-	}
-	if conf.errorHandler == nil {
-		conf.errorHandler = httpx.DefaultErrorHandler
 	}
 	return &conf
 }
@@ -59,26 +55,18 @@ func WithListener(ln net.Listener, config ...fiber.ListenConfig) Option {
 	}
 }
 
-func WithErrorHandler(handler httpx.ErrorHandler) Option {
-	return func(conf *Config) {
-		conf.errorHandler = handler
-	}
-}
-
 type Engine struct {
-	engine       *fiber.App
-	middlewares  []httpx.Middleware
-	errorHandler httpx.ErrorHandler
-	listen       func(*fiber.App) error
+	engine      *fiber.App
+	middlewares []httpx.Middleware
+	listen      func(*fiber.App) error
 }
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	return &Engine{
-		engine:       conf.engine,
-		middlewares:  []httpx.Middleware{},
-		errorHandler: conf.errorHandler,
-		listen:       conf.listen,
+		engine:      conf.engine,
+		middlewares: []httpx.Middleware{},
+		listen:      conf.listen,
 	}
 }
 
@@ -88,10 +76,9 @@ func (e *Engine) Use(middlewares ...httpx.Middleware) {
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		basePath:     joinPaths("/", prefix),
-		group:        e.engine.Group(prefix),
-		middlewares:  cloneMiddlewares(e.middlewares, m...),
-		errorHandler: e.errorHandler,
+		basePath:    joinPaths("/", prefix),
+		group:       e.engine.Group(prefix),
+		middlewares: cloneMiddlewares(e.middlewares, m...),
 	}
 }
 

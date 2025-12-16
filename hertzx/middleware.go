@@ -2,44 +2,38 @@ package hertzx
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/go-sphere/httpx"
 )
 
-func adaptMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) app.HandlerFunc {
+func adaptMiddleware(middleware httpx.Middleware) app.HandlerFunc {
 	return func(c context.Context, ctx *app.RequestContext) {
 		fc := &hertzContext{
-			ctx:          ctx,
-			baseCtx:      c,
-			errorHandler: errorHandler,
+			ctx:     ctx,
+			baseCtx: c,
 		}
-		err := middleware(fc)
-		if err != nil {
-			errorHandler(fc, err)
-		}
+		middleware(fc)
 	}
 }
 
-func adaptMiddlewares(middlewares []httpx.Middleware, errorHandler httpx.ErrorHandler) []app.HandlerFunc {
+func adaptMiddlewares(middlewares []httpx.Middleware) []app.HandlerFunc {
 	if len(middlewares) == 0 {
 		return nil
 	}
 	gMid := make([]app.HandlerFunc, len(middlewares))
 	for i, m := range middlewares {
-		gMid[i] = adaptMiddleware(m, errorHandler)
+		gMid[i] = adaptMiddleware(m)
 	}
 	return gMid
 }
 
 func AdaptHertzMiddleware(middleware app.HandlerFunc) httpx.Middleware {
-	return func(ctx httpx.Context) error {
+	return func(ctx httpx.Context) {
 		fc, ok := ctx.(*hertzContext)
 		if !ok {
-			return fmt.Errorf("invalid context type: %T", ctx)
+			panic("AdaptHertzMiddleware: invalid context type")
 		}
 		middleware(fc.baseCtx, fc.ctx)
-		return nil
 	}
 }

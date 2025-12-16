@@ -13,10 +13,9 @@ import (
 var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
-	basePath     string
-	group        fiber.Router
-	middlewares  []httpx.Middleware
-	errorHandler httpx.ErrorHandler
+	basePath    string
+	group       fiber.Router
+	middlewares []httpx.Middleware
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
@@ -29,10 +28,9 @@ func (r *Router) BasePath() string {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		basePath:     joinPaths(r.basePath, prefix),
-		group:        r.group.Group(prefix),
-		middlewares:  cloneMiddlewares(r.middlewares, m...),
-		errorHandler: r.errorHandler,
+		basePath:    joinPaths(r.basePath, prefix),
+		group:       r.group.Group(prefix),
+		middlewares: cloneMiddlewares(r.middlewares, m...),
 	}
 }
 
@@ -58,7 +56,7 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 func (r *Router) combineHandlers(h fiber.Handler) []any {
 	mid := make([]any, 0, len(r.middlewares)+1)
 	for _, m := range r.middlewares {
-		mid = append(mid, adaptMiddleware(m, r.errorHandler))
+		mid = append(mid, adaptMiddleware(m))
 	}
 	mid = append(mid, h)
 	return mid
@@ -66,8 +64,9 @@ func (r *Router) combineHandlers(h fiber.Handler) []any {
 
 func (r *Router) adaptHandler(h httpx.Handler) []any {
 	return r.combineHandlers(func(ctx fiber.Ctx) error {
-		fc := newFiberContext(ctx, r.errorHandler)
-		return h(fc)
+		fc := newFiberContext(ctx)
+		h(fc)
+		return nil
 	})
 }
 

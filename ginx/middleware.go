@@ -1,43 +1,36 @@
 package ginx
 
 import (
-	"fmt"
-
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
 )
 
-func adaptMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) gin.HandlerFunc {
+func adaptMiddleware(middleware httpx.Middleware) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		fc := &ginContext{
-			ctx:          ctx,
-			errorHandler: errorHandler,
+			ctx: ctx,
 		}
-		err := middleware(fc)
-		if err != nil {
-			errorHandler(fc, err)
-		}
+		middleware(fc)
 	}
 }
 
-func adaptMiddlewares(middlewares []httpx.Middleware, errorHandler httpx.ErrorHandler) []gin.HandlerFunc {
+func adaptMiddlewares(middlewares []httpx.Middleware) []gin.HandlerFunc {
 	if len(middlewares) == 0 {
 		return nil
 	}
 	gMid := make([]gin.HandlerFunc, len(middlewares))
 	for i, m := range middlewares {
-		gMid[i] = adaptMiddleware(m, errorHandler)
+		gMid[i] = adaptMiddleware(m)
 	}
 	return gMid
 }
 
 func AdaptGinMiddleware(middleware gin.HandlerFunc) httpx.Middleware {
-	return func(ctx httpx.Context) error {
+	return func(ctx httpx.Context) {
 		fc, ok := ctx.(*ginContext)
 		if !ok {
-			return fmt.Errorf("invalid context type: %T", ctx)
+			panic("AdaptGinMiddleware: gin context type error")
 		}
 		middleware(fc.ctx)
-		return nil
 	}
 }

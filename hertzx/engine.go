@@ -10,8 +10,7 @@ import (
 var _ httpx.Engine = (*Engine)(nil)
 
 type Config struct {
-	engine       *server.Hertz
-	errorHandler httpx.ErrorHandler
+	engine *server.Hertz
 }
 
 type Option func(*Config)
@@ -24,10 +23,6 @@ func NewConfig(opts ...Option) *Config {
 	if conf.engine == nil {
 		conf.engine = server.Default()
 	}
-	if conf.errorHandler == nil {
-		conf.errorHandler = httpx.DefaultErrorHandler
-	}
-
 	return &conf
 }
 func WithEngine(engine *server.Hertz) Option {
@@ -36,33 +31,24 @@ func WithEngine(engine *server.Hertz) Option {
 	}
 }
 
-func WithErrorHandler(handler httpx.ErrorHandler) Option {
-	return func(conf *Config) {
-		conf.errorHandler = handler
-	}
-}
-
 type Engine struct {
-	engine       *server.Hertz
-	errorHandler httpx.ErrorHandler
+	engine *server.Hertz
 }
 
 func New(opts ...Option) *Engine {
 	conf := NewConfig(opts...)
 	return &Engine{
-		engine:       conf.engine,
-		errorHandler: conf.errorHandler,
+		engine: conf.engine,
 	}
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.engine.Use(adaptMiddlewares(middleware, e.errorHandler)...)
+	e.engine.Use(adaptMiddlewares(middleware)...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errorHandler)...),
-		errorHandler: e.errorHandler,
+		group: e.engine.Group(prefix, adaptMiddlewares(m)...),
 	}
 }
 

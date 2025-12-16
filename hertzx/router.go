@@ -16,12 +16,11 @@ import (
 var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
-	group        *route.RouterGroup
-	errorHandler httpx.ErrorHandler
+	group *route.RouterGroup
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(adaptMiddlewares(m, r.errorHandler)...)
+	r.group.Use(adaptMiddlewares(m)...)
 }
 
 func (r *Router) BasePath() string {
@@ -30,8 +29,7 @@ func (r *Router) BasePath() string {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errorHandler)...),
-		errorHandler: r.errorHandler,
+		group: r.group.Group(prefix, adaptMiddlewares(m)...),
 	}
 }
 
@@ -62,9 +60,7 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 
 func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
-		hc := newHertzContext(ctx, rc, r.errorHandler)
-		if err := h(hc); err != nil {
-			(r.errorHandler)(hc, err)
-		}
+		hc := newHertzContext(ctx, rc)
+		h(hc)
 	}
 }

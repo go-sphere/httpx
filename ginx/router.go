@@ -11,12 +11,11 @@ import (
 var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
-	group        *gin.RouterGroup
-	errorHandler httpx.ErrorHandler
+	group *gin.RouterGroup
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(adaptMiddlewares(m, r.errorHandler)...)
+	r.group.Use(adaptMiddlewares(m)...)
 }
 
 func (r *Router) BasePath() string {
@@ -25,8 +24,7 @@ func (r *Router) BasePath() string {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errorHandler)...),
-		errorHandler: r.errorHandler,
+		group: r.group.Group(prefix, adaptMiddlewares(m)...),
 	}
 }
 
@@ -48,9 +46,7 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 
 func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 	return func(gc *gin.Context) {
-		ctx := newGinContext(gc, r.errorHandler)
-		if err := h(ctx); err != nil {
-			r.errorHandler(ctx, err)
-		}
+		ctx := newGinContext(gc)
+		h(ctx)
 	}
 }

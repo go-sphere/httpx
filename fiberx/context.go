@@ -20,14 +20,12 @@ type ContextKeyType int
 const ContextAbortKey ContextKeyType = 1
 
 type fiberContext struct {
-	ctx          fiber.Ctx
-	errorHandler httpx.ErrorHandler
+	ctx fiber.Ctx
 }
 
-func newFiberContext(ctx fiber.Ctx, errorHandler httpx.ErrorHandler) *fiberContext {
+func newFiberContext(ctx fiber.Ctx) *fiberContext {
 	return &fiberContext{
-		ctx:          ctx,
-		errorHandler: errorHandler,
+		ctx: ctx,
 	}
 }
 
@@ -215,17 +213,11 @@ func (c *fiberContext) Status(code int) {
 }
 
 func (c *fiberContext) JSON(code int, v any) {
-	err := c.ctx.Status(code).JSON(v)
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
+	_ = c.ctx.Status(code).JSON(v)
 }
 
 func (c *fiberContext) Text(code int, s string) {
-	err := c.ctx.Status(code).SendString(s)
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
+	_ = c.ctx.Status(code).SendString(s)
 }
 
 func (c *fiberContext) NoContent(code int) {
@@ -237,27 +229,18 @@ func (c *fiberContext) Bytes(code int, b []byte, contentType string) {
 	if contentType != "" {
 		c.ctx.Set(fiber.HeaderContentType, contentType)
 	}
-	err := c.ctx.Status(code).Send(b)
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
+	_ = c.ctx.Status(code).Send(b)
 }
 
 func (c *fiberContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
 	if contentType != "" {
 		c.ctx.Set(fiber.HeaderContentType, contentType)
 	}
-	err := c.ctx.Status(code).SendStream(r, size)
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
+	_ = c.ctx.Status(code).SendStream(r, size)
 }
 
 func (c *fiberContext) File(path string) {
-	err := c.ctx.SendFile(path)
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
+	_ = c.ctx.SendFile(path)
 }
 
 func (c *fiberContext) Redirect(code int, location string) {
@@ -265,10 +248,7 @@ func (c *fiberContext) Redirect(code int, location string) {
 	if code > 0 {
 		redirect.Status(code)
 	}
-	err := redirect.To(location)
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
+	_ = redirect.To(location)
 }
 
 func (c *fiberContext) SetHeader(key, value string) {
@@ -301,9 +281,6 @@ func (c *fiberContext) Stream(code int, contentType string, fn func(io.Writer) e
 		defer func() { _ = writer.Close() }()
 		if err := fn(writer); err != nil {
 			_ = writer.CloseWithError(err)
-			if c.errorHandler != nil {
-				c.errorHandler(c, err)
-			}
 		}
 	}()
 	c.ctx.Response().SetBodyStream(reader, -1)
@@ -365,13 +342,4 @@ func (c *fiberContext) Next() error {
 		return nil
 	}
 	return c.ctx.Next()
-}
-
-func IsAborted(ctx fiber.Ctx) bool {
-	locals := ctx.Locals(ContextAbortKey)
-	if locals == nil {
-		return false
-	}
-	flag, ok := locals.(bool)
-	return ok && flag
 }

@@ -18,14 +18,12 @@ var _ httpx.Context = (*ginContext)(nil)
 var queryBinding = QueryBinding{}
 
 type ginContext struct {
-	ctx          *gin.Context
-	errorHandler httpx.ErrorHandler
+	ctx *gin.Context
 }
 
-func newGinContext(gc *gin.Context, errorHandler httpx.ErrorHandler) *ginContext {
+func newGinContext(gc *gin.Context) *ginContext {
 	return &ginContext{
-		ctx:          gc,
-		errorHandler: errorHandler,
+		ctx: gc,
 	}
 }
 
@@ -263,9 +261,7 @@ func (c *ginContext) Stream(code int, contentType string, fn func(io.Writer) err
 		c.ctx.Status(code)
 	}
 	c.ctx.Stream(func(w io.Writer) bool {
-		if err := fn(w); err != nil && c.errorHandler != nil {
-			c.errorHandler(c, err)
-		}
+		_ = fn(w)
 		return false
 	})
 }

@@ -19,16 +19,14 @@ import (
 var _ httpx.Context = (*hertzContext)(nil)
 
 type hertzContext struct {
-	ctx          *app.RequestContext
-	baseCtx      context.Context
-	errorHandler httpx.ErrorHandler
+	ctx     *app.RequestContext
+	baseCtx context.Context
 }
 
-func newHertzContext(ctx context.Context, rc *app.RequestContext, eh httpx.ErrorHandler) *hertzContext {
+func newHertzContext(ctx context.Context, rc *app.RequestContext) *hertzContext {
 	return &hertzContext{
-		ctx:          rc,
-		baseCtx:      ctx,
-		errorHandler: eh,
+		ctx:     rc,
+		baseCtx: ctx,
 	}
 }
 
@@ -307,9 +305,6 @@ func (c *hertzContext) Stream(code int, contentType string, fn func(io.Writer) e
 		defer func() { _ = writer.Close() }()
 		if err := fn(writer); err != nil {
 			_ = writer.CloseWithError(err)
-			if c.errorHandler != nil {
-				c.errorHandler(c, err)
-			}
 		}
 	}()
 	c.ctx.SetBodyStream(reader, -1)

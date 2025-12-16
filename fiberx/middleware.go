@@ -7,33 +7,17 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func adaptMiddleware(middleware httpx.Middleware, errorHandler httpx.ErrorHandler) fiber.Handler {
+func adaptMiddleware(middleware httpx.Middleware) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		fc := &fiberContext{
-			ctx:          ctx,
-			errorHandler: errorHandler,
+			ctx: ctx,
 		}
-		if err := middleware(fc); err != nil {
-			if errorHandler != nil {
-				errorHandler(fc, err)
-			}
-		}
-		if IsAborted(ctx) {
+		middleware(fc)
+		if fc.IsAborted() {
 			return nil
 		}
 		return ctx.Next()
 	}
-}
-
-func adaptMiddlewares(middlewares []httpx.Middleware, errorHandler httpx.ErrorHandler) []fiber.Handler {
-	if len(middlewares) == 0 {
-		return nil
-	}
-	fMid := make([]fiber.Handler, len(middlewares))
-	for i, m := range middlewares {
-		fMid[i] = adaptMiddleware(m, errorHandler)
-	}
-	return fMid
 }
 
 func cloneMiddlewares(middlewares []httpx.Middleware, extra ...httpx.Middleware) []httpx.Middleware {
@@ -44,11 +28,11 @@ func cloneMiddlewares(middlewares []httpx.Middleware, extra ...httpx.Middleware)
 }
 
 func AdaptFiberMiddleware(middleware fiber.Handler) httpx.Middleware {
-	return func(ctx httpx.Context) error {
+	return func(ctx httpx.Context) {
 		fc, ok := ctx.(*fiberContext)
 		if !ok {
-			return fmt.Errorf("invalid context type: %T", ctx)
+			panic(fmt.Sprintf("AdaptFiberMiddleware: invalid context type %T", ctx))
 		}
-		return middleware(fc.ctx)
+		_ = middleware(fc.ctx)
 	}
 }

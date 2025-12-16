@@ -3,21 +3,13 @@ package httpx
 import (
 	"context"
 	"io/fs"
-	"net/http"
 )
 
 // Handler is the canonical function signature for framework adapters.
-type Handler func(Context) error
+type Handler func(Context)
 
 // Middleware shares the same signature as Handler and drives the chain via ctx.Next().
-type Middleware func(Context) error
-
-// ErrorHandler receives the terminal error from a Handler.
-type ErrorHandler func(Context, error)
-
-func DefaultErrorHandler(ctx Context, err error) {
-	ctx.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-}
+type Middleware func(Context)
 
 // MiddlewareScope attaches middleware to the current scope.
 type MiddlewareScope interface {

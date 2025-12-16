@@ -19,8 +19,6 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/fsnotify/fsnotify v1.5.4 h1:jRbGcIw6P2Meqdwuo0H1p6JVLbL5DHKAKlYndzMwVZI=
 github.com/fsnotify/fsnotify v1.5.4/go.mod h1:OVB6XrOHzAwXMpEM7uPOzcehqUV2UqJxmVXmkdnm1bU=
-github.com/go-sphere/httpx v0.0.2-beta.5 h1:/7lIk1Zuh0dwjYw0DkG5tWzYHqQ0F58f1a0z/YTw56A=
-github.com/go-sphere/httpx v0.0.2-beta.5/go.mod h1:UL/HyWTCApHlH2cfcpApEkP/qSxKRrFVjOouOxHuNxk=
 github.com/go-sphere/httpx v0.0.2-beta.9 h1:UmnlugS8rQnj8z+HBixpEQZyfMR7MIBXwztqpfeQfXo=
 github.com/go-sphere/httpx v0.0.2-beta.9/go.mod h1:UL/HyWTCApHlH2cfcpApEkP/qSxKRrFVjOouOxHuNxk=
 github.com/golang/protobuf v1.3.2/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
