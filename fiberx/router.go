@@ -27,9 +27,11 @@ func (r *Router) BasePath() string {
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	group := r.group.Group(prefix)
+	group.Use(toMiddlewares(m, r.errorHandler)...)
 	return &Router{
 		basePath:     joinPaths(r.basePath, prefix),
-		group:        r.group.Group(prefix, toMiddlewares(m, r.errorHandler)...),
+		group:        group,
 		errorHandler: r.errorHandler,
 	}
 }
