@@ -23,14 +23,18 @@ type Request interface {
 	Queries() map[string][]string
 	RawQuery() string
 
+	Header(key string) string
+	Headers() map[string][]string
+
+	Cookie(name string) (string, error)
+	Cookies() map[string]string
+
 	FormValue(key string) string
-	FormValues() map[string][]string
+	MultipartForm() (*multipart.Form, error)
 	FormFile(name string) (*multipart.FileHeader, error)
 
-	GetBodyRaw() ([]byte, error)
-
-	Header(key string) string
-	Cookie(name string) (string, error)
+	BodyRaw() ([]byte, error)
+	BodyReader() io.ReadCloser
 }
 
 // Binder standardizes payload decoding across frameworks.
@@ -48,6 +52,7 @@ type Responder interface {
 
 	JSON(code int, v any)
 	Text(code int, s string)
+	NoContent(code int)
 	Bytes(code int, b []byte, contentType string)
 	DataFromReader(code int, contentType string, r io.Reader, size int)
 	File(path string)
@@ -66,18 +71,16 @@ type StateStore interface {
 // Aborter allows a handler to short-circuit the remaining chain.
 type Aborter interface {
 	Abort()
-	AbortWithStatus(code int)
-	AbortWithStatusError(code int, err error)
-	AbortWithStatusJSON(code int, obj interface{})
 	IsAborted() bool
 }
 
 // Context is the cross-framework surface passed into handlers.
 type Context interface {
-	context.Context
 	Request
 	Responder
 	Binder
 	StateStore
 	Aborter
+	context.Context
+	Next() error
 }

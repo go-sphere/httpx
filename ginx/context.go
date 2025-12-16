@@ -4,6 +4,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -28,7 +29,7 @@ func newGinContext(gc *gin.Context, errorHandler httpx.ErrorHandler) *ginContext
 	}
 }
 
-// Request exposes a common, read-only view over incoming HTTP requests.
+// Request (httpx.Request)
 
 func (c *ginContext) Method() string {
 	return c.ctx.Request.Method
@@ -73,32 +74,115 @@ func (c *ginContext) RawQuery() string {
 	return c.ctx.Request.URL.RawQuery
 }
 
-func (c *ginContext) FormValue(key string) string {
-	return c.ctx.Request.FormValue(key)
-}
-
-func (c *ginContext) FormValues() map[string][]string {
-	_ = c.ctx.Request.ParseForm()
-	return c.ctx.Request.PostForm
-}
-
-func (c *ginContext) FormFile(name string) (*multipart.FileHeader, error) {
-	return c.ctx.FormFile(name)
-}
-
-func (c *ginContext) GetBodyRaw() ([]byte, error) {
-	return c.ctx.GetRawData()
-}
-
 func (c *ginContext) Header(key string) string {
 	return c.ctx.GetHeader(key)
+}
+
+func (c *ginContext) Headers() map[string][]string {
+	src := c.ctx.Request.Header
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(src))
+	for k, v := range src {
+		ck := textproto.CanonicalMIMEHeaderKey(k)
+		out[ck] = append([]string(nil), v...)
+	}
+	return out
 }
 
 func (c *ginContext) Cookie(name string) (string, error) {
 	return c.ctx.Cookie(name)
 }
 
-// Binder standardizes payload decoding across frameworks.
+func (c *ginContext) Cookies() map[string]string {
+	raw := c.ctx.Request.Cookies()
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for _, cookie := range raw {
+		out[cookie.Name] = cookie.Value
+	}
+	return out
+}
+
+func (c *ginContext) FormValue(key string) string {
+	return c.ctx.Request.FormValue(key)
+}
+
+func (c *ginContext) MultipartForm() (*multipart.Form, error) {
+	if err := c.ctx.Request.ParseMultipartForm(32 << 20); err != nil {
+		return nil, err
+	}
+	return c.ctx.Request.MultipartForm, nil
+}
+
+func (c *ginContext) FormFile(name string) (*multipart.FileHeader, error) {
+	return c.ctx.FormFile(name)
+}
+
+func (c *ginContext) BodyRaw() ([]byte, error) {
+	return c.ctx.GetRawData()
+}
+
+func (c *ginContext) BodyReader() io.ReadCloser {
+	if c.ctx.Request.Body != nil {
+		return c.ctx.Request.Body
+	}
+	return http.NoBody
+}
+
+// Request helpers not defined on httpx.Request but kept for compatibility.
+
+func (c *ginContext) Scheme() string {
+	if scheme := c.ctx.Request.URL.Scheme; scheme != "" {
+		return scheme
+	}
+	if c.ctx.Request.TLS != nil {
+		return "https"
+	}
+	if proto := c.ctx.GetHeader("X-Forwarded-Proto"); proto != "" {
+		return proto
+	}
+	return "http"
+}
+
+func (c *ginContext) Host() string {
+	return c.ctx.Request.Host
+}
+
+func (c *ginContext) Proto() string {
+	return c.ctx.Request.Proto
+}
+
+func (c *ginContext) ContentLength() int64 {
+	return c.ctx.Request.ContentLength
+}
+
+func (c *ginContext) UserAgent() string {
+	return c.ctx.Request.UserAgent()
+}
+
+func (c *ginContext) Referer() string {
+	return c.ctx.Request.Referer()
+}
+
+func (c *ginContext) FormValues() (map[string][]string, error) {
+	if err := c.ctx.Request.ParseForm(); err != nil {
+		return nil, err
+	}
+	if len(c.ctx.Request.PostForm) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]string, len(c.ctx.Request.PostForm))
+	for k, v := range c.ctx.Request.PostForm {
+		out[k] = append([]string(nil), v...)
+	}
+	return out, nil
+}
+
+// Binder (httpx.Binder)
 
 func (c *ginContext) BindJSON(dst any) error {
 	return c.ctx.ShouldBindJSON(dst)
@@ -124,7 +208,7 @@ func (c *ginContext) BindHeader(dst any) error {
 	return c.ctx.ShouldBindHeader(dst)
 }
 
-// Responder writes responses across frameworks.
+// Responder (httpx.Responder)
 
 func (c *ginContext) Status(code int) {
 	c.ctx.Status(code)
@@ -136,6 +220,10 @@ func (c *ginContext) JSON(code int, v any) {
 
 func (c *ginContext) Text(code int, s string) {
 	c.ctx.String(code, s)
+}
+
+func (c *ginContext) NoContent(code int) {
+	c.ctx.Status(code)
 }
 
 func (c *ginContext) Bytes(code int, b []byte, contentType string) {
@@ -165,7 +253,24 @@ func (c *ginContext) SetCookie(cookie *http.Cookie) {
 	http.SetCookie(c.ctx.Writer, cookie)
 }
 
-// StateStore carries request-scoped values.
+// Responder helpers not defined on httpx.Responder.
+
+func (c *ginContext) Stream(code int, contentType string, fn func(io.Writer) error) {
+	if contentType != "" {
+		c.ctx.Header("Content-Type", contentType)
+	}
+	if code > 0 {
+		c.ctx.Status(code)
+	}
+	c.ctx.Stream(func(w io.Writer) bool {
+		if err := fn(w); err != nil && c.errorHandler != nil {
+			c.errorHandler(c, err)
+		}
+		return false
+	})
+}
+
+// StateStore (httpx.StateStore)
 
 func (c *ginContext) Set(key string, val any) {
 	c.ctx.Set(key, val)
@@ -175,7 +280,45 @@ func (c *ginContext) Get(key string) (any, bool) {
 	return c.ctx.Get(key)
 }
 
-// Context standardizes context operations across frameworks.
+// Aborter (httpx.Aborter)
+
+func (c *ginContext) Abort() {
+	c.ctx.Abort()
+}
+
+func (c *ginContext) IsAborted() bool {
+	return c.ctx.IsAborted()
+}
+
+// Aborter helpers not defined on httpx.Aborter.
+
+func (c *ginContext) AbortWithStatus(code int) {
+	c.ctx.AbortWithStatus(code)
+}
+
+func (c *ginContext) AbortWithStatusError(code int, err error) {
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
+	c.ctx.AbortWithStatus(code)
+}
+
+func (c *ginContext) AbortWithError(err error) {
+	if err == nil {
+		c.Abort()
+		return
+	}
+	if c.errorHandler != nil {
+		c.errorHandler(c, err)
+	}
+	c.Abort()
+}
+
+func (c *ginContext) AbortWithStatusJSON(code int, obj interface{}) {
+	c.ctx.AbortWithStatusJSON(code, obj)
+}
+
+// Context (context.Context + Next)
 
 func (c *ginContext) Deadline() (deadline time.Time, ok bool) {
 	return c.ctx.Deadline()
@@ -193,27 +336,7 @@ func (c *ginContext) Value(key any) any {
 	return c.ctx.Value(key)
 }
 
-// Aborter allows a handler to short-circuit the remaining chain.
-
-func (c *ginContext) Abort() {
-	c.ctx.Abort()
-}
-
-func (c *ginContext) AbortWithStatus(code int) {
-	c.ctx.AbortWithStatus(code)
-}
-
-func (c *ginContext) AbortWithStatusError(code int, err error) {
-	if err != nil && c.errorHandler != nil {
-		c.errorHandler(c, err)
-	}
-	c.ctx.AbortWithStatus(code)
-}
-
-func (c *ginContext) AbortWithStatusJSON(code int, obj interface{}) {
-	c.ctx.AbortWithStatusJSON(code, obj)
-}
-
-func (c *ginContext) IsAborted() bool {
-	return c.ctx.IsAborted()
+func (c *ginContext) Next() error {
+	c.ctx.Next()
+	return nil
 }

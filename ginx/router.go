@@ -1,7 +1,6 @@
 package ginx
 
 import (
-	"errors"
 	"io/fs"
 	"net/http"
 
@@ -13,12 +12,11 @@ var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
 	group        *gin.RouterGroup
-	middleware   *httpx.MiddlewareChain
 	errorHandler httpx.ErrorHandler
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.middleware.Use(m...)
+	r.group.Use(toMiddlewares(m, r.errorHandler)...)
 }
 
 func (r *Router) BasePath() string {
@@ -27,8 +25,7 @@ func (r *Router) BasePath() string {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	child := &Router{
-		group:        r.group.Group(prefix),
-		middleware:   r.middleware.Clone(),
+		group:        r.group.Group(prefix, toMiddlewares(m, r.errorHandler)...),
 		errorHandler: r.errorHandler,
 	}
 	child.Use(m...)
@@ -52,40 +49,10 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 }
 
 func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
-	handler := r.middleware.Then(h)
 	return func(gc *gin.Context) {
 		ctx := newGinContext(gc, r.errorHandler)
-		if err := handler(ctx); err != nil {
+		if err := h(ctx); err != nil {
 			r.errorHandler(ctx, err)
-		}
-	}
-}
-
-func ToMiddleware(middleware gin.HandlerFunc, order httpx.MiddlewareOrder) httpx.Middleware {
-	return func(next httpx.Handler) httpx.Handler {
-		return func(ctx httpx.Context) error {
-			gc, ok := ctx.(*ginContext)
-			if !ok {
-				return errors.New("ginContext required")
-			}
-			switch order {
-			case httpx.MiddlewareAfterNext:
-				err := next(ctx)
-				if err != nil {
-					return err
-				}
-				if gc.ctx.IsAborted() {
-					return nil
-				}
-				middleware(gc.ctx)
-				return nil
-			default:
-				middleware(gc.ctx)
-				if gc.ctx.IsAborted() {
-					return nil
-				}
-				return next(ctx)
-			}
 		}
 	}
 }

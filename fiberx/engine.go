@@ -67,7 +67,6 @@ func WithErrorHandler(handler httpx.ErrorHandler) Option {
 
 type Engine struct {
 	engine       *fiber.App
-	middleware   *httpx.MiddlewareChain
 	errorHandler httpx.ErrorHandler
 	listen       func(*fiber.App) error
 }
@@ -76,23 +75,19 @@ func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	return &Engine{
 		engine:       conf.engine,
-		middleware:   httpx.NewMiddlewareChain(),
 		errorHandler: conf.errorHandler,
 		listen:       conf.listen,
 	}
 }
 
-func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.middleware.Use(middleware...)
+func (e *Engine) Use(middlewares ...httpx.Middleware) {
+	e.engine.Use(toMiddlewares(middlewares, e.errorHandler)...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
-	middleware := e.middleware.Clone()
-	middleware.Use(m...)
 	return &Router{
 		basePath:     joinPaths("/", prefix),
-		group:        e.engine.Group(prefix),
-		middleware:   middleware,
+		group:        e.engine.Group(prefix, toMiddlewares(m, e.errorHandler)...),
 		errorHandler: e.errorHandler,
 	}
 }

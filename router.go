@@ -9,6 +9,9 @@ import (
 // Handler is the canonical function signature for framework adapters.
 type Handler func(Context) error
 
+// Middleware shares the same signature as Handler and drives the chain via ctx.Next().
+type Middleware func(Context) error
+
 // ErrorHandler receives the terminal error from a Handler.
 type ErrorHandler func(Context, error)
 

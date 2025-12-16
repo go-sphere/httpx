@@ -44,7 +44,6 @@ func WithErrorHandler(handler httpx.ErrorHandler) Option {
 
 type Engine struct {
 	engine       *server.Hertz
-	middleware   *httpx.MiddlewareChain
 	errorHandler httpx.ErrorHandler
 }
 
@@ -52,21 +51,17 @@ func New(opts ...Option) *Engine {
 	conf := NewConfig(opts...)
 	return &Engine{
 		engine:       conf.engine,
-		middleware:   httpx.NewMiddlewareChain(),
 		errorHandler: conf.errorHandler,
 	}
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.middleware.Use(middleware...)
+	e.engine.Use(toMiddlewares(middleware, e.errorHandler)...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
-	middleware := e.middleware.Clone()
-	middleware.Use(m...)
 	return &Router{
-		group:        e.engine.Group(prefix),
-		middleware:   middleware,
+		group:        e.engine.Group(prefix, toMiddlewares(m, e.errorHandler)...),
 		errorHandler: e.errorHandler,
 	}
 }

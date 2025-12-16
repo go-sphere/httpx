@@ -2,7 +2,6 @@ package hertzx
 
 import (
 	"context"
-	"errors"
 	"io/fs"
 	"net/http"
 	"path"
@@ -18,12 +17,11 @@ var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
 	group        *route.RouterGroup
-	middleware   *httpx.MiddlewareChain
 	errorHandler httpx.ErrorHandler
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.middleware.Use(m...)
+	r.group.Use(toMiddlewares(m, r.errorHandler)...)
 }
 
 func (r *Router) BasePath() string {
@@ -32,8 +30,7 @@ func (r *Router) BasePath() string {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	child := &Router{
-		group:        r.group.Group(prefix),
-		middleware:   r.middleware.Clone(),
+		group:        r.group.Group(prefix, toMiddlewares(m, r.errorHandler)...),
 		errorHandler: r.errorHandler,
 	}
 	child.Use(m...)
@@ -66,40 +63,10 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 }
 
 func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
-	handler := r.middleware.Then(h)
 	return func(ctx context.Context, rc *app.RequestContext) {
 		hc := newHertzContext(ctx, rc, r.errorHandler)
-		if err := handler(hc); err != nil {
+		if err := h(hc); err != nil {
 			(r.errorHandler)(hc, err)
-		}
-	}
-}
-
-func ToMiddleware(middleware app.Handler, order httpx.MiddlewareOrder) httpx.Middleware {
-	return func(next httpx.Handler) httpx.Handler {
-		return func(ctx httpx.Context) error {
-			hc, ok := ctx.(*hertzContext)
-			if !ok {
-				return errors.New("hertzContext required")
-			}
-			switch order {
-			case httpx.MiddlewareAfterNext:
-				err := next(ctx)
-				if err != nil {
-					return err
-				}
-				if hc.ctx.IsAborted() {
-					return nil
-				}
-				middleware.ServeHTTP(hc.baseCtx, hc.ctx)
-				return nil
-			default:
-				middleware.ServeHTTP(hc.baseCtx, hc.ctx)
-				if hc.ctx.IsAborted() {
-					return nil
-				}
-				return next(ctx)
-			}
 		}
 	}
 }

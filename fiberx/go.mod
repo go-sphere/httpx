@@ -5,10 +5,12 @@ go 1.25.5
 require (
 	github.com/go-sphere/httpx v0.0.2-beta.2
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
+	github.com/valyala/fasthttp v1.68.0
 )
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
 	github.com/gofiber/utils/v2 v2.0.0-rc.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -18,7 +20,6 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/tinylib/msgp v1.6.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.68.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect

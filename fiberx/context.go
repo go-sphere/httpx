@@ -1,22 +1,26 @@
 package fiberx
 
 import (
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
+	"github.com/valyala/fasthttp"
 )
 
 var _ httpx.Context = (*fiberContext)(nil)
 
+type ContextKeyType int
+
+const ContextAbortKey ContextKeyType = 1
+
 type fiberContext struct {
 	ctx          fiber.Ctx
 	errorHandler httpx.ErrorHandler
-	aborted      atomic.Bool
 }
 
 func newFiberContext(ctx fiber.Ctx, errorHandler httpx.ErrorHandler) *fiberContext {
@@ -26,7 +30,7 @@ func newFiberContext(ctx fiber.Ctx, errorHandler httpx.ErrorHandler) *fiberConte
 	}
 }
 
-// Request exposes a common, read-only view over incoming HTTP requests.
+// Request (httpx.Request)
 
 func (c *fiberContext) Method() string {
 	return c.ctx.Method()
@@ -66,9 +70,6 @@ func (c *fiberContext) Query(key string) string {
 
 func (c *fiberContext) Queries() map[string][]string {
 	args := c.ctx.Request().URI().QueryArgs()
-	if args.Len() == 0 {
-		return nil
-	}
 	out := make(map[string][]string, args.Len())
 	for keyBytes, valueBytes := range args.All() {
 		key := string(keyBytes)
@@ -81,33 +82,12 @@ func (c *fiberContext) RawQuery() string {
 	return string(c.ctx.Request().URI().QueryString())
 }
 
-func (c *fiberContext) FormValue(key string) string {
-	return c.ctx.FormValue(key)
-}
-
-func (c *fiberContext) FormValues() map[string][]string {
-	form := c.ctx.Request().PostArgs()
-	if form.Len() == 0 {
-		return nil
-	}
-	out := make(map[string][]string, form.Len())
-	for keyBytes, valueBytes := range form.All() {
-		key := string(keyBytes)
-		out[key] = append(out[key], string(valueBytes))
-	}
-	return out
-}
-
-func (c *fiberContext) FormFile(name string) (*multipart.FileHeader, error) {
-	return c.ctx.FormFile(name)
-}
-
-func (c *fiberContext) GetBodyRaw() ([]byte, error) {
-	return c.ctx.BodyRaw(), nil
-}
-
 func (c *fiberContext) Header(key string) string {
 	return c.ctx.Get(key)
+}
+
+func (c *fiberContext) Headers() map[string][]string {
+	return c.ctx.GetReqHeaders()
 }
 
 func (c *fiberContext) Cookie(name string) (string, error) {
@@ -118,7 +98,86 @@ func (c *fiberContext) Cookie(name string) (string, error) {
 	return string(value), nil
 }
 
-// Binder standardizes payload decoding across frameworks.
+func (c *fiberContext) Cookies() map[string]string {
+	out := make(map[string]string)
+	for k, v := range c.ctx.Request().Header.Cookies() {
+		out[string(k)] = string(v)
+	}
+	return out
+}
+
+func (c *fiberContext) FormValue(key string) string {
+	return c.ctx.FormValue(key)
+}
+
+func (c *fiberContext) MultipartForm() (*multipart.Form, error) {
+	return c.ctx.MultipartForm()
+}
+
+func (c *fiberContext) FormFile(name string) (*multipart.FileHeader, error) {
+	return c.ctx.FormFile(name)
+}
+
+func (c *fiberContext) BodyRaw() ([]byte, error) {
+	return c.ctx.BodyRaw(), nil
+}
+
+func (c *fiberContext) BodyReader() io.ReadCloser {
+	return httpx.NewReadCloser(c.ctx.Request().BodyStream(), c.ctx.Request().CloseBodyStream)
+}
+
+// Request helpers not defined on httpx.Request but kept for compatibility.
+
+func (c *fiberContext) Scheme() string {
+	return c.ctx.Protocol()
+}
+
+func (c *fiberContext) Host() string {
+	return c.ctx.Hostname()
+}
+
+func (c *fiberContext) Proto() string {
+	return string(c.ctx.Request().Header.Protocol())
+}
+
+func (c *fiberContext) ContentLength() int64 {
+	return int64(c.ctx.Request().Header.ContentLength())
+}
+
+func (c *fiberContext) UserAgent() string {
+	return string(c.ctx.Request().Header.UserAgent())
+}
+
+func (c *fiberContext) Referer() string {
+	return string(c.ctx.Request().Header.Referer())
+}
+
+func (c *fiberContext) FormValues() (map[string][]string, error) {
+	args := c.ctx.Request().PostArgs()
+	var out map[string][]string
+	if args.Len() > 0 {
+		out = make(map[string][]string, args.Len())
+		for k, v := range args.All() {
+			out[string(k)] = append(out[string(k)], string(v))
+		}
+	}
+	form, err := c.ctx.MultipartForm()
+	if err != nil {
+		if !errors.Is(err, fasthttp.ErrNoMultipartForm) {
+			return nil, err
+		}
+	} else if form != nil {
+		if out == nil {
+			out = make(map[string][]string, len(form.Value))
+		}
+		for k, v := range form.Value {
+			out[k] = append(out[k], v...)
+		}
+	}
+	return out, nil
+}
+
+// Binder (httpx.Binder)
 
 func (c *fiberContext) BindJSON(dst any) error {
 	return c.ctx.Bind().JSON(dst)
@@ -140,7 +199,7 @@ func (c *fiberContext) BindHeader(dst any) error {
 	return c.ctx.Bind().Header(dst)
 }
 
-// Responder writes responses across frameworks.
+// Responder (httpx.Responder)
 
 func (c *fiberContext) Status(code int) {
 	c.ctx.Status(code)
@@ -158,6 +217,11 @@ func (c *fiberContext) Text(code int, s string) {
 	if err != nil && c.errorHandler != nil {
 		c.errorHandler(c, err)
 	}
+}
+
+func (c *fiberContext) NoContent(code int) {
+	c.ctx.Status(code)
+	c.ctx.Response().ResetBody()
 }
 
 func (c *fiberContext) Bytes(code int, b []byte, contentType string) {
@@ -206,24 +270,37 @@ func (c *fiberContext) SetCookie(cookie *http.Cookie) {
 	if cookie == nil {
 		return
 	}
-	fc := &fiber.Cookie{
-		Name:     cookie.Name,
-		Value:    cookie.Value,
-		Path:     cookie.Path,
-		Domain:   cookie.Domain,
-		Expires:  cookie.Expires,
-		MaxAge:   cookie.MaxAge,
-		Secure:   cookie.Secure,
-		HTTPOnly: cookie.HttpOnly,
-		SameSite: mapSameSite(cookie.SameSite),
+	if s := cookie.String(); s != "" {
+		c.ctx.Response().Header.Add(fiber.HeaderSetCookie, s)
 	}
-	if fc.Path == "" {
-		fc.Path = "/"
-	}
-	c.ctx.Cookie(fc)
 }
 
-// StateStore carries request-scoped values.
+// Responder helpers not defined on httpx.Responder.
+
+func (c *fiberContext) Stream(code int, contentType string, fn func(io.Writer) error) {
+	if contentType != "" {
+		c.ctx.Set(fiber.HeaderContentType, contentType)
+	}
+	if code > 0 {
+		c.ctx.Status(code)
+	}
+	if code > 0 {
+		c.ctx.Status(code)
+	}
+	reader, writer := io.Pipe()
+	go func() {
+		defer func() { _ = writer.Close() }()
+		if err := fn(writer); err != nil {
+			_ = writer.CloseWithError(err)
+			if c.errorHandler != nil {
+				c.errorHandler(c, err)
+			}
+		}
+	}()
+	c.ctx.Response().SetBodyStream(reader, -1)
+}
+
+// StateStore (httpx.StateStore)
 
 func (c *fiberContext) Set(key string, val any) {
 	c.ctx.Locals(key, val)
@@ -237,36 +314,39 @@ func (c *fiberContext) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context standardizes context operations across frameworks.
-
-func (c *fiberContext) Deadline() (deadline time.Time, ok bool) {
-	return c.ctx.Deadline()
-}
-
-func (c *fiberContext) Done() <-chan struct{} {
-	return c.ctx.Done()
-}
-
-func (c *fiberContext) Err() error {
-	return c.ctx.Err()
-}
-
-func (c *fiberContext) Value(key any) any {
-	return c.ctx.Value(key)
-}
-
-// Aborter allows a handler to short-circuit the remaining chain.
+// Aborter (httpx.Aborter)
 
 func (c *fiberContext) Abort() {
-	if c.aborted.Swap(true) {
-		return
-	}
-	c.ctx.Response().ResetBody()
+	c.ctx.Locals(ContextAbortKey, true)
 }
 
+func (c *fiberContext) IsAborted() bool {
+	value := c.ctx.Locals(ContextAbortKey)
+	if flag, ok := value.(bool); ok {
+		return flag
+	}
+	return false
+}
+
+// Aborter helpers not defined on httpx.Aborter.
+
 func (c *fiberContext) AbortWithStatus(code int) {
+	c.Abort()
 	if code > 0 {
 		c.ctx.Status(code)
+	}
+}
+
+func (c *fiberContext) AbortWithError(err error) {
+	if err == nil {
+		c.Abort()
+		return
+	}
+	if c.errorHandler != nil {
+		c.errorHandler(c, err)
+	} else {
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
 	}
 	c.Abort()
 }
@@ -279,25 +359,39 @@ func (c *fiberContext) AbortWithStatusError(code int, err error) {
 }
 
 func (c *fiberContext) AbortWithStatusJSON(code int, obj interface{}) {
+	c.Abort()
 	err := c.ctx.Status(code).JSON(obj)
 	if err != nil && c.errorHandler != nil {
 		c.errorHandler(c, err)
 	}
 }
 
-func (c *fiberContext) IsAborted() bool {
-	return c.aborted.Load()
+// Context (context.Context + Next)
+
+func (c *fiberContext) Deadline() (deadline time.Time, ok bool) {
+	return c.ctx.RequestCtx().Deadline()
 }
 
-func mapSameSite(mode http.SameSite) string {
-	switch mode {
-	case http.SameSiteStrictMode:
-		return fiber.CookieSameSiteStrictMode
-	case http.SameSiteNoneMode:
-		return fiber.CookieSameSiteNoneMode
-	case http.SameSiteDefaultMode:
-		return fiber.CookieSameSiteDisabled
-	default:
-		return fiber.CookieSameSiteLaxMode
+func (c *fiberContext) Done() <-chan struct{} {
+	return c.ctx.RequestCtx().Done()
+}
+
+func (c *fiberContext) Err() error {
+	return c.ctx.RequestCtx().Err()
+}
+
+func (c *fiberContext) Value(key any) any {
+	if keyString, ok := key.(string); ok {
+		if val, exists := c.Get(keyString); exists {
+			return val
+		}
 	}
+	return c.ctx.RequestCtx().Value(key)
+}
+
+func (c *fiberContext) Next() error {
+	if c.IsAborted() {
+		return nil
+	}
+	return c.ctx.Next()
 }
