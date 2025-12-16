@@ -26,7 +26,7 @@ func NewConfig(opts ...Option) *Config {
 	if conf.engine == nil {
 		conf.engine = fiber.New()
 	}
-	if conf.listen != nil {
+	if conf.listen == nil {
 		conf.listen = func(app *fiber.App) error {
 			return app.Listen(":8080")
 		}
