@@ -35,7 +35,7 @@ func (c *hertzContext) Method() string {
 }
 
 func (c *hertzContext) Path() string {
-	return string(c.ctx.Path())
+	return string(c.ctx.Request.Path())
 }
 
 func (c *hertzContext) FullPath() string {
