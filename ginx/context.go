@@ -14,6 +14,8 @@ import (
 
 var _ httpx.Context = (*ginContext)(nil)
 
+var queryBinding = QueryBinding{}
+
 type ginContext struct {
 	ctx          *gin.Context
 	errorHandler httpx.ErrorHandler
@@ -103,7 +105,7 @@ func (c *ginContext) BindJSON(dst any) error {
 }
 
 func (c *ginContext) BindQuery(dst any) error {
-	return c.ctx.ShouldBindQuery(dst)
+	return queryBinding.Bind(c.ctx.Request, dst)
 }
 
 func (c *ginContext) BindForm(dst any) error {
