@@ -337,9 +337,8 @@ func (c *fiberContext) Value(key any) any {
 	return c.ctx.RequestCtx().Value(key)
 }
 
-func (c *fiberContext) Next() error {
-	if c.IsAborted() {
-		return nil
+func (c *fiberContext) Next() {
+	if !c.IsAborted() {
+		_ = c.ctx.Next()
 	}
-	return c.ctx.Next()
 }

@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/go-sphere/httpx v0.0.2-beta.21
+	github.com/go-sphere/httpx v0.0.2-beta.22
 )
 
 require (

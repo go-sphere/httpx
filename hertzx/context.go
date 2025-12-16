@@ -353,9 +353,8 @@ func (c *hertzContext) Value(key any) any {
 	return c.baseCtx.Value(key)
 }
 
-func (c *hertzContext) Next() error {
+func (c *hertzContext) Next() {
 	c.ctx.Next(c.baseCtx)
-	return nil
 }
 
 func mapSameSite(mode http.SameSite) protocol.CookieSameSite {

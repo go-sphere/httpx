@@ -304,7 +304,6 @@ func (c *ginContext) Value(key any) any {
 	return c.ctx.Value(key)
 }
 
-func (c *ginContext) Next() error {
+func (c *ginContext) Next() {
 	c.ctx.Next()
-	return nil
 }
