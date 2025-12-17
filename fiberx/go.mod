@@ -4,9 +4,12 @@ go 1.25.5
 
 require (
 	github.com/go-sphere/httpx v0.0.2-beta.22
+	github.com/go-sphere/httpx/testutil v0.0.0
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
 	github.com/valyala/fasthttp v1.68.0
 )
+
+replace github.com/go-sphere/httpx/testutil => ../testutil
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect

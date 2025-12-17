@@ -13,9 +13,9 @@ import (
 
 var _ httpx.Context = (*fiberContext)(nil)
 
-type ContextKeyType int
+type contextKeyType int
 
-const ContextAbortKey ContextKeyType = 1
+const contextAbortKey contextKeyType = 1
 
 type fiberContext struct {
 	ctx fiber.Ctx
@@ -227,15 +227,11 @@ func (c *fiberContext) Get(key string) (any, bool) {
 // Aborter (httpx.Aborter)
 
 func (c *fiberContext) Abort() {
-	c.ctx.Locals(ContextAbortKey, true)
+	Abort(c.ctx)
 }
 
 func (c *fiberContext) IsAborted() bool {
-	value := c.ctx.Locals(ContextAbortKey)
-	if flag, ok := value.(bool); ok {
-		return flag
-	}
-	return false
+	return IsAborted(c.ctx)
 }
 
 // Context (context.Context + Next)
@@ -262,7 +258,21 @@ func (c *fiberContext) Value(key any) any {
 }
 
 func (c *fiberContext) Next() {
-	if !c.IsAborted() {
-		_ = c.ctx.Next()
+	if c.IsAborted() {
+		return
 	}
+	_ = c.ctx.Next()
+}
+
+func IsAborted(ctx fiber.Ctx) bool {
+	value := ctx.Locals(contextAbortKey)
+	if value == nil {
+		return false
+	}
+	flag, ok := value.(bool)
+	return ok && flag
+}
+
+func Abort(ctx fiber.Ctx) {
+	ctx.Locals(contextAbortKey, true)
 }
