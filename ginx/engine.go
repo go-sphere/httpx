@@ -95,7 +95,9 @@ func (e *Engine) Start() error {
 
 func (e *Engine) Stop(ctx context.Context) error {
 	err := httpx.Close(ctx, e.server)
-	e.running.Store(false)
+	if err == nil {
+		e.running.Store(false)
+	}
 	return err
 }
 

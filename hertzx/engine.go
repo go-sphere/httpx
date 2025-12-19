@@ -67,7 +67,9 @@ func (e *Engine) Start() error {
 
 func (e *Engine) Stop(ctx context.Context) error {
 	err := e.engine.Shutdown(ctx)
-	e.running.Store(false)
+	if err == nil {
+		e.running.Store(false)
+	}
 	return err
 }
 

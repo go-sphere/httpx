@@ -61,16 +61,19 @@ func (e *Engine) Start() error {
 	e.listener = listener
 	e.addr = listener.Addr().String()
 	
-	go func() {
-		e.server.Serve(listener)
-	}()
-	
-	return nil
+	// Serve blocks until the server is shut down
+	err = e.server.Serve(listener)
+	if err != nil {
+		e.listener = nil
+	}
+	return err
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
 	if e.listener != nil {
-		return e.listener.Close()
+		err := e.listener.Close()
+		e.listener = nil
+		return err
 	}
 	return nil
 }
