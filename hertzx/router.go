@@ -58,6 +58,41 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 	r.group.HEAD(urlPattern, handler)
 }
 
+// GET registers a new GET route for a path with matching handler.
+func (r *Router) GET(path string, h httpx.Handler) {
+	r.group.GET(path, r.toHertzHandler(h))
+}
+
+// POST registers a new POST route for a path with matching handler.
+func (r *Router) POST(path string, h httpx.Handler) {
+	r.group.POST(path, r.toHertzHandler(h))
+}
+
+// PUT registers a new PUT route for a path with matching handler.
+func (r *Router) PUT(path string, h httpx.Handler) {
+	r.group.PUT(path, r.toHertzHandler(h))
+}
+
+// DELETE registers a new DELETE route for a path with matching handler.
+func (r *Router) DELETE(path string, h httpx.Handler) {
+	r.group.DELETE(path, r.toHertzHandler(h))
+}
+
+// PATCH registers a new PATCH route for a path with matching handler.
+func (r *Router) PATCH(path string, h httpx.Handler) {
+	r.group.PATCH(path, r.toHertzHandler(h))
+}
+
+// HEAD registers a new HEAD route for a path with matching handler.
+func (r *Router) HEAD(path string, h httpx.Handler) {
+	r.group.HEAD(path, r.toHertzHandler(h))
+}
+
+// OPTIONS registers a new OPTIONS route for a path with matching handler.
+func (r *Router) OPTIONS(path string, h httpx.Handler) {
+	r.group.OPTIONS(path, r.toHertzHandler(h))
+}
+
 func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
 		hc := newHertzContext(ctx, rc)

@@ -30,13 +30,31 @@ type Router interface {
 	Registrar
 	BasePath() string
 	Group(prefix string, m ...Middleware) Router
+
+	// HTTP method shortcuts for ergonomic API
+
+	GET(path string, h Handler)
+	POST(path string, h Handler)
+	PUT(path string, h Handler)
+	DELETE(path string, h Handler)
+	PATCH(path string, h Handler)
+	HEAD(path string, h Handler)
+	OPTIONS(path string, h Handler)
 }
 
 // Engine is the entrypoint: it can serve HTTP, apply global middleware,
 // and create groups, but cannot register routes directly.
 type Engine interface {
 	MiddlewareScope
+	Group(prefix string, m ...Middleware) Router
+
+	// Enhanced lifecycle management
+
 	Start() error
 	Stop(ctx context.Context) error
-	Group(prefix string, m ...Middleware) Router
+	IsRunning() bool // Server status check
+
+	// Server configuration access
+
+	Addr() string // Get server listening address
 }

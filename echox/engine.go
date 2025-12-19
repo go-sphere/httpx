@@ -3,6 +3,7 @@ package echox
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
@@ -58,17 +59,20 @@ func WithServerAddr(addr string) Option {
 }
 
 type Engine struct {
-	engine *echo.Echo
-	server *http.Server
+	engine  *echo.Echo
+	server  *http.Server
+	running atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	conf.server.Handler = conf.engine
-	return &Engine{
+	engine := &Engine{
 		engine: conf.engine,
 		server: conf.server,
 	}
+	engine.running.Store(false)
+	return engine
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
@@ -84,9 +88,29 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 
 func (e *Engine) Start() error {
 	e.server.Handler = e.engine
-	return httpx.Start(e.server)
+	e.running.Store(true)
+	err := httpx.Start(e.server)
+	if err != nil {
+		e.running.Store(false)
+	}
+	return err
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
-	return httpx.Close(ctx, e.server)
+	err := httpx.Close(ctx, e.server)
+	e.running.Store(false)
+	return err
+}
+
+// IsRunning returns true if the server is currently running.
+func (e *Engine) IsRunning() bool {
+	return e.running.Load()
+}
+
+// Addr returns the server listening address.
+func (e *Engine) Addr() string {
+	if e.server != nil {
+		return e.server.Addr
+	}
+	return ""
 }

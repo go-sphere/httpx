@@ -53,6 +53,41 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 	r.group.Use(append([]any{prefix}, r.combineHandlers(static.New("", static.Config{FS: fs}))...))
 }
 
+// GET registers a new GET route for a path with matching handler.
+func (r *Router) GET(path string, h httpx.Handler) {
+	r.Handle("GET", path, h)
+}
+
+// POST registers a new POST route for a path with matching handler.
+func (r *Router) POST(path string, h httpx.Handler) {
+	r.Handle("POST", path, h)
+}
+
+// PUT registers a new PUT route for a path with matching handler.
+func (r *Router) PUT(path string, h httpx.Handler) {
+	r.Handle("PUT", path, h)
+}
+
+// DELETE registers a new DELETE route for a path with matching handler.
+func (r *Router) DELETE(path string, h httpx.Handler) {
+	r.Handle("DELETE", path, h)
+}
+
+// PATCH registers a new PATCH route for a path with matching handler.
+func (r *Router) PATCH(path string, h httpx.Handler) {
+	r.Handle("PATCH", path, h)
+}
+
+// HEAD registers a new HEAD route for a path with matching handler.
+func (r *Router) HEAD(path string, h httpx.Handler) {
+	r.Handle("HEAD", path, h)
+}
+
+// OPTIONS registers a new OPTIONS route for a path with matching handler.
+func (r *Router) OPTIONS(path string, h httpx.Handler) {
+	r.Handle("OPTIONS", path, h)
+}
+
 func (r *Router) combineHandlers(h fiber.Handler) []any {
 	mid := make([]any, 0, len(r.middlewares)+1)
 	for _, m := range r.middlewares {

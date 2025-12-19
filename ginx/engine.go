@@ -3,6 +3,7 @@ package ginx
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
@@ -58,8 +59,9 @@ func WithServerAddr(addr string) Option {
 }
 
 type Engine struct {
-	engine *gin.Engine
-	server *http.Server
+	engine  *gin.Engine
+	server  *http.Server
+	running atomic.Bool
 }
 
 // New constructs a gin-backed Engine using core options.
@@ -83,9 +85,29 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 
 func (e *Engine) Start() error {
 	e.server.Handler = e.engine
-	return httpx.Start(e.server)
+	e.running.Store(true)
+	err := httpx.Start(e.server)
+	if err != nil {
+		e.running.Store(false)
+	}
+	return err
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
-	return httpx.Close(ctx, e.server)
+	err := httpx.Close(ctx, e.server)
+	e.running.Store(false)
+	return err
+}
+
+// IsRunning returns true if the server is currently running.
+func (e *Engine) IsRunning() bool {
+	return e.running.Load()
+}
+
+// Addr returns the server listening address.
+func (e *Engine) Addr() string {
+	if e.server != nil {
+		return e.server.Addr
+	}
+	return ""
 }

@@ -12,29 +12,35 @@ type H map[string]any
 // Request exposes a common, read-only view over incoming HTTP requests.
 type Request interface {
 	Method() string
-	Path() string
-	FullPath() string // best-effort; empty if unsupported
-	ClientIP() string
+	Path() string     // Always returns request path
+	FullPath() string // Returns route pattern when available, empty otherwise
+	ClientIP() string // Best-effort client IP detection
 
+	// Parameter access with consistent behavior
 	Param(key string) string
-	Params() map[string]string
+	Params() map[string]string // nil if no params
 
+	// Query handling with normalized behavior
 	Query(key string) string
-	Queries() map[string][]string
+	Queries() map[string][]string // nil if no queries
 	RawQuery() string
 
+	// Header access with canonical keys
 	Header(key string) string
-	Headers() map[string][]string
+	Headers() map[string][]string // Canonical MIME header keys
 
-	Cookie(name string) (string, error)
-	Cookies() map[string]string
+	// Cookie handling with consistent error behavior
+	Cookie(name string) (string, error) // Returns http.ErrNoCookie when not found
+	Cookies() map[string]string         // nil if no cookies
 
+	// Form data access
 	FormValue(key string) string
 	MultipartForm() (*multipart.Form, error)
 	FormFile(name string) (*multipart.FileHeader, error)
 
-	BodyRaw() ([]byte, error)
-	BodyReader() io.ReadCloser
+	// Body access with clear consumption semantics
+	BodyRaw() ([]byte, error)  // May consume body
+	BodyReader() io.ReadCloser // Returns reader, may be consumed
 }
 
 // Binder standardizes payload decoding across frameworks.

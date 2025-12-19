@@ -44,6 +44,41 @@ func (r *Router) StaticFS(prefix string, fs fs.FS) {
 	r.group.StaticFS(prefix, http.FS(fs))
 }
 
+// GET registers a new GET route for a path with matching handler.
+func (r *Router) GET(path string, h httpx.Handler) {
+	r.group.GET(path, r.toGinHandler(h))
+}
+
+// POST registers a new POST route for a path with matching handler.
+func (r *Router) POST(path string, h httpx.Handler) {
+	r.group.POST(path, r.toGinHandler(h))
+}
+
+// PUT registers a new PUT route for a path with matching handler.
+func (r *Router) PUT(path string, h httpx.Handler) {
+	r.group.PUT(path, r.toGinHandler(h))
+}
+
+// DELETE registers a new DELETE route for a path with matching handler.
+func (r *Router) DELETE(path string, h httpx.Handler) {
+	r.group.DELETE(path, r.toGinHandler(h))
+}
+
+// PATCH registers a new PATCH route for a path with matching handler.
+func (r *Router) PATCH(path string, h httpx.Handler) {
+	r.group.PATCH(path, r.toGinHandler(h))
+}
+
+// HEAD registers a new HEAD route for a path with matching handler.
+func (r *Router) HEAD(path string, h httpx.Handler) {
+	r.group.HEAD(path, r.toGinHandler(h))
+}
+
+// OPTIONS registers a new OPTIONS route for a path with matching handler.
+func (r *Router) OPTIONS(path string, h httpx.Handler) {
+	r.group.OPTIONS(path, r.toGinHandler(h))
+}
+
 func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 	return func(gc *gin.Context) {
 		ctx := newGinContext(gc)
