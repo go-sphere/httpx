@@ -110,7 +110,7 @@ func (c *echoContext) Headers() map[string][]string {
 func (c *echoContext) Cookie(name string) (string, error) {
 	cookie, err := c.ctx.Cookie(name)
 	if err != nil {
-		return "", err
+		return "", http.ErrNoCookie
 	}
 	return cookie.Value, nil
 }

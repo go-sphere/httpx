@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -92,7 +93,7 @@ func (c *hertzContext) Headers() map[string][]string {
 	}
 	out := make(map[string][]string, header.Len())
 	header.VisitAll(func(k, v []byte) {
-		key := string(k)
+		key := textproto.CanonicalMIMEHeaderKey(string(k))
 		out[key] = append(out[key], string(v))
 	})
 	return out

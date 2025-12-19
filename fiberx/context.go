@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"time"
 
 	"github.com/go-sphere/httpx"
@@ -67,6 +68,9 @@ func (c *fiberContext) Query(key string) string {
 
 func (c *fiberContext) Queries() map[string][]string {
 	args := c.ctx.Request().URI().QueryArgs()
+	if args.Len() == 0 {
+		return nil
+	}
 	out := make(map[string][]string, args.Len())
 	for keyBytes, valueBytes := range args.All() {
 		key := string(keyBytes)
@@ -84,7 +88,16 @@ func (c *fiberContext) Header(key string) string {
 }
 
 func (c *fiberContext) Headers() map[string][]string {
-	return c.ctx.GetReqHeaders()
+	src := c.ctx.GetReqHeaders()
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(src))
+	for k, v := range src {
+		ck := textproto.CanonicalMIMEHeaderKey(k)
+		out[ck] = append([]string(nil), v...)
+	}
+	return out
 }
 
 func (c *fiberContext) Cookie(name string) (string, error) {
@@ -99,6 +112,9 @@ func (c *fiberContext) Cookies() map[string]string {
 	out := make(map[string]string)
 	for k, v := range c.ctx.Request().Header.Cookies() {
 		out[string(k)] = string(v)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

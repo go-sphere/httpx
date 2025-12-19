@@ -65,7 +65,15 @@ func (c *ginContext) Query(key string) string {
 }
 
 func (c *ginContext) Queries() map[string][]string {
-	return c.ctx.Request.URL.Query()
+	queries := c.ctx.Request.URL.Query()
+	if len(queries) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(queries))
+	for k, v := range queries {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
 }
 
 func (c *ginContext) RawQuery() string {
@@ -90,7 +98,11 @@ func (c *ginContext) Headers() map[string][]string {
 }
 
 func (c *ginContext) Cookie(name string) (string, error) {
-	return c.ctx.Cookie(name)
+	value, err := c.ctx.Cookie(name)
+	if err != nil {
+		return "", http.ErrNoCookie
+	}
+	return value, nil
 }
 
 func (c *ginContext) Cookies() map[string]string {
