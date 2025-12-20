@@ -1,9 +1,10 @@
-package echox
+package integration
 
 import (
 	"testing"
 
 	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/httpx/echox"
 	httpxtesting "github.com/go-sphere/httpx/testing"
 	"github.com/labstack/echo/v4"
 )
@@ -13,8 +14,8 @@ import (
 // other developers who want to integrate the testing framework.
 func TestEchoxIntegration(t *testing.T) {
 	// Create an echox engine with test configuration
-	engine := New(
-		WithServerAddr(":0"), // Use random port for testing
+	engine := echox.New(
+		echox.WithServerAddr(":0"), // Use random port for testing
 	)
 	
 	// Test basic engine functionality
@@ -86,7 +87,7 @@ func TestEchoxIntegration(t *testing.T) {
 // TestEchoxTestingFrameworkIntegration demonstrates how to properly integrate
 // the testing framework with echox for comprehensive testing.
 func TestEchoxTestingFrameworkIntegration(t *testing.T) {
-	engine := New(WithServerAddr(":0"))
+	engine := echox.New(echox.WithServerAddr(":0"))
 	
 	// Test individual testing components
 	t.Run("AbortTrackerIntegration", func(t *testing.T) {
@@ -169,7 +170,7 @@ func TestEchoxTestingFrameworkIntegration(t *testing.T) {
 // TestEchoxAbortTracking demonstrates how to test middleware abort behavior
 // specifically with the echox adapter.
 func TestEchoxAbortTracking(t *testing.T) {
-	engine := New(WithServerAddr(":0"))
+	engine := echox.New(echox.WithServerAddr(":0"))
 	
 	// Create abort tracker for testing middleware behavior
 	tracker := httpxtesting.NewAbortTracker()
@@ -209,9 +210,9 @@ func TestEchoxSpecificFeatures(t *testing.T) {
 	// Test with echo's built-in middleware
 	echoEngine := echo.New()
 	
-	engine := New(
-		WithEngine(echoEngine),
-		WithServerAddr(":0"),
+	engine := echox.New(
+		echox.WithEngine(echoEngine),
+		echox.WithServerAddr(":0"),
 	)
 	
 	// Test router functionality with echo-specific features
@@ -258,7 +259,7 @@ func TestEchoxSpecificFeatures(t *testing.T) {
 // BenchmarkEchoxPerformance runs performance benchmarks for the echox adapter
 // using the testing framework's benchmark tools.
 func BenchmarkEchoxPerformance(b *testing.B) {
-	engine := New(WithServerAddr(":0"))
+	engine := echox.New(echox.WithServerAddr(":0"))
 	suite := httpxtesting.NewTestSuite("echox-benchmark", engine)
 	
 	// Run all performance benchmarks
@@ -269,7 +270,7 @@ func BenchmarkEchoxPerformance(b *testing.B) {
 // in a simple, straightforward way.
 func Example_echoxIntegration() {
 	// Create echox engine
-	engine := New(WithServerAddr(":8080"))
+	engine := echox.New(echox.WithServerAddr(":8080"))
 	
 	// Create test suite
 	suite := httpxtesting.NewTestSuite("echox-example", engine)

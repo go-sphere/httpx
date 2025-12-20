@@ -1,9 +1,10 @@
-package fasthttpx
+package integration
 
 import (
 	"testing"
 
 	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/httpx/fasthttpx"
 	httpxtesting "github.com/go-sphere/httpx/testing"
 )
 
@@ -12,7 +13,7 @@ import (
 // other developers who want to integrate the testing framework.
 func TestFasthttpxIntegration(t *testing.T) {
 	// Create a fasthttpx engine with test configuration
-	engine := New()
+	engine := fasthttpx.New()
 	engine.SetAddr(":0") // Use random port for testing
 	
 	// Test basic engine functionality
@@ -84,7 +85,7 @@ func TestFasthttpxIntegration(t *testing.T) {
 // TestFasthttpxTestingFrameworkIntegration demonstrates how to properly integrate
 // the testing framework with fasthttpx for comprehensive testing.
 func TestFasthttpxTestingFrameworkIntegration(t *testing.T) {
-	engine := New()
+	engine := fasthttpx.New()
 	engine.SetAddr(":0")
 	
 	// Test individual testing components
@@ -168,7 +169,7 @@ func TestFasthttpxTestingFrameworkIntegration(t *testing.T) {
 // TestFasthttpxAbortTracking demonstrates how to test middleware abort behavior
 // specifically with the fasthttpx adapter.
 func TestFasthttpxAbortTracking(t *testing.T) {
-	engine := New()
+	engine := fasthttpx.New()
 	engine.SetAddr(":0")
 	
 	// Create abort tracker for testing middleware behavior
@@ -206,7 +207,7 @@ func TestFasthttpxAbortTracking(t *testing.T) {
 // TestFasthttpxSpecificFeatures tests fasthttpx-specific features and behaviors
 // that might differ from other adapters.
 func TestFasthttpxSpecificFeatures(t *testing.T) {
-	engine := New()
+	engine := fasthttpx.New()
 	engine.SetAddr(":0")
 	
 	// Test router functionality with fasthttp-specific features
@@ -259,7 +260,7 @@ func TestFasthttpxSpecificFeatures(t *testing.T) {
 // BenchmarkFasthttpxPerformance runs performance benchmarks for the fasthttpx adapter
 // using the testing framework's benchmark tools.
 func BenchmarkFasthttpxPerformance(b *testing.B) {
-	engine := New()
+	engine := fasthttpx.New()
 	engine.SetAddr(":0")
 	suite := httpxtesting.NewTestSuite("fasthttpx-benchmark", engine)
 	
@@ -271,7 +272,7 @@ func BenchmarkFasthttpxPerformance(b *testing.B) {
 // in a simple, straightforward way.
 func Example_fasthttpxIntegration() {
 	// Create fasthttpx engine
-	engine := New()
+	engine := fasthttpx.New()
 	engine.SetAddr(":8080")
 	
 	// Create test suite

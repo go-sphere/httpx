@@ -2,8 +2,8 @@
 # Variables
 # ============================================================================
 
-# All available adapters
-ADAPTERS := ginx fiberx echox fasthttpx hertzx testing
+# All available adapters (for building/linting)
+ADAPTERS := ginx fiberx echox fasthttpx hertzx
 
 # Tag variable for versioning
 TAG ?=
@@ -26,19 +26,6 @@ define lint_directory
 		nilaway -include-pkgs="$(MODULE)" ./...
 endef
 
-# Test a specific adapter
-define test_adapter
-	@echo ""
-	@echo "Testing $(1) adapter..."
-	@echo "----------------------------"
-	@if cd $(1) && go test -v . 2>&1; then \
-		echo "✅ $(1) tests PASSED"; \
-	else \
-		echo "❌ $(1) tests FAILED"; \
-		exit 1; \
-	fi
-endef
-
 # ============================================================================
 # Development Commands
 # ============================================================================
@@ -56,67 +43,77 @@ lint-all:
 	$(call lint_directory,./fasthttpx)
 	$(call lint_directory,./hertzx)
 	$(call lint_directory,./testing)
+	$(call lint_directory,./integration)
 
 # ============================================================================
 # Testing Commands
 # ============================================================================
 
-.PHONY: test test-all test-ginx test-fiberx test-echox test-fasthttpx test-hertzx test-testing
+.PHONY: test test-all test-ginx test-fiberx test-echox test-fasthttpx test-hertzx test-testing test-integration
 
 test: test-all
 
-# Test all adapters with summary
+# Test all integration tests
 test-all:
-	@echo "Testing all httpx adapters..."
+	@echo "Running all integration tests..."
+	cd integration && go test -v ./...
+
+# Test specific adapter integration tests
+test-ginx:
+	@echo "Running ginx integration tests..."
+	cd integration && go test -v -run TestGinx
+
+test-fiberx:
+	@echo "Running fiberx integration tests..."
+	cd integration && go test -v -run TestFiberx
+
+test-echox:
+	@echo "Running echox integration tests..."
+	cd integration && go test -v -run TestEchox
+
+test-fasthttpx:
+	@echo "Running fasthttpx integration tests..."
+	cd integration && go test -v -run TestFasthttp
+
+test-hertzx:
+	@echo "Running hertzx integration tests..."
+	cd integration && go test -v -run TestHertz
+
+# Test testing framework
+test-testing:
+	@echo "Running testing framework tests..."
+	cd testing && go test -v ./...
+
+# Alias for test-all
+test-integration: test-all
+
+# ============================================================================
+# Build Commands
+# ============================================================================
+
+.PHONY: build build-all
+
+build: build-all
+
+# Build all adapter modules
+build-all:
+	@echo "Building all httpx adapter modules..."
 	@echo "=================================================="
-	@passed=0; failed=0; failed_adapters=""; \
-	for adapter in $(ADAPTERS); do \
+	@for adapter in $(ADAPTERS); do \
 		echo ""; \
-		echo "Testing $$adapter adapter..."; \
+		echo "Building $$adapter adapter..."; \
 		echo "----------------------------"; \
-		if cd $$adapter && go test -v . 2>&1; then \
-			echo "✅ $$adapter tests PASSED"; \
-			passed=$$((passed + 1)); \
+		if cd $$adapter && go build ./... 2>&1; then \
+			echo "✅ $$adapter build PASSED"; \
 			cd ..; \
 		else \
-			echo "❌ $$adapter tests FAILED"; \
-			failed=$$((failed + 1)); \
-			failed_adapters="$$failed_adapters $$adapter"; \
+			echo "❌ $$adapter build FAILED"; \
 			cd ..; \
+			exit 1; \
 		fi; \
 	done; \
 	echo ""; \
-	echo "=================================================="; \
-	echo "Test Summary:"; \
-	echo "✅ Passed: $$passed adapters"; \
-	echo "❌ Failed: $$failed adapters"; \
-	if [ $$failed -gt 0 ]; then \
-		echo "Failed adapters:$$failed_adapters"; \
-		echo ""; \
-		echo "Note: Some failures may be expected due to adapter-specific"; \
-		echo "implementation differences (e.g., BasePath behavior)."; \
-	fi; \
-	echo ""; \
-	echo "Integration testing complete!"
-
-# Individual adapter tests
-test-ginx:
-	$(call test_adapter,ginx)
-
-test-fiberx:
-	$(call test_adapter,fiberx)
-
-test-echox:
-	$(call test_adapter,echox)
-
-test-fasthttpx:
-	$(call test_adapter,fasthttpx)
-
-test-hertzx:
-	$(call test_adapter,hertzx)
-
-test-testing:
-	$(call test_adapter,testing)
+	echo "All adapters built successfully!"
 
 # ============================================================================
 # Git Tagging Commands
@@ -182,15 +179,17 @@ help:
 	@echo ""
 	@echo "Development:"
 	@echo "  lint, lint-all    - Run linting on all modules"
+	@echo "  build, build-all  - Build all adapter modules"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test, test-all    - Run tests on all adapters"
-	@echo "  test-ginx         - Test ginx adapter only"
-	@echo "  test-fiberx       - Test fiberx adapter only"
-	@echo "  test-echox        - Test echox adapter only"
-	@echo "  test-fasthttpx    - Test fasthttpx adapter only"
-	@echo "  test-hertzx       - Test hertzx adapter only"
-	@echo "  test-testing      - Test testing framework only"
+	@echo "  test, test-all    - Run all integration tests"
+	@echo "  test-ginx         - Run ginx integration tests only"
+	@echo "  test-fiberx       - Run fiberx integration tests only"
+	@echo "  test-echox        - Run echox integration tests only"
+	@echo "  test-fasthttpx    - Run fasthttpx integration tests only"
+	@echo "  test-hertzx       - Run hertzx integration tests only"
+	@echo "  test-testing      - Run testing framework tests only"
+	@echo "  test-integration  - Alias for test-all"
 	@echo ""
 	@echo "Git Tagging:"
 	@echo "  tag TAG=v0.0.1    - Create and push single tag"
@@ -199,3 +198,6 @@ help:
 	@echo ""
 	@echo "Other:"
 	@echo "  help              - Show this help message"
+	@echo ""
+	@echo "Note: Individual adapter modules (ginx, fiberx, etc.) no longer"
+	@echo "      have tests. All integration tests are in the integration module."

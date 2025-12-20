@@ -1,9 +1,10 @@
-package fiberx
+package integration
 
 import (
 	"testing"
 
 	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/httpx/fiberx"
 	httpxtesting "github.com/go-sphere/httpx/testing"
 	"github.com/gofiber/fiber/v3"
 )
@@ -13,8 +14,8 @@ import (
 // other developers who want to integrate the testing framework.
 func TestFiberxIntegration(t *testing.T) {
 	// Create a fiberx engine with test configuration
-	engine := New(
-		WithListen(":0"), // Use random port for testing
+	engine := fiberx.New(
+		fiberx.WithListen(":0"), // Use random port for testing
 	)
 	
 	// Test basic engine functionality
@@ -86,7 +87,7 @@ func TestFiberxIntegration(t *testing.T) {
 // TestFiberxTestingFrameworkIntegration demonstrates how to properly integrate
 // the testing framework with fiberx for comprehensive testing.
 func TestFiberxTestingFrameworkIntegration(t *testing.T) {
-	engine := New(WithListen(":0"))
+	engine := fiberx.New(fiberx.WithListen(":0"))
 	
 	// Test individual testing components
 	t.Run("AbortTrackerIntegration", func(t *testing.T) {
@@ -169,7 +170,7 @@ func TestFiberxTestingFrameworkIntegration(t *testing.T) {
 // TestFiberxAbortTracking demonstrates how to test middleware abort behavior
 // specifically with the fiberx adapter.
 func TestFiberxAbortTracking(t *testing.T) {
-	engine := New(WithListen(":0"))
+	engine := fiberx.New(fiberx.WithListen(":0"))
 	
 	// Create abort tracker for testing middleware behavior
 	tracker := httpxtesting.NewAbortTracker()
@@ -218,9 +219,9 @@ func TestFiberxSpecificFeatures(t *testing.T) {
 		return c.Next()
 	})
 	
-	engine := New(
-		WithEngine(fiberApp),
-		WithListen(":0"),
+	engine := fiberx.New(
+		fiberx.WithEngine(fiberApp),
+		fiberx.WithListen(":0"),
 	)
 	
 	// Test router functionality with fiber-specific features
@@ -246,7 +247,7 @@ func TestFiberxSpecificFeatures(t *testing.T) {
 // TestFiberxEngineLifecycle tests the engine start/stop lifecycle
 // which might behave differently in fiber compared to other adapters.
 func TestFiberxEngineLifecycle(t *testing.T) {
-	engine := New(WithListen(":0"))
+	engine := fiberx.New(fiberx.WithListen(":0"))
 	
 	// Test engine lifecycle management
 	t.Run("EngineLifecycle", func(t *testing.T) {
@@ -263,9 +264,9 @@ func TestFiberxConcurrentRequests(t *testing.T) {
 		// Configure for testing
 	})
 	
-	engine := New(
-		WithEngine(fiberApp),
-		WithListen(":0"),
+	engine := fiberx.New(
+		fiberx.WithEngine(fiberApp),
+		fiberx.WithListen(":0"),
 	)
 	
 	// Create test suite with higher concurrency settings
@@ -288,7 +289,7 @@ func TestFiberxConcurrentRequests(t *testing.T) {
 // BenchmarkFiberxPerformance runs performance benchmarks for the fiberx adapter
 // using the testing framework's benchmark tools.
 func BenchmarkFiberxPerformance(b *testing.B) {
-	engine := New(WithListen(":0"))
+	engine := fiberx.New(fiberx.WithListen(":0"))
 	suite := httpxtesting.NewTestSuite("fiberx-benchmark", engine)
 	
 	// Run all performance benchmarks
@@ -303,9 +304,9 @@ func BenchmarkFiberxVsOthers(b *testing.B) {
 		// Configure for benchmarking
 	})
 	
-	engine := New(
-		WithEngine(fiberApp),
-		WithListen(":0"),
+	engine := fiberx.New(
+		fiberx.WithEngine(fiberApp),
+		fiberx.WithListen(":0"),
 	)
 	
 	suite := httpxtesting.NewTestSuite("fiberx-optimized", engine)
@@ -318,7 +319,7 @@ func BenchmarkFiberxVsOthers(b *testing.B) {
 // in a simple, straightforward way.
 func Example_fiberxIntegration() {
 	// Create fiberx engine
-	engine := New(WithListen(":8080"))
+	engine := fiberx.New(fiberx.WithListen(":8080"))
 	
 	// Create test suite
 	suite := httpxtesting.NewTestSuite("fiberx-example", engine)
@@ -339,9 +340,9 @@ func Example_fiberxCustomConfiguration() {
 	})
 	
 	// Create fiberx engine with custom app
-	engine := New(
-		WithEngine(app),
-		WithListen(":8080"),
+	engine := fiberx.New(
+		fiberx.WithEngine(app),
+		fiberx.WithListen(":8080"),
 	)
 	
 	// Create test suite with custom config
