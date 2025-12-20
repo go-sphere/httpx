@@ -21,6 +21,9 @@ func (r *Router) Use(m ...httpx.Middleware) {
 }
 
 func (r *Router) BasePath() string {
+	if r.basePath == "" || r.basePath == "." {
+		return "/"
+	}
 	return r.basePath
 }
 

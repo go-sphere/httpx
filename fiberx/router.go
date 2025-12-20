@@ -23,6 +23,9 @@ func (r *Router) Use(m ...httpx.Middleware) {
 }
 
 func (r *Router) BasePath() string {
+	if r.basePath == "" {
+		return "/"
+	}
 	return r.basePath
 }
 
@@ -50,7 +53,7 @@ func (r *Router) Static(prefix, root string) {
 }
 
 func (r *Router) StaticFS(prefix string, fs fs.FS) {
-	r.group.Use(append([]any{prefix}, r.combineHandlers(static.New("", static.Config{FS: fs}))...))
+	r.group.Use(append([]any{prefix}, r.combineHandlers(static.New("", static.Config{FS: fs}))...)...)
 }
 
 // GET registers a new GET route for a path with matching handler.
