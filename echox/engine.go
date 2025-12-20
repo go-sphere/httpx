@@ -83,7 +83,7 @@ func (e *Engine) Use(middleware ...httpx.Middleware) {
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
 		group:    e.engine.Group(prefix, adaptMiddlewares(m)...),
-		basePath: combineBasePath("/", prefix),
+		basePath: joinPaths("/", prefix),
 	}
 }
 

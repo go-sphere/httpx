@@ -123,16 +123,15 @@ func joinPaths(absolutePath, relativePath string) string {
 		return absolutePath
 	}
 	finalPath := path.Join(absolutePath, relativePath)
-	appendSlash := lastChar(relativePath) == '/' && lastChar(finalPath) != '/'
-	if appendSlash {
+	if lastCharIs('/', relativePath) && !lastCharIs('/', finalPath) {
 		return finalPath + "/"
 	}
 	return finalPath
 }
 
-func lastChar(str string) uint8 {
+func lastCharIs(char uint8, str string) bool {
 	if str == "" {
-		panic("The length of the string can't be 0")
+		return false
 	}
-	return str[len(str)-1]
+	return str[len(str)-1] == char
 }

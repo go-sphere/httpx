@@ -21,16 +21,13 @@ func (r *Router) Use(m ...httpx.Middleware) {
 }
 
 func (r *Router) BasePath() string {
-	if r.basePath == "" || r.basePath == "." {
-		return "/"
-	}
 	return r.basePath
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
 		group:    r.group.Group(prefix, adaptMiddlewares(m)...),
-		basePath: combineBasePath(r.basePath, prefix),
+		basePath: joinPaths(r.basePath, prefix),
 	}
 }
 
@@ -93,13 +90,20 @@ func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	}
 }
 
-func combineBasePath(base, prefix string) string {
-	joined := path.Join(base, prefix)
-	if joined == "" || joined == "." {
-		return "/"
+func joinPaths(absolutePath, relativePath string) string {
+	if relativePath == "" {
+		return absolutePath
 	}
-	if !strings.HasPrefix(joined, "/") {
-		joined = "/" + joined
+	finalPath := path.Join(absolutePath, relativePath)
+	if lastCharIs('/', relativePath) && !lastCharIs('/', finalPath) {
+		return finalPath + "/"
 	}
-	return joined
+	return finalPath
+}
+
+func lastCharIs(char uint8, str string) bool {
+	if str == "" {
+		return false
+	}
+	return str[len(str)-1] == char
 }
