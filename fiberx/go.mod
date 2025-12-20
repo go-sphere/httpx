@@ -7,7 +7,6 @@ require (
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
 )
 
-
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

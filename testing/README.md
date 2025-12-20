@@ -1,6 +1,6 @@
 # httpx Testing Framework
 
-This package provides a unified testing framework for httpx adapters, ensuring consistent behavior across all Web framework implementations (ginx, fiberx, echox, fasthttpx, hertzx).
+This package provides a unified testing framework for httpx adapters, ensuring consistent behavior across all Web framework implementations (ginx, fiberx, echox, hertzx).
 
 ## Package Structure
 

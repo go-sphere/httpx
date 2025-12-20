@@ -14,20 +14,20 @@ import (
 func TestResponderTester(t *testing.T) {
 	// Since we don't have a concrete engine implementation available,
 	// we'll test the basic structure and helper functions
-	
+
 	t.Run("NewResponderTester", func(t *testing.T) {
 		// Test that NewResponderTester creates a valid instance
 		// In a real scenario, we would pass an actual engine
 		tester := NewResponderTester(nil) // Pass nil as placeholder
-		
+
 		if tester == nil {
 			t.Error("Expected non-nil ResponderTester")
 		}
 	})
-	
+
 	t.Run("HelperFunctions", func(t *testing.T) {
 		// Test helper functions that create test data
-		
+
 		// Test createTestJSONData
 		jsonData := createTestJSONData()
 		if jsonData == nil {
@@ -42,7 +42,7 @@ func TestResponderTester(t *testing.T) {
 		if jsonData["boolean"] != true {
 			t.Errorf("Expected boolean field to be true, got %v", jsonData["boolean"])
 		}
-		
+
 		// Test createTestBytes
 		testBytes := createTestBytes(10)
 		if len(testBytes) != 10 {
@@ -53,14 +53,14 @@ func TestResponderTester(t *testing.T) {
 				t.Errorf("Expected byte at index %d to be %d, got %d", i, i%256, b)
 			}
 		}
-		
+
 		// Test createTestReader
 		content := "test content"
 		reader := createTestReader(content)
 		if reader == nil {
 			t.Error("Expected non-nil reader")
 		}
-		
+
 		// Verify reader content
 		buf := make([]byte, len(content))
 		n, err := reader.Read(buf)
@@ -73,11 +73,12 @@ func TestResponderTester(t *testing.T) {
 		if string(buf) != content {
 			t.Errorf("Expected content %q, got %q", content, string(buf))
 		}
-		
+
 		// Test createTestCookie
 		cookie := createTestCookie("test", "value")
 		if cookie == nil {
 			t.Error("Expected non-nil cookie")
+			return
 		}
 		if cookie.Name != "test" {
 			t.Errorf("Expected cookie name 'test', got %s", cookie.Name)
@@ -105,10 +106,10 @@ func TestResponderTester(t *testing.T) {
 func TestResponderTesterMethods(t *testing.T) {
 	// Create a mock ResponderTester
 	tester := NewResponderTester(nil) // Pass nil as placeholder
-	
+
 	// Test that methods exist and can be called
 	// In a real implementation, these would be integration tests with actual engines
-	
+
 	t.Run("TestMethodExists", func(t *testing.T) {
 		// This is a compile-time check - if methods don't exist, compilation will fail
 		// We can't easily test method existence at runtime in Go without reflection
@@ -130,14 +131,14 @@ func TestResponderTestCases(t *testing.T) {
 			http.StatusNotFound,
 			http.StatusInternalServerError,
 		}
-		
+
 		for _, code := range statusCodes {
 			if code < 100 || code >= 600 {
 				t.Errorf("Invalid HTTP status code: %d", code)
 			}
 		}
 	})
-	
+
 	t.Run("ContentTypes", func(t *testing.T) {
 		// Test common content types used in tests
 		contentTypes := []string{
@@ -147,7 +148,7 @@ func TestResponderTestCases(t *testing.T) {
 			"image/png",
 			"text/csv",
 		}
-		
+
 		for _, ct := range contentTypes {
 			if ct == "" {
 				t.Error("Content type should not be empty")
@@ -157,7 +158,7 @@ func TestResponderTestCases(t *testing.T) {
 			}
 		}
 	})
-	
+
 	t.Run("RedirectCodes", func(t *testing.T) {
 		// Test redirect status codes
 		redirectCodes := []int{
@@ -167,7 +168,7 @@ func TestResponderTestCases(t *testing.T) {
 			http.StatusTemporaryRedirect,
 			http.StatusPermanentRedirect,
 		}
-		
+
 		for _, code := range redirectCodes {
 			if code < 300 || code >= 400 {
 				t.Errorf("Invalid redirect status code: %d", code)
@@ -184,24 +185,24 @@ func TestFileOperations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
-		defer os.Remove(testFile.Name())
-		
+		defer func() { _ = os.Remove(testFile.Name()) }()
+
 		testContent := "This is a test file content."
 		if _, err := testFile.WriteString(testContent); err != nil {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
-		testFile.Close()
-		
+		_ = testFile.Close()
+
 		// Verify file exists and has correct content
 		if _, err := os.Stat(testFile.Name()); os.IsNotExist(err) {
 			t.Error("Test file should exist")
 		}
-		
+
 		content, err := os.ReadFile(testFile.Name())
 		if err != nil {
 			t.Fatalf("Failed to read test file: %v", err)
 		}
-		
+
 		if string(content) != testContent {
 			t.Errorf("Expected file content %q, got %q", testContent, string(content))
 		}
@@ -215,7 +216,7 @@ func TestCookieCreation(t *testing.T) {
 			Name:  "simple",
 			Value: "value",
 		}
-		
+
 		if cookie.Name != "simple" {
 			t.Errorf("Expected cookie name 'simple', got %s", cookie.Name)
 		}
@@ -223,7 +224,7 @@ func TestCookieCreation(t *testing.T) {
 			t.Errorf("Expected cookie value 'value', got %s", cookie.Value)
 		}
 	})
-	
+
 	t.Run("SecureCookie", func(t *testing.T) {
 		cookie := &http.Cookie{
 			Name:     "secure",
@@ -231,7 +232,7 @@ func TestCookieCreation(t *testing.T) {
 			Secure:   true,
 			HttpOnly: true,
 		}
-		
+
 		if !cookie.Secure {
 			t.Error("Expected cookie to be secure")
 		}
@@ -239,7 +240,7 @@ func TestCookieCreation(t *testing.T) {
 			t.Error("Expected cookie to be HttpOnly")
 		}
 	})
-	
+
 	t.Run("ExpiringCookie", func(t *testing.T) {
 		expiry := time.Now().Add(time.Hour)
 		cookie := &http.Cookie{
@@ -247,7 +248,7 @@ func TestCookieCreation(t *testing.T) {
 			Value:   "value",
 			Expires: expiry,
 		}
-		
+
 		if cookie.Expires.IsZero() {
 			t.Error("Expected cookie to have expiry time")
 		}
@@ -255,14 +256,14 @@ func TestCookieCreation(t *testing.T) {
 			t.Error("Expected cookie expiry to be in the future")
 		}
 	})
-	
+
 	t.Run("SameSiteCookie", func(t *testing.T) {
 		cookie := &http.Cookie{
 			Name:     "samesite",
 			Value:    "value",
 			SameSite: http.SameSiteLaxMode,
 		}
-		
+
 		if cookie.SameSite != http.SameSiteLaxMode {
 			t.Errorf("Expected SameSite to be Lax, got %v", cookie.SameSite)
 		}
@@ -282,28 +283,28 @@ func TestJSONDataStructures(t *testing.T) {
 			},
 			"null": nil,
 		}
-		
+
 		// Verify each field type and value
 		if str, ok := data["string"].(string); !ok || str != "test" {
 			t.Errorf("Expected string field to be 'test', got %v", data["string"])
 		}
-		
+
 		if num, ok := data["number"].(int); !ok || num != 42 {
 			t.Errorf("Expected number field to be 42, got %v", data["number"])
 		}
-		
+
 		if boolean, ok := data["boolean"].(bool); !ok || !boolean {
 			t.Errorf("Expected boolean field to be true, got %v", data["boolean"])
 		}
-		
+
 		if arr, ok := data["array"].([]string); !ok || len(arr) != 2 {
 			t.Errorf("Expected array field to have 2 items, got %v", data["array"])
 		}
-		
+
 		if obj, ok := data["object"].(map[string]string); !ok || obj["nested"] != "value" {
 			t.Errorf("Expected object field to have nested value, got %v", data["object"])
 		}
-		
+
 		if data["null"] != nil {
 			t.Errorf("Expected null field to be nil, got %v", data["null"])
 		}

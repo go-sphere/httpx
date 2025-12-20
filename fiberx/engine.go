@@ -14,15 +14,12 @@ var _ httpx.Engine = (*Engine)(nil)
 type Config struct {
 	engine *fiber.App
 	listen func(*fiber.App) error
-	addr   string
 }
 
 type Option func(*Config)
 
 func NewConfig(opts ...Option) *Config {
-	conf := Config{
-		addr: ":8080", // default address
-	}
+	conf := Config{}
 	for _, opt := range opts {
 		opt(&conf)
 	}
@@ -31,7 +28,7 @@ func NewConfig(opts ...Option) *Config {
 	}
 	if conf.listen == nil {
 		conf.listen = func(app *fiber.App) error {
-			return app.Listen(conf.addr)
+			return app.Listen(":8080")
 		}
 	}
 	return &conf
@@ -45,7 +42,6 @@ func WithEngine(engine *fiber.App) Option {
 
 func WithListen(addr string, config ...fiber.ListenConfig) Option {
 	return func(conf *Config) {
-		conf.addr = addr
 		conf.listen = func(app *fiber.App) error {
 			return app.Listen(addr, config...)
 		}
@@ -65,7 +61,6 @@ type Engine struct {
 	middlewares []httpx.Middleware
 	listen      func(*fiber.App) error
 	running     atomic.Bool
-	addr        string
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -74,7 +69,6 @@ func New(opts ...Option) httpx.Engine {
 		engine:      conf.engine,
 		middlewares: []httpx.Middleware{},
 		listen:      conf.listen,
-		addr:        conf.addr,
 	}
 	engine.running.Store(false)
 	return engine
@@ -82,13 +76,17 @@ func New(opts ...Option) httpx.Engine {
 
 func (e *Engine) Use(middlewares ...httpx.Middleware) {
 	e.middlewares = append(e.middlewares, middlewares...)
+	// Register middlewares globally on the fiber app
+	for _, middleware := range middlewares {
+		e.engine.Use(adaptMiddleware(middleware))
+	}
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
 		basePath:    joinPaths("/", prefix),
 		group:       e.engine.Group(prefix),
-		middlewares: cloneMiddlewares(e.middlewares, m...),
+		middlewares: cloneMiddlewares([]httpx.Middleware{}, m...), // Don't include global middlewares here since they're already registered
 	}
 }
 
@@ -112,9 +110,4 @@ func (e *Engine) Stop(ctx context.Context) error {
 // IsRunning returns true if the server is currently running.
 func (e *Engine) IsRunning() bool {
 	return e.running.Load()
-}
-
-// Addr returns the server listening address.
-func (e *Engine) Addr() string {
-	return e.addr
 }

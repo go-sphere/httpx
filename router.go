@@ -53,8 +53,4 @@ type Engine interface {
 	Start() error
 	Stop(ctx context.Context) error
 	IsRunning() bool // Server status check
-
-	// Server configuration access
-
-	Addr() string // Get server listening address
 }

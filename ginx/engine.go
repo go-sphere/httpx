@@ -2,6 +2,7 @@ package ginx
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync/atomic"
 
@@ -67,6 +68,7 @@ type Engine struct {
 // New constructs a gin-backed Engine using core options.
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
+	conf.server.Handler = conf.engine
 	return &Engine{
 		engine: conf.engine,
 		server: conf.server,
@@ -84,13 +86,17 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 }
 
 func (e *Engine) Start() error {
-	e.server.Handler = e.engine
 	e.running.Store(true)
-	err := httpx.Start(e.server)
-	if err != nil {
-		e.running.Store(false)
-	}
-	return err
+
+	// Start serving in a goroutine so Start() doesn't block
+	go func() {
+		err := e.server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			e.running.Store(false)
+		}
+	}()
+
+	return nil
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
@@ -104,12 +110,4 @@ func (e *Engine) Stop(ctx context.Context) error {
 // IsRunning returns true if the server is currently running.
 func (e *Engine) IsRunning() bool {
 	return e.running.Load()
-}
-
-// Addr returns the server listening address.
-func (e *Engine) Addr() string {
-	if e.server != nil {
-		return e.server.Addr
-	}
-	return ""
 }

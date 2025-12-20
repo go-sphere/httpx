@@ -52,30 +52,30 @@ func TestMakeRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
-	
+
 	if req.Method != "GET" {
 		t.Errorf("Expected method GET, got %s", req.Method)
 	}
-	
+
 	if req.URL.String() != "http://example.com" {
 		t.Errorf("Expected URL http://example.com, got %s", req.URL.String())
 	}
 
 	// Test request with headers
 	headers := map[string]string{
-		"Content-Type": "application/json",
+		"Content-Type":  "application/json",
 		"Authorization": "Bearer token",
 	}
-	
+
 	req, err = MakeRequest("POST", "http://example.com", strings.NewReader("test body"), headers)
 	if err != nil {
 		t.Fatalf("Failed to create request with headers: %v", err)
 	}
-	
+
 	if req.Header.Get("Content-Type") != "application/json" {
 		t.Errorf("Expected Content-Type header to be application/json, got %s", req.Header.Get("Content-Type"))
 	}
-	
+
 	if req.Header.Get("Authorization") != "Bearer token" {
 		t.Errorf("Expected Authorization header to be Bearer token, got %s", req.Header.Get("Authorization"))
 	}
@@ -85,7 +85,7 @@ func TestAssertResponse(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
+		_, _ = w.Write([]byte("test response"))
 	}))
 	defer server.Close()
 
@@ -94,7 +94,7 @@ func TestAssertResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Test assertion (this should pass)
 	AssertResponse(t, resp, http.StatusOK, "test response")
@@ -113,7 +113,7 @@ func TestAssertHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Test header assertion
 	AssertHeader(t, resp, "X-Test-Header", "test-value")
@@ -136,7 +136,7 @@ func TestAssertCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Test cookie assertion
 	AssertCookie(t, resp, "test-cookie", "test-value")
@@ -179,22 +179,22 @@ func TestEqualSlicesProperty(t *testing.T) {
 			if len(slice) == 0 {
 				return true // Skip empty slices
 			}
-			
+
 			// Normalize index to valid range
 			index = index % len(slice)
 			if index < 0 {
 				index = -index
 			}
-			
+
 			// Create a copy and modify one element
 			modified := make([]int, len(slice))
 			copy(modified, slice)
-			
+
 			// Only modify if the new value is different
 			if modified[index] == newValue {
 				return true // Skip if values are the same
 			}
-			
+
 			modified[index] = newValue
 			return !EqualSlices(slice, modified)
 		},

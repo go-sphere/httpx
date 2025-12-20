@@ -19,15 +19,15 @@ type TestSuite struct {
 	engine httpx.Engine
 	name   string
 	config TestConfig
-	
+
 	// Individual testers
-	abortTracker    *AbortTracker
-	requestTester   *RequestTester
-	binderTester    *BinderTester
-	responderTester *ResponderTester
+	abortTracker     *AbortTracker
+	requestTester    *RequestTester
+	binderTester     *BinderTester
+	responderTester  *ResponderTester
 	stateStoreTester *StateStoreTester
-	routerTester    *RouterTester
-	engineTester    *EngineTester
+	routerTester     *RouterTester
+	engineTester     *EngineTester
 }
 
 // NewTestSuite creates a new comprehensive test suite for the given adapter.
@@ -37,7 +37,7 @@ func NewTestSuite(name string, engine httpx.Engine) *TestSuite {
 		engine: engine,
 		name:   name,
 		config: DefaultTestConfig,
-		
+
 		// Initialize all testers
 		abortTracker:     NewAbortTracker(),
 		requestTester:    NewRequestTester(engine),
@@ -61,39 +61,39 @@ func NewTestSuiteWithConfig(name string, engine httpx.Engine, config TestConfig)
 // Validates: Requirements 13.1, 13.5
 func (ts *TestSuite) RunAllTests(t *testing.T) {
 	t.Helper()
-	
+
 	t.Logf("Starting comprehensive test suite for adapter: %s", ts.name)
 	startTime := time.Now()
-	
+
 	// Run all interface tests
 	t.Run("AbortTracker", func(t *testing.T) {
 		ts.runAbortTests(t)
 	})
-	
+
 	t.Run("Request", func(t *testing.T) {
 		ts.requestTester.RunAllTests(t)
 	})
-	
+
 	t.Run("Binder", func(t *testing.T) {
 		ts.binderTester.RunAllTests(t)
 	})
-	
+
 	t.Run("Responder", func(t *testing.T) {
 		ts.responderTester.RunAllTests(t)
 	})
-	
+
 	t.Run("StateStore", func(t *testing.T) {
 		ts.stateStoreTester.RunAllTests(t)
 	})
-	
+
 	t.Run("Router", func(t *testing.T) {
 		ts.routerTester.RunAllTests(t)
 	})
-	
+
 	t.Run("Engine", func(t *testing.T) {
 		ts.engineTester.RunAllTests(t)
 	})
-	
+
 	duration := time.Since(startTime)
 	t.Logf("Completed comprehensive test suite for %s in %v", ts.name, duration)
 }
@@ -101,13 +101,13 @@ func (ts *TestSuite) RunAllTests(t *testing.T) {
 // runAbortTests runs the abort tracking tests with proper setup.
 func (ts *TestSuite) runAbortTests(t *testing.T) {
 	t.Helper()
-	
+
 	// Reset the tracker before each test
 	ts.abortTracker.Reset()
-	
+
 	// Set up the engine with abort testing middleware
 	SetupAbortEngine(ts.engine, ts.abortTracker)
-	
+
 	t.Run("AbortTrackerInitialization", func(t *testing.T) {
 		tracker := NewAbortTracker()
 		if len(tracker.Steps) != 0 {
@@ -117,12 +117,12 @@ func (ts *TestSuite) runAbortTests(t *testing.T) {
 			t.Errorf("Expected empty aborted states on initialization, got %d", len(tracker.AbortedStates))
 		}
 	})
-	
+
 	t.Run("AbortTrackerReset", func(t *testing.T) {
 		// Add some data to the tracker
 		ts.abortTracker.Steps = append(ts.abortTracker.Steps, "test_step")
 		ts.abortTracker.AbortedStates = append(ts.abortTracker.AbortedStates, false)
-		
+
 		// Reset and verify
 		ts.abortTracker.Reset()
 		if len(ts.abortTracker.Steps) != 0 {
@@ -139,24 +139,24 @@ func (ts *TestSuite) runAbortTests(t *testing.T) {
 // Validates: Requirements 13.2
 func (ts *TestSuite) RunConcurrencyTests(t *testing.T) {
 	t.Helper()
-	
+
 	t.Logf("Starting concurrency tests for adapter: %s", ts.name)
-	
+
 	// Test concurrent request handling
 	t.Run("ConcurrentRequests", func(t *testing.T) {
 		ts.testConcurrentRequests(t)
 	})
-	
+
 	// Test concurrent state store access
 	t.Run("ConcurrentStateStore", func(t *testing.T) {
 		ts.testConcurrentStateStore(t)
 	})
-	
+
 	// Test concurrent middleware execution
 	t.Run("ConcurrentMiddleware", func(t *testing.T) {
 		ts.testConcurrentMiddleware(t)
 	})
-	
+
 	// Test concurrent router operations
 	t.Run("ConcurrentRouter", func(t *testing.T) {
 		ts.testConcurrentRouter(t)
@@ -166,121 +166,121 @@ func (ts *TestSuite) RunConcurrencyTests(t *testing.T) {
 // testConcurrentRequests tests handling of multiple simultaneous requests.
 func (ts *TestSuite) testConcurrentRequests(t *testing.T) {
 	t.Helper()
-	
+
 	numRequests := ts.config.ConcurrentUsers
 	if numRequests <= 0 {
 		numRequests = 10
 	}
-	
+
 	// Set up test routes
 	router := ts.engine.Group("")
 	router.GET("/concurrent-test/:id", func(ctx httpx.Context) {
 		id := ctx.Param("id")
-		
+
 		// Simulate some processing time
 		time.Sleep(10 * time.Millisecond)
-		
+
 		// Set request-specific state
 		ctx.Set("request_id", id)
-		
+
 		// Verify state isolation
 		if storedID, exists := ctx.Get("request_id"); !exists {
 			t.Errorf("Request %s lost its state", id)
 		} else if storedID != id {
 			t.Errorf("Request %s state corrupted: expected %s, got %v", id, id, storedID)
 		}
-		
+
 		ctx.JSON(200, map[string]string{
 			"request_id": id,
 			"message":    "concurrent test completed",
 		})
 	})
-	
+
 	// Start the engine
 	go func() {
 		if err := ts.engine.Start(); err != nil {
 			t.Errorf("Failed to start engine for concurrency test: %v", err)
 		}
 	}()
-	
+
 	// Give the server time to start
 	time.Sleep(100 * time.Millisecond)
-	
+
 	// Run concurrent requests
 	var wg sync.WaitGroup
 	errors := make(chan error, numRequests)
-	
+
 	for i := 0; i < numRequests; i++ {
 		wg.Add(1)
 		go func(requestID int) {
 			defer wg.Done()
-			
+
 			// In a real implementation, we would make actual HTTP requests here
 			// For now, we simulate the concurrent behavior
 			time.Sleep(time.Duration(requestID) * time.Millisecond)
-			
+
 			// Simulate request processing
 			t.Logf("Processing concurrent request %d", requestID)
-			
+
 		}(i)
 	}
-	
+
 	// Wait for all requests to complete
 	wg.Wait()
 	close(errors)
-	
+
 	// Check for errors
 	for err := range errors {
 		if err != nil {
 			t.Errorf("Concurrent request failed: %v", err)
 		}
 	}
-	
+
 	// Stop the engine
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ts.engine.Stop(ctx)
-	
+	_ = ts.engine.Stop(ctx)
+
 	t.Logf("Completed %d concurrent requests", numRequests)
 }
 
 // testConcurrentStateStore tests concurrent access to the state store.
 func (ts *TestSuite) testConcurrentStateStore(t *testing.T) {
 	t.Helper()
-	
+
 	numGoroutines := ts.config.ConcurrentUsers
 	if numGoroutines <= 0 {
 		numGoroutines = 10
 	}
-	
+
 	// Set up test route for state store testing
 	router := ts.engine.Group("")
 	router.GET("/state-test/:id", func(ctx httpx.Context) {
 		id := ctx.Param("id")
-		
+
 		// Set multiple values concurrently
 		ctx.Set("id", id)
 		ctx.Set("timestamp", time.Now().Unix())
 		ctx.Set("counter", 1)
-		
+
 		// Verify values
 		if storedID, exists := ctx.Get("id"); !exists || storedID != id {
 			t.Errorf("State store failed for request %s", id)
 		}
-		
+
 		ctx.JSON(200, map[string]string{"id": id})
 	})
-	
+
 	t.Logf("Testing concurrent state store access with %d goroutines", numGoroutines)
 }
 
 // testConcurrentMiddleware tests concurrent middleware execution.
 func (ts *TestSuite) testConcurrentMiddleware(t *testing.T) {
 	t.Helper()
-	
+
 	var middlewareCounter int64
 	var mu sync.Mutex
-	
+
 	// Set up middleware that tracks execution
 	router := ts.engine.Group("")
 	router.Use(func(ctx httpx.Context) {
@@ -288,47 +288,47 @@ func (ts *TestSuite) testConcurrentMiddleware(t *testing.T) {
 		middlewareCounter++
 		currentCount := middlewareCounter
 		mu.Unlock()
-		
+
 		ctx.Set("middleware_count", currentCount)
 		ctx.Next()
 	})
-	
+
 	router.GET("/middleware-test", func(ctx httpx.Context) {
 		count, _ := ctx.Get("middleware_count")
 		ctx.JSON(200, map[string]interface{}{
 			"middleware_count": count,
 		})
 	})
-	
+
 	t.Log("Concurrent middleware test setup completed")
 }
 
 // testConcurrentRouter tests concurrent router operations.
 func (ts *TestSuite) testConcurrentRouter(t *testing.T) {
 	t.Helper()
-	
+
 	// Test concurrent route registration (if supported)
 	// Most implementations don't support this, but we test the structure
-	
+
 	router := ts.engine.Group("/concurrent")
-	
+
 	// Register multiple routes concurrently
 	var wg sync.WaitGroup
 	numRoutes := 5
-	
+
 	for i := 0; i < numRoutes; i++ {
 		wg.Add(1)
 		go func(routeID int) {
 			defer wg.Done()
-			
+
 			path := fmt.Sprintf("/route-%d", routeID)
 			router.GET(path, func(ctx httpx.Context) {
 				ctx.JSON(200, map[string]int{"route_id": routeID})
 			})
-			
+
 		}(i)
 	}
-	
+
 	wg.Wait()
 	t.Logf("Registered %d routes concurrently", numRoutes)
 }
@@ -338,27 +338,27 @@ func (ts *TestSuite) testConcurrentRouter(t *testing.T) {
 // Validates: Requirements 13.3
 func (ts *TestSuite) RunBenchmarks(b *testing.B) {
 	b.Logf("Starting benchmarks for adapter: %s", ts.name)
-	
+
 	// Benchmark basic request handling
 	b.Run("BasicRequest", func(b *testing.B) {
 		ts.benchmarkBasicRequest(b)
 	})
-	
+
 	// Benchmark JSON responses
 	b.Run("JSONResponse", func(b *testing.B) {
 		ts.benchmarkJSONResponse(b)
 	})
-	
+
 	// Benchmark state store operations
 	b.Run("StateStore", func(b *testing.B) {
 		ts.benchmarkStateStore(b)
 	})
-	
+
 	// Benchmark middleware execution
 	b.Run("Middleware", func(b *testing.B) {
 		ts.benchmarkMiddleware(b)
 	})
-	
+
 	// Benchmark parameter parsing
 	b.Run("ParameterParsing", func(b *testing.B) {
 		ts.benchmarkParameterParsing(b)
@@ -371,7 +371,7 @@ func (ts *TestSuite) benchmarkBasicRequest(b *testing.B) {
 	router.GET("/benchmark", func(ctx httpx.Context) {
 		ctx.Text(200, "OK")
 	})
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -392,12 +392,12 @@ func (ts *TestSuite) benchmarkJSONResponse(b *testing.B) {
 		"balance": 1234.56,
 		"tags":    []string{"user", "active", "premium"},
 	}
-	
+
 	router := ts.engine.Group("")
 	router.GET("/benchmark-json", func(ctx httpx.Context) {
 		ctx.JSON(200, testData)
 	})
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -415,15 +415,15 @@ func (ts *TestSuite) benchmarkStateStore(b *testing.B) {
 		ctx.Set("key1", "value1")
 		ctx.Set("key2", 42)
 		ctx.Set("key3", true)
-		
+
 		// Get values
 		ctx.Get("key1")
 		ctx.Get("key2")
 		ctx.Get("key3")
-		
+
 		ctx.Text(200, "OK")
 	})
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -436,18 +436,18 @@ func (ts *TestSuite) benchmarkStateStore(b *testing.B) {
 // benchmarkMiddleware benchmarks middleware execution performance.
 func (ts *TestSuite) benchmarkMiddleware(b *testing.B) {
 	router := ts.engine.Group("")
-	
+
 	// Add multiple middleware layers
 	router.Use(
 		func(ctx httpx.Context) { ctx.Next() },
 		func(ctx httpx.Context) { ctx.Next() },
 		func(ctx httpx.Context) { ctx.Next() },
 	)
-	
+
 	router.GET("/benchmark-middleware", func(ctx httpx.Context) {
 		ctx.Text(200, "OK")
 	})
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -465,15 +465,15 @@ func (ts *TestSuite) benchmarkParameterParsing(b *testing.B) {
 		ctx.Param("id")
 		ctx.Param("category")
 		ctx.Param("action")
-		
+
 		// Access query parameters
 		ctx.Query("filter")
 		ctx.Query("sort")
 		ctx.Query("limit")
-		
+
 		ctx.Text(200, "OK")
 	})
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -489,7 +489,7 @@ func (ts *TestSuite) benchmarkParameterParsing(b *testing.B) {
 func (ts *TestSuite) GenerateReport(results *TestResults) string {
 	report := fmt.Sprintf("Test Report for %s Adapter\n", ts.name)
 	report += "=" + strings.Repeat("=", len(report)-1) + "\n\n"
-	
+
 	// Summary
 	report += fmt.Sprintf("Total Tests: %d\n", results.TotalTests)
 	report += fmt.Sprintf("Passed: %d\n", results.PassedTests)
@@ -497,7 +497,7 @@ func (ts *TestSuite) GenerateReport(results *TestResults) string {
 	report += fmt.Sprintf("Skipped: %d\n", results.SkippedTests)
 	report += fmt.Sprintf("Success Rate: %.2f%%\n", results.SuccessRate())
 	report += fmt.Sprintf("Total Duration: %v\n\n", results.Duration)
-	
+
 	// Interface Coverage
 	report += "Interface Coverage:\n"
 	report += "-----------------\n"
@@ -505,7 +505,7 @@ func (ts *TestSuite) GenerateReport(results *TestResults) string {
 		report += fmt.Sprintf("  %s: %.2f%%\n", iface, coverage)
 	}
 	report += "\n"
-	
+
 	// Performance Metrics
 	if len(results.BenchmarkResults) > 0 {
 		report += "Performance Benchmarks:\n"
@@ -515,7 +515,7 @@ func (ts *TestSuite) GenerateReport(results *TestResults) string {
 		}
 		report += "\n"
 	}
-	
+
 	// Errors and Failures
 	if len(results.Errors) > 0 {
 		report += "Errors and Failures:\n"
@@ -525,7 +525,7 @@ func (ts *TestSuite) GenerateReport(results *TestResults) string {
 		}
 		report += "\n"
 	}
-	
+
 	// Recommendations
 	report += "Recommendations:\n"
 	report += "---------------\n"
@@ -537,7 +537,7 @@ func (ts *TestSuite) GenerateReport(results *TestResults) string {
 	}
 	report += "  - Consider running performance benchmarks regularly\n"
 	report += "  - Ensure all httpx interfaces are fully implemented\n"
-	
+
 	return report
 }
 

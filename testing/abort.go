@@ -26,7 +26,7 @@ func NewAbortTracker() *AbortTracker {
 func (t *AbortTracker) Reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	t.Steps = make([]string, 0)
 	t.AbortedStates = make([]bool, 0)
 }
@@ -35,7 +35,7 @@ func (t *AbortTracker) Reset() {
 func (t *AbortTracker) recordStep(step string, ctx httpx.Context) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	t.Steps = append(t.Steps, step)
 	t.AbortedStates = append(t.AbortedStates, ctx.IsAborted())
 }
@@ -45,14 +45,14 @@ func (t *AbortTracker) recordStep(step string, ctx httpx.Context) {
 // Otherwise, it continues to the next middleware.
 func (t *AbortTracker) AuthMiddleware(ctx httpx.Context) {
 	t.recordStep("AuthMiddleware", ctx)
-	
+
 	token := ctx.Header("Authorization")
 	if token == "" {
 		ctx.Abort()
 		t.recordStep("AuthMiddleware-Aborted", ctx)
 		return
 	}
-	
+
 	ctx.Next()
 }
 
@@ -84,10 +84,10 @@ func SetupAbortEngine(engine httpx.Engine, tracker *AbortTracker) {
 	// Set up global middleware
 	engine.Use(tracker.AuthMiddleware)
 	engine.Use(tracker.SecondMiddleware)
-	
+
 	// Create route group with group middleware
 	group := engine.Group("/test", tracker.GroupMiddleware)
-	
+
 	// Register test handler to root path within the group
 	group.GET("/", tracker.Handler)
 }

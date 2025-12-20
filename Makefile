@@ -3,7 +3,7 @@
 # ============================================================================
 
 # All available adapters (for building/linting)
-ADAPTERS := ginx fiberx echox fasthttpx hertzx
+ADAPTERS := ginx fiberx echox hertzx
 
 # Tag variable for versioning
 TAG ?=
@@ -40,7 +40,6 @@ lint-all:
 	$(call lint_directory,./ginx)
 	$(call lint_directory,./fiberx)
 	$(call lint_directory,./echox)
-	$(call lint_directory,./fasthttpx)
 	$(call lint_directory,./hertzx)
 	$(call lint_directory,./testing)
 	$(call lint_directory,./integration)
@@ -49,7 +48,7 @@ lint-all:
 # Testing Commands
 # ============================================================================
 
-.PHONY: test test-all test-ginx test-fiberx test-echox test-fasthttpx test-hertzx test-testing test-integration
+.PHONY: test test-all test-ginx test-fiberx test-echox test-hertzx test-testing test-integration
 
 test: test-all
 
@@ -70,10 +69,6 @@ test-fiberx:
 test-echox:
 	@echo "Running echox integration tests..."
 	cd integration && go test -v -run TestEchox
-
-test-fasthttpx:
-	@echo "Running fasthttpx integration tests..."
-	cd integration && go test -v -run TestFasthttp
 
 test-hertzx:
 	@echo "Running hertzx integration tests..."
@@ -186,7 +181,6 @@ help:
 	@echo "  test-ginx         - Run ginx integration tests only"
 	@echo "  test-fiberx       - Run fiberx integration tests only"
 	@echo "  test-echox        - Run echox integration tests only"
-	@echo "  test-fasthttpx    - Run fasthttpx integration tests only"
 	@echo "  test-hertzx       - Run hertzx integration tests only"
 	@echo "  test-testing      - Run testing framework tests only"
 	@echo "  test-integration  - Alias for test-all"

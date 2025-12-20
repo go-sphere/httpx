@@ -65,7 +65,7 @@ func (rt *ResponderTester) TestStatus(t *testing.T) {
 				ctx.Status(tc.statusCode)
 				ctx.Text(tc.statusCode, tc.name)
 			})
-			
+
 			t.Logf("Testing status code %d for path %s", tc.statusCode, tc.path)
 		})
 	}
@@ -116,7 +116,7 @@ func (rt *ResponderTester) TestJSON(t *testing.T) {
 			router.GET(tc.path, func(ctx httpx.Context) {
 				ctx.JSON(tc.code, tc.data)
 			})
-			
+
 			t.Logf("Testing JSON response with data: %+v", tc.data)
 		})
 	}
@@ -160,7 +160,7 @@ func (rt *ResponderTester) TestText(t *testing.T) {
 			router.GET(tc.path, func(ctx httpx.Context) {
 				ctx.Text(tc.code, tc.text)
 			})
-			
+
 			t.Logf("Testing text response: %q", tc.text)
 		})
 	}
@@ -199,7 +199,7 @@ func (rt *ResponderTester) TestNoContent(t *testing.T) {
 			router.DELETE(tc.path, func(ctx httpx.Context) {
 				ctx.NoContent(tc.code)
 			})
-			
+
 			t.Logf("Testing no content response with status %d", tc.code)
 		})
 	}
@@ -250,7 +250,7 @@ func (rt *ResponderTester) TestBytes(t *testing.T) {
 			router.GET(tc.path, func(ctx httpx.Context) {
 				ctx.Bytes(tc.code, tc.data, tc.contentType)
 			})
-			
+
 			t.Logf("Testing bytes response: %d bytes, content-type: %s", len(tc.data), tc.contentType)
 		})
 	}
@@ -298,7 +298,7 @@ func (rt *ResponderTester) TestDataFromReader(t *testing.T) {
 			router.GET(tc.path, func(ctx httpx.Context) {
 				ctx.DataFromReader(tc.code, tc.contentType, reader, len(tc.data))
 			})
-			
+
 			t.Logf("Testing stream response: %d bytes, content-type: %s", len(tc.data), tc.contentType)
 		})
 	}
@@ -314,13 +314,13 @@ func (rt *ResponderTester) TestFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer os.Remove(testFile.Name())
+	defer func() { _ = os.Remove(testFile.Name()) }()
 
 	testContent := "This is a test file content for file response testing."
 	if _, err := testFile.WriteString(testContent); err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
-	testFile.Close()
+	_ = testFile.Close()
 
 	router := rt.engine.Group("")
 
@@ -353,17 +353,17 @@ func (rt *ResponderTester) TestFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create test file %s: %v", tc.filename, err)
 			}
-			defer os.Remove(tmpFile.Name())
+			defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 			if _, err := tmpFile.WriteString(tc.content); err != nil {
 				t.Fatalf("Failed to write test file %s: %v", tc.filename, err)
 			}
-			tmpFile.Close()
+			_ = tmpFile.Close()
 
 			router.GET(tc.path, func(ctx httpx.Context) {
 				ctx.File(tmpFile.Name())
 			})
-			
+
 			t.Logf("Testing file response: %s", tc.filename)
 		})
 	}
@@ -406,7 +406,7 @@ func (rt *ResponderTester) TestRedirect(t *testing.T) {
 			router.GET(tc.path, func(ctx httpx.Context) {
 				ctx.Redirect(tc.code, tc.location)
 			})
-			
+
 			t.Logf("Testing redirect: %d -> %s", tc.code, tc.location)
 		})
 	}
@@ -434,10 +434,10 @@ func (rt *ResponderTester) TestHeaders(t *testing.T) {
 
 	// Test different header scenarios
 	testCases := []struct {
-		name   string
-		key    string
-		value  string
-		path   string
+		name  string
+		key   string
+		value string
+		path  string
 	}{
 		{"ContentType", "Content-Type", "application/json", "/header-content-type"},
 		{"CacheControl", "Cache-Control", "max-age=3600", "/header-cache"},
@@ -453,7 +453,7 @@ func (rt *ResponderTester) TestHeaders(t *testing.T) {
 				ctx.SetHeader(tc.key, tc.value)
 				ctx.Text(http.StatusOK, "OK")
 			})
-			
+
 			t.Logf("Testing header: %s = %s", tc.key, tc.value)
 		})
 	}
@@ -469,14 +469,14 @@ func (rt *ResponderTester) TestCookies(t *testing.T) {
 	var capturedContext httpx.Context
 	router.GET("/test-cookies", func(ctx httpx.Context) {
 		capturedContext = ctx
-		
+
 		// Set a simple cookie
 		simpleCookie := &http.Cookie{
 			Name:  "session_id",
 			Value: "abc123",
 		}
 		ctx.SetCookie(simpleCookie)
-		
+
 		// Set a complex cookie with all options
 		complexCookie := &http.Cookie{
 			Name:     "user_pref",
@@ -490,7 +490,7 @@ func (rt *ResponderTester) TestCookies(t *testing.T) {
 			SameSite: http.SameSiteStrictMode,
 		}
 		ctx.SetCookie(complexCookie)
-		
+
 		ctx.Text(http.StatusOK, "Cookies set")
 	})
 
@@ -542,7 +542,7 @@ func (rt *ResponderTester) TestCookies(t *testing.T) {
 				ctx.SetCookie(tc.cookie)
 				ctx.Text(http.StatusOK, "OK")
 			})
-			
+
 			t.Logf("Testing cookie: %s = %s", tc.cookie.Name, tc.cookie.Value)
 		})
 	}

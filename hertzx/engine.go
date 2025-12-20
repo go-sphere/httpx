@@ -77,11 +77,3 @@ func (e *Engine) Stop(ctx context.Context) error {
 func (e *Engine) IsRunning() bool {
 	return e.running.Load()
 }
-
-// Addr returns the server listening address.
-// This is a minimal-level adaptation exception for Hertz.
-func (e *Engine) Addr() string {
-	// Hertz doesn't provide easy access to configured address
-	// This is a minimal-level adaptation exception
-	return ":8888" // Hertz default port
-}

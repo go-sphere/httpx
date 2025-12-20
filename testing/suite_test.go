@@ -107,44 +107,44 @@ func (m *MockRouter) StaticFS(path string, fs fs.FS) {
 func TestNewTestSuite(t *testing.T) {
 	mockEngine := &MockEngine{}
 	suite := NewTestSuite("test-adapter", mockEngine)
-	
+
 	if suite == nil {
 		t.Fatal("NewTestSuite returned nil")
 	}
-	
+
 	if suite.name != "test-adapter" {
 		t.Errorf("Expected name 'test-adapter', got '%s'", suite.name)
 	}
-	
+
 	if suite.engine == nil {
 		t.Error("Engine not properly assigned")
 	}
-	
+
 	// Verify all testers are initialized
 	if suite.abortTracker == nil {
 		t.Error("AbortTracker not initialized")
 	}
-	
+
 	if suite.requestTester == nil {
 		t.Error("RequestTester not initialized")
 	}
-	
+
 	if suite.binderTester == nil {
 		t.Error("BinderTester not initialized")
 	}
-	
+
 	if suite.responderTester == nil {
 		t.Error("ResponderTester not initialized")
 	}
-	
+
 	if suite.stateStoreTester == nil {
 		t.Error("StateStoreTester not initialized")
 	}
-	
+
 	if suite.routerTester == nil {
 		t.Error("RouterTester not initialized")
 	}
-	
+
 	if suite.engineTester == nil {
 		t.Error("EngineTester not initialized")
 	}
@@ -159,21 +159,21 @@ func TestNewTestSuiteWithConfig(t *testing.T) {
 		ConcurrentUsers: 20,
 		TestDataSize:    2048,
 	}
-	
+
 	suite := NewTestSuiteWithConfig("custom-adapter", mockEngine, customConfig)
-	
+
 	if suite == nil {
 		t.Fatal("NewTestSuiteWithConfig returned nil")
 	}
-	
+
 	if suite.name != "custom-adapter" {
 		t.Errorf("Expected name 'custom-adapter', got '%s'", suite.name)
 	}
-	
+
 	if suite.config.ServerAddr != ":9090" {
 		t.Errorf("Expected ServerAddr ':9090', got '%s'", suite.config.ServerAddr)
 	}
-	
+
 	if suite.config.ConcurrentUsers != 20 {
 		t.Errorf("Expected ConcurrentUsers 20, got %d", suite.config.ConcurrentUsers)
 	}
@@ -201,14 +201,14 @@ func TestTestResults(t *testing.T) {
 			"Timeout in concurrent test",
 		},
 	}
-	
+
 	// Test SuccessRate calculation
 	expectedRate := 95.0
 	actualRate := results.SuccessRate()
 	if actualRate != expectedRate {
 		t.Errorf("Expected success rate %.2f%%, got %.2f%%", expectedRate, actualRate)
 	}
-	
+
 	// Test with zero total tests
 	emptyResults := &TestResults{}
 	if emptyResults.SuccessRate() != 0.0 {
@@ -220,7 +220,7 @@ func TestTestResults(t *testing.T) {
 func TestGenerateReport(t *testing.T) {
 	mockEngine := &MockEngine{}
 	suite := NewTestSuite("test-adapter", mockEngine)
-	
+
 	results := &TestResults{
 		TotalTests:   50,
 		PassedTests:  48,
@@ -238,13 +238,13 @@ func TestGenerateReport(t *testing.T) {
 			"Test error example",
 		},
 	}
-	
+
 	report := suite.GenerateReport(results)
-	
+
 	if report == "" {
 		t.Fatal("GenerateReport returned empty string")
 	}
-	
+
 	// Check that report contains expected sections
 	expectedSections := []string{
 		"Test Report for test-adapter Adapter",
@@ -257,7 +257,7 @@ func TestGenerateReport(t *testing.T) {
 		"Errors and Failures:",
 		"Recommendations:",
 	}
-	
+
 	for _, section := range expectedSections {
 		if !contains(report, section) {
 			t.Errorf("Report missing expected section: %s", section)
@@ -267,10 +267,10 @@ func TestGenerateReport(t *testing.T) {
 
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || 
-		(len(s) > len(substr) && (s[:len(substr)] == substr || 
-		s[len(s)-len(substr):] == substr || 
-		containsSubstring(s, substr))))
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > len(substr) && (s[:len(substr)] == substr ||
+			s[len(s)-len(substr):] == substr ||
+			containsSubstring(s, substr))))
 }
 
 func containsSubstring(s, substr string) bool {
@@ -286,21 +286,21 @@ func containsSubstring(s, substr string) bool {
 func TestSuiteStructure(t *testing.T) {
 	mockEngine := &MockEngine{}
 	suite := NewTestSuite("structure-test", mockEngine)
-	
+
 	// Test that all required fields are present and properly typed
 	if suite.engine == nil {
 		t.Error("Engine field is nil")
 	}
-	
+
 	if suite.name == "" {
 		t.Error("Name field is empty")
 	}
-	
+
 	// Test that config has default values
 	if suite.config.RequestTimeout == 0 {
 		t.Error("Config RequestTimeout not set to default")
 	}
-	
+
 	if suite.config.ConcurrentUsers == 0 {
 		t.Error("Config ConcurrentUsers not set to default")
 	}

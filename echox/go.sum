@@ -1,4 +1,5 @@
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
+github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/go-sphere/httpx v0.0.2-beta.22 h1:m+KEo469zZ5kFZ4XFJa3nr3atktV5PmVQMRgz21Kh+A=
 github.com/go-sphere/httpx v0.0.2-beta.22/go.mod h1:UL/HyWTCApHlH2cfcpApEkP/qSxKRrFVjOouOxHuNxk=
 github.com/labstack/echo/v4 v4.14.0 h1:+tiMrDLxwv6u0oKtD03mv+V1vXXB3wCqPHJqPuIe+7M=
