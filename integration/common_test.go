@@ -200,7 +200,7 @@ func (c *CommonIntegrationTests) testTestSuiteCreation(t *testing.T) {
 // testAbortTrackerInitialization tests abort tracker initialization
 func (c *CommonIntegrationTests) testAbortTrackerInitialization(t *testing.T) {
 	tracker := httpxtesting.NewAbortTracker()
-	
+
 	// Test initial state without setting up engine to avoid route conflicts
 	if len(tracker.Steps) != 0 {
 		t.Errorf("Expected empty steps on initialization, got %d", len(tracker.Steps))
@@ -214,10 +214,10 @@ func (c *CommonIntegrationTests) testAbortTrackerInitialization(t *testing.T) {
 func (c *CommonIntegrationTests) testAbortTrackerReset(t *testing.T) {
 	// Create a fresh tracker and engine for this test to avoid conflicts
 	tracker := httpxtesting.NewAbortTracker()
-	
+
 	// Note: We don't call SetupAbortEngine here to avoid route conflicts
 	// Instead, we test the tracker reset functionality directly
-	
+
 	// Add some test data
 	tracker.Steps = append(tracker.Steps, "test_step")
 	tracker.AbortedStates = append(tracker.AbortedStates, false)

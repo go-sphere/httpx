@@ -3,7 +3,7 @@ module github.com/go-sphere/httpx/fiberx
 go 1.25.5
 
 require (
-	github.com/go-sphere/httpx v0.0.2-beta.22
+	github.com/go-sphere/httpx v0.0.2-beta.24
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
 )
 

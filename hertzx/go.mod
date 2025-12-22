@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/cloudwego/hertz v0.10.3
-	github.com/go-sphere/httpx v0.0.2-beta.22
+	github.com/go-sphere/httpx v0.0.2-beta.24
 )
 
 require (
