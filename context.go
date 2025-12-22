@@ -16,7 +16,7 @@ type Request interface {
 	FullPath() string // Returns route pattern when available, empty otherwise
 	ClientIP() string // Best-effort client IP detection
 
-	// Parameter access with consistent behavior
+	// Param access with consistent behavior
 	Param(key string) string
 	Params() map[string]string // nil if no params
 

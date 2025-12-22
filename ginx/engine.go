@@ -2,7 +2,6 @@ package ginx
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sync/atomic"
 
@@ -87,16 +86,8 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 
 func (e *Engine) Start() error {
 	e.running.Store(true)
-
-	// Start serving in a goroutine so Start() doesn't block
-	go func() {
-		err := e.server.ListenAndServe()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			e.running.Store(false)
-		}
-	}()
-
-	return nil
+	defer e.running.Store(false)
+	return e.server.ListenAndServe()
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
