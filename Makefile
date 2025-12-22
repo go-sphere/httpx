@@ -142,9 +142,9 @@ tag-all:
 	@echo "✅ All adapter tags created and pushed"
 	@echo ""
 	@echo "Install commands:"
-	@echo "  go get github.com/go-sphere/httpx/ginx@$(TAG)"
-	@echo "  go get github.com/go-sphere/httpx/fiberx@$(TAG)"
-	@echo "  go get github.com/go-sphere/httpx/hertzx@$(TAG)"
+	@echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx  go get github.com/go-sphere/httpx/ginx@$(TAG)"
+	@echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx  go get github.com/go-sphere/httpx/fiberx@$(TAG)"
+	@echo "GOPROXY=direct GONOSUMDB=github.com/go-sphere/httpx  go get github.com/go-sphere/httpx/hertzx@$(TAG)"
 
 # Delete tags (local and remote)
 tag-delete:
