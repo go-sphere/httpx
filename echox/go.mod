@@ -3,7 +3,7 @@ module github.com/go-sphere/httpx/echox
 go 1.25.5
 
 require (
-	github.com/go-sphere/httpx v0.0.2-beta.24
+	github.com/go-sphere/httpx v0.0.2-beta.30
 	github.com/labstack/echo/v4 v4.14.0
 )
 

@@ -223,7 +223,7 @@ func (rit *RequestInfoTester) TestParams(t *testing.T) {
 				params := ctx.Params()
 				// Params should return nil if no params, otherwise a map
 				if !hasParams(tc.routePattern) {
-					if params != nil && len(params) > 0 {
+					if len(params) > 0 {
 						t.Errorf("Expected nil or empty params for route without params, got %v", params)
 					}
 				} else {

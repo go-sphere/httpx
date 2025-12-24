@@ -7,21 +7,7 @@ import (
 	httptesting "github.com/go-sphere/httpx/testing"
 )
 
-// setupFiberxSkipManager configures known failing tests for fiberx
-func setupFiberxSkipManager() *TestSkipManager {
-	skipManager := NewTestSkipManager()
-
-	// Add known failing tests for fiberx - these should be updated as issues are fixed
-	// Fiber doesn't support custom HTTP methods
-	skipManager.AddSkippedTest("fiberx", "Router", "Handle", "Fiber doesn't support custom HTTP methods like CUSTOM")
-
-	// Uncomment and adjust these as needed based on actual test failures:
-	// skipManager.AddSkippedTest("fiberx", "Binder", "BindJSON", "Known issue with JSON binding in fiberx")
-	// skipManager.AddSkippedTest("fiberx", "FormAccess", "FormFile", "Multipart form handling differences")
-	// skipManager.AddSkippedTest("fiberx", "RequestInfo", "ClientIP", "Client IP detection differences")
-
-	return skipManager
-}
+// setupFiberxSkipManager is now defined in skip_managers.go
 
 // TestFiberxIntegration tests the fiberx framework adapter with skip support
 func TestFiberxIntegration(t *testing.T) {
@@ -29,31 +15,31 @@ func TestFiberxIntegration(t *testing.T) {
 	engine := fiberx.New(fiberx.WithListen(":0"))
 
 	// Create common integration tests instance
-	cit := NewCommonIntegrationTests("fiberx", engine)
+	tc := NewTestCases("fiberx", engine)
 
 	// Set up skip manager for known failing tests
 	skipManager := setupFiberxSkipManager()
 
 	// Validate framework integration first
 	t.Run("ValidateIntegration", func(t *testing.T) {
-		cit.ValidateFrameworkIntegration(t)
+		tc.ValidateFrameworkIntegration(t)
 	})
 
 	// Run all interface tests with skip support
 	t.Run("AllInterfaceTests", func(t *testing.T) {
-		cit.RunAllInterfaceTests(t)
+		tc.RunAllInterfaceTests(t)
 	})
 
 	// Run individual interface tests with skip support for better isolation
 	t.Run("IndividualInterfaceTestsWithSkipSupport", func(t *testing.T) {
-		cit.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
+		tc.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
 	})
 }
 
 // TestFiberxSpecificInterfaceTests allows testing specific interfaces individually with skip support
 func TestFiberxSpecificInterfaceTests(t *testing.T) {
 	engine := fiberx.New(fiberx.WithListen(":0"))
-	cit := NewCommonIntegrationTests("fiberx", engine)
+	tc := NewTestCases("fiberx", engine)
 	skipManager := setupFiberxSkipManager()
 
 	// Test each interface individually with skip support
@@ -71,8 +57,8 @@ func TestFiberxSpecificInterfaceTests(t *testing.T) {
 
 	for _, interfaceName := range testCases {
 		t.Run(interfaceName, func(t *testing.T) {
-			cit.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
-				cit.RunSpecificInterfaceTest(t, interfaceName)
+			tc.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
+				tc.RunSpecificInterfaceTest(t, interfaceName)
 			})
 		})
 	}
@@ -88,13 +74,13 @@ func TestFiberxWithCustomConfig(t *testing.T) {
 		VerboseLogging: true,
 	}
 
-	cit := NewCommonIntegrationTestsWithConfig("fiberx", engine, config)
+	tc := NewTestCasesWithConfig("fiberx", engine, config)
 	skipManager := setupFiberxSkipManager()
 
 	t.Run("CustomConfigTests", func(t *testing.T) {
 		// Run tests with skip support
-		cit.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
-			cit.RunAllInterfaceTests(t)
+		tc.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
+			tc.RunAllInterfaceTests(t)
 		})
 	})
 }

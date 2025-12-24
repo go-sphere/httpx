@@ -61,7 +61,7 @@ func (h *TestHelper) LogTestComplete(t *testing.T, ctx *TestContext) {
 // LogTestSkipped logs when a test is skipped with context
 func (h *TestHelper) LogTestSkipped(t *testing.T, ctx *TestContext, reason string) {
 	t.Helper()
-	skipMsg := fmt.Sprintf("[%s/%s.%s] SKIPPED: %s (Test: %s)", 
+	skipMsg := fmt.Sprintf("[%s/%s.%s] SKIPPED: %s (Test: %s)",
 		ctx.Framework, ctx.Interface, ctx.Method, reason, ctx.TestCase)
 	t.Log(skipMsg)
 }
@@ -73,8 +73,8 @@ func (h *TestHelper) ReportTestFailure(t *testing.T, ctx *TestContext, failure s
 	if len(details) > 0 {
 		detailStr = fmt.Sprintf(" - Details: %v", details)
 	}
-	
-	errorMsg := fmt.Sprintf("[FAILURE] %s/%s.%s: %s%s (Test: %s)", 
+
+	errorMsg := fmt.Sprintf("[FAILURE] %s/%s.%s: %s%s (Test: %s)",
 		ctx.Framework, ctx.Interface, ctx.Method, failure, detailStr, ctx.TestCase)
 	t.Error(errorMsg)
 }
@@ -92,17 +92,17 @@ func (h *TestHelper) ReportInterfaceTestComplete(t *testing.T, framework, interf
 	if failed > 0 {
 		status = "FAILED"
 	}
-	t.Logf("[%s] %s interface tests %s - Passed: %d, Failed: %d", 
+	t.Logf("[%s] %s interface tests %s - Passed: %d, Failed: %d",
 		framework, interfaceName, status, passed, failed)
 }
 
 // ReportFrameworkTestSummary logs a summary of all framework tests
 func (h *TestHelper) ReportFrameworkTestSummary(t *testing.T, framework string, results map[string]TestResult) {
 	t.Helper()
-	
+
 	totalPassed := 0
 	totalFailed := 0
-	
+
 	t.Logf("[%s] Framework Test Summary:", framework)
 	for interfaceName, result := range results {
 		totalPassed += result.Passed
@@ -113,12 +113,12 @@ func (h *TestHelper) ReportFrameworkTestSummary(t *testing.T, framework string, 
 		}
 		t.Logf("  %s: %s (Passed: %d, Failed: %d)", interfaceName, status, result.Passed, result.Failed)
 	}
-	
+
 	overallStatus := "PASSED"
 	if totalFailed > 0 {
 		overallStatus = "FAILED"
 	}
-	t.Logf("[%s] Overall: %s - Total Passed: %d, Total Failed: %d", 
+	t.Logf("[%s] Overall: %s - Total Passed: %d, Total Failed: %d",
 		framework, overallStatus, totalPassed, totalFailed)
 }
 
@@ -138,12 +138,12 @@ func (h *TestHelper) CreateJSONRequest(method, urlStr string, body interface{}) 
 			return nil, fmt.Errorf("failed to encode JSON: %w", err)
 		}
 	}
-	
+
 	req, err := http.NewRequest(method, urlStr, &buf)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	return req, nil
 }
@@ -154,12 +154,12 @@ func (h *TestHelper) CreateFormRequest(method, urlStr string, formData map[strin
 	for key, value := range formData {
 		form.Set(key, value)
 	}
-	
+
 	req, err := http.NewRequest(method, urlStr, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	
+
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	return req, nil
 }
@@ -168,14 +168,14 @@ func (h *TestHelper) CreateFormRequest(method, urlStr string, formData map[strin
 func (h *TestHelper) CreateMultipartRequest(method, urlStr string, fields map[string]string, files map[string][]byte) (*http.Request, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
-	
+
 	// Add form fields
 	for key, value := range fields {
 		if err := writer.WriteField(key, value); err != nil {
 			return nil, fmt.Errorf("failed to write field %s: %w", key, err)
 		}
 	}
-	
+
 	// Add files
 	for filename, content := range files {
 		part, err := writer.CreateFormFile("file", filename)
@@ -186,16 +186,16 @@ func (h *TestHelper) CreateMultipartRequest(method, urlStr string, fields map[st
 			return nil, fmt.Errorf("failed to write file content for %s: %w", filename, err)
 		}
 	}
-	
+
 	if err := writer.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
 	}
-	
+
 	req, err := http.NewRequest(method, urlStr, &buf)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req, nil
 }
@@ -223,7 +223,7 @@ func NewTestContext(framework, interfaceName, method, testCase string) *TestCont
 // FormatError formats an error message with context information
 func (tc *TestContext) FormatError(message string, args ...interface{}) string {
 	baseMessage := fmt.Sprintf(message, args...)
-	return fmt.Sprintf("[%s/%s.%s] %s (Test: %s)", 
+	return fmt.Sprintf("[%s/%s.%s] %s (Test: %s)",
 		tc.Framework, tc.Interface, tc.Method, baseMessage, tc.TestCase)
 }
 
@@ -331,12 +331,12 @@ func ReadBody(body io.Reader) (string, error) {
 	if body == nil {
 		return "", nil
 	}
-	
+
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return "", err
 	}
-	
+
 	return string(data), nil
 }
 

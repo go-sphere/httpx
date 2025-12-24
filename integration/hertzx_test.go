@@ -7,21 +7,7 @@ import (
 	httptesting "github.com/go-sphere/httpx/testing"
 )
 
-// setupHertzxSkipManager configures known failing tests for hertzx
-func setupHertzxSkipManager() *TestSkipManager {
-	skipManager := NewTestSkipManager()
-
-	// Add known failing tests for hertzx - these should be updated as issues are fixed
-
-	// Currently no tests need to be skipped - framework-specific behaviors are handled in the tests
-
-	// Uncomment and adjust these as needed based on actual test failures:
-	// skipManager.AddSkippedTest("hertzx", "RequestInfo", "Headers", "Header handling differences")
-	// skipManager.AddSkippedTest("hertzx", "Responder", "JSON", "JSON response differences")
-	// skipManager.AddSkippedTest("hertzx", "Router", "Static", "Static file serving differences")
-
-	return skipManager
-}
+// setupHertzxSkipManager is now defined in skip_managers.go
 
 // TestHertzxIntegration tests the hertzx framework adapter with skip support
 func TestHertzxIntegration(t *testing.T) {
@@ -29,31 +15,31 @@ func TestHertzxIntegration(t *testing.T) {
 	engine := hertzx.New()
 
 	// Create common integration tests instance
-	cit := NewCommonIntegrationTests("hertzx", engine)
+	tc := NewTestCases("hertzx", engine)
 
 	// Set up skip manager for known failing tests
 	skipManager := setupHertzxSkipManager()
 
 	// Validate framework integration first
 	t.Run("ValidateIntegration", func(t *testing.T) {
-		cit.ValidateFrameworkIntegration(t)
+		tc.ValidateFrameworkIntegration(t)
 	})
 
 	// Run all interface tests with skip support
 	t.Run("AllInterfaceTests", func(t *testing.T) {
-		cit.RunAllInterfaceTests(t)
+		tc.RunAllInterfaceTests(t)
 	})
 
 	// Run individual interface tests with skip support for better isolation
 	t.Run("IndividualInterfaceTestsWithSkipSupport", func(t *testing.T) {
-		cit.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
+		tc.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
 	})
 }
 
 // TestHertzxSpecificInterfaceTests allows testing specific interfaces individually with skip support
 func TestHertzxSpecificInterfaceTests(t *testing.T) {
 	engine := hertzx.New()
-	cit := NewCommonIntegrationTests("hertzx", engine)
+	tc := NewTestCases("hertzx", engine)
 	skipManager := setupHertzxSkipManager()
 
 	// Test each interface individually with skip support
@@ -71,8 +57,8 @@ func TestHertzxSpecificInterfaceTests(t *testing.T) {
 
 	for _, interfaceName := range testCases {
 		t.Run(interfaceName, func(t *testing.T) {
-			cit.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
-				cit.RunSpecificInterfaceTest(t, interfaceName)
+			tc.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
+				tc.RunSpecificInterfaceTest(t, interfaceName)
 			})
 		})
 	}
@@ -88,13 +74,13 @@ func TestHertzxWithCustomConfig(t *testing.T) {
 		VerboseLogging: true,
 	}
 
-	cit := NewCommonIntegrationTestsWithConfig("hertzx", engine, config)
+	tc := NewTestCasesWithConfig("hertzx", engine, config)
 	skipManager := setupHertzxSkipManager()
 
 	t.Run("CustomConfigTests", func(t *testing.T) {
 		// Run tests with skip support
-		cit.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
-			cit.RunAllInterfaceTests(t)
+		tc.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
+			tc.RunAllInterfaceTests(t)
 		})
 	})
 }
@@ -102,10 +88,10 @@ func TestHertzxWithCustomConfig(t *testing.T) {
 // BenchmarkHertzxIntegration provides performance benchmarks for hertzx
 func BenchmarkHertzxIntegration(b *testing.B) {
 	engine := hertzx.New()
-	cit := NewCommonIntegrationTests("hertzx", engine)
+	tc := NewTestCases("hertzx", engine)
 
 	// Benchmark interface tests
-	cit.BenchmarkInterfaceTests(b)
+	tc.BenchmarkInterfaceTests(b)
 }
 
 // TestHertzxSkipManagerConfiguration tests the skip manager configuration

@@ -7,20 +7,7 @@ import (
 	httptesting "github.com/go-sphere/httpx/testing"
 )
 
-// setupEchoxSkipManager configures known failing tests for echox
-func setupEchoxSkipManager() *TestSkipManager {
-	skipManager := NewTestSkipManager()
-
-	// Add known failing tests for echox - these should be updated as issues are fixed
-	// Example skipped tests (these may need to be adjusted based on actual test results):
-
-	// Uncomment and adjust these as needed based on actual test failures:
-	// skipManager.AddSkippedTest("echox", "Binder", "BindURI", "URI parameter binding differences")
-	// skipManager.AddSkippedTest("echox", "RequestInfo", "Params", "Parameter handling differences")
-	// skipManager.AddSkippedTest("echox", "Responder", "SetCookie", "Cookie handling differences")
-
-	return skipManager
-}
+// setupEchoxSkipManager is now defined in skip_managers.go
 
 // TestEchoxIntegration tests the echox framework adapter with skip support
 func TestEchoxIntegration(t *testing.T) {
@@ -28,31 +15,31 @@ func TestEchoxIntegration(t *testing.T) {
 	engine := echox.New(echox.WithServerAddr(":0"))
 
 	// Create common integration tests instance
-	cit := NewCommonIntegrationTests("echox", engine)
+	tc := NewTestCases("echox", engine)
 
 	// Set up skip manager for known failing tests
 	skipManager := setupEchoxSkipManager()
 
 	// Validate framework integration first
 	t.Run("ValidateIntegration", func(t *testing.T) {
-		cit.ValidateFrameworkIntegration(t)
+		tc.ValidateFrameworkIntegration(t)
 	})
 
 	// Run all interface tests with skip support
 	t.Run("AllInterfaceTests", func(t *testing.T) {
-		cit.RunAllInterfaceTests(t)
+		tc.RunAllInterfaceTests(t)
 	})
 
 	// Run individual interface tests with skip support for better isolation
 	t.Run("IndividualInterfaceTestsWithSkipSupport", func(t *testing.T) {
-		cit.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
+		tc.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
 	})
 }
 
 // TestEchoxSpecificInterfaceTests allows testing specific interfaces individually with skip support
 func TestEchoxSpecificInterfaceTests(t *testing.T) {
 	engine := echox.New(echox.WithServerAddr(":0"))
-	cit := NewCommonIntegrationTests("echox", engine)
+	tc := NewTestCases("echox", engine)
 	skipManager := setupEchoxSkipManager()
 
 	// Test each interface individually with skip support
@@ -70,8 +57,8 @@ func TestEchoxSpecificInterfaceTests(t *testing.T) {
 
 	for _, interfaceName := range testCases {
 		t.Run(interfaceName, func(t *testing.T) {
-			cit.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
-				cit.RunSpecificInterfaceTest(t, interfaceName)
+			tc.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
+				tc.RunSpecificInterfaceTest(t, interfaceName)
 			})
 		})
 	}
@@ -87,13 +74,13 @@ func TestEchoxWithCustomConfig(t *testing.T) {
 		VerboseLogging: true,
 	}
 
-	cit := NewCommonIntegrationTestsWithConfig("echox", engine, config)
+	tc := NewTestCasesWithConfig("echox", engine, config)
 	skipManager := setupEchoxSkipManager()
 
 	t.Run("CustomConfigTests", func(t *testing.T) {
 		// Run tests with skip support
-		cit.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
-			cit.RunAllInterfaceTests(t)
+		tc.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
+			tc.RunAllInterfaceTests(t)
 		})
 	})
 }
@@ -101,10 +88,10 @@ func TestEchoxWithCustomConfig(t *testing.T) {
 // BenchmarkEchoxIntegration provides performance benchmarks for echox
 func BenchmarkEchoxIntegration(b *testing.B) {
 	engine := echox.New(echox.WithServerAddr(":0"))
-	cit := NewCommonIntegrationTests("echox", engine)
+	tc := NewTestCases("echox", engine)
 
 	// Benchmark interface tests
-	cit.BenchmarkInterfaceTests(b)
+	tc.BenchmarkInterfaceTests(b)
 }
 
 // TestEchoxSkipManagerConfiguration tests the skip manager configuration

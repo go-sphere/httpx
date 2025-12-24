@@ -77,7 +77,7 @@ func (bat *BodyAccessTester) TestBodyReader(t *testing.T) {
 
 				// Close the reader
 				if closer, ok := bodyReader.(io.Closer); ok {
-					closer.Close()
+					_ = closer.Close()
 				}
 
 				return ctx.Text(200, "OK")

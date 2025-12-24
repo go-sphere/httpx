@@ -74,7 +74,7 @@ func (tr *TestRunner) initializeFrameworks() {
 
 // initializeSkipManagers sets up skip managers for each framework
 func (tr *TestRunner) initializeSkipManagers() {
-	tr.skipMgrs[FrameworkGinx] = NewTestSkipManager() // Ginx is reference, no skips
+	tr.skipMgrs[FrameworkGinx] = setupGinxSkipManager()
 	tr.skipMgrs[FrameworkFiberx] = setupFiberxSkipManager()
 	tr.skipMgrs[FrameworkEchox] = setupEchoxSkipManager()
 	tr.skipMgrs[FrameworkHertzx] = setupHertzxSkipManager()
@@ -90,20 +90,20 @@ func (tr *TestRunner) RunSingleFramework(t *testing.T, framework FrameworkType, 
 	}
 
 	skipMgr := tr.skipMgrs[framework]
-	cit := NewCommonIntegrationTestsWithConfig(string(framework), engine, tr.config)
+	tc := NewTestCasesWithConfig(string(framework), engine, tr.config)
 
 	t.Logf("Running %s framework tests in %s mode", framework, mode)
 
 	switch mode {
 	case ModeIndividual:
-		tr.runIndividualTests(t, cit, skipMgr)
+		tr.runIndividualTests(t, tc, skipMgr)
 	case ModeBatch:
-		tr.runBatchTests(t, cit, skipMgr)
+		tr.runBatchTests(t, tc, skipMgr)
 	case ModeBenchmark:
 		// Benchmarks need to be run separately, log info for now
 		t.Logf("Benchmark mode for %s - use BenchmarkSingleFramework method", framework)
 	case ModeValidation:
-		tr.runValidationTests(t, cit)
+		tr.runValidationTests(t, tc)
 	default:
 		// Panic for invalid modes to allow tests to catch with recover()
 		panic(fmt.Sprintf("Unknown test execution mode: %s", mode))
@@ -137,30 +137,30 @@ func (tr *TestRunner) RunSpecificFrameworks(t *testing.T, frameworks []Framework
 }
 
 // runIndividualTests runs each interface test individually
-func (tr *TestRunner) runIndividualTests(t *testing.T, cit *CommonIntegrationTests, skipMgr *TestSkipManager) {
+func (tr *TestRunner) runIndividualTests(t *testing.T, tc *TestCases, skipMgr *TestSkipManager) {
 	t.Helper()
-	cit.RunIndividualInterfaceTestsWithSkipSupport(t, skipMgr)
+	tc.RunIndividualInterfaceTestsWithSkipSupport(t, skipMgr)
 }
 
 // runBatchTests runs all interface tests together
-func (tr *TestRunner) runBatchTests(t *testing.T, cit *CommonIntegrationTests, skipMgr *TestSkipManager) {
+func (tr *TestRunner) runBatchTests(t *testing.T, tc *TestCases, skipMgr *TestSkipManager) {
 	t.Helper()
-	
+
 	// Run validation first
 	t.Run("Validation", func(t *testing.T) {
-		cit.ValidateFrameworkIntegration(t)
+		tc.ValidateFrameworkIntegration(t)
 	})
-	
+
 	// Run all tests together
 	t.Run("AllInterfaces", func(t *testing.T) {
-		cit.RunAllInterfaceTestsWithReporting(t)
+		tc.RunAllInterfaceTestsWithReporting(t)
 	})
 }
 
 // runValidationTests runs only validation tests
-func (tr *TestRunner) runValidationTests(t *testing.T, cit *CommonIntegrationTests) {
+func (tr *TestRunner) runValidationTests(t *testing.T, tc *TestCases) {
 	t.Helper()
-	cit.ValidateFrameworkIntegration(t)
+	tc.ValidateFrameworkIntegration(t)
 }
 
 // BenchmarkSingleFramework runs benchmark tests for a single framework
@@ -172,10 +172,10 @@ func (tr *TestRunner) BenchmarkSingleFramework(b *testing.B, framework Framework
 		b.Fatalf("Framework %s not found", framework)
 	}
 
-	cit := NewCommonIntegrationTestsWithConfig(string(framework), engine, tr.config)
+	tc := NewTestCasesWithConfig(string(framework), engine, tr.config)
 
 	b.Logf("Running benchmark tests for framework: %s", framework)
-	cit.BenchmarkInterfaceTests(b)
+	tc.BenchmarkInterfaceTests(b)
 }
 
 // BenchmarkAllFrameworks runs benchmark tests for all frameworks
@@ -200,10 +200,10 @@ func (tr *TestRunner) BenchmarkComparison(b *testing.B) {
 			for framework := range tr.frameworks {
 				b.Run(string(framework), func(b *testing.B) {
 					engine := tr.frameworks[framework]
-					cit := NewCommonIntegrationTestsWithConfig(string(framework), engine, tr.config)
-					
+					tc := NewTestCasesWithConfig(string(framework), engine, tr.config)
+
 					// Run specific interface benchmark
-					tr.benchmarkSpecificInterface(b, cit, interfaceName)
+					tr.benchmarkSpecificInterface(b, tc, interfaceName)
 				})
 			}
 		})
@@ -211,21 +211,21 @@ func (tr *TestRunner) BenchmarkComparison(b *testing.B) {
 }
 
 // benchmarkSpecificInterface runs benchmark for a specific interface
-func (tr *TestRunner) benchmarkSpecificInterface(b *testing.B, cit *CommonIntegrationTests, interfaceName string) {
+func (tr *TestRunner) benchmarkSpecificInterface(b *testing.B, tc *TestCases, interfaceName string) {
 	b.Helper()
 
 	for i := 0; i < b.N; i++ {
 		t := &testing.T{} // Create a dummy testing.T for interface compatibility
-		
+
 		switch interfaceName {
 		case "RequestInfo":
-			cit.suite.RunRequestInfoTests(t)
+			tc.suite.RunRequestInfoTests(t)
 		case "BodyAccess":
-			cit.suite.RunBodyAccessTests(t)
+			tc.suite.RunBodyAccessTests(t)
 		case "Binder":
-			cit.suite.RunBinderTests(t)
+			tc.suite.RunBinderTests(t)
 		case "Responder":
-			cit.suite.RunResponderTests(t)
+			tc.suite.RunResponderTests(t)
 		default:
 			b.Fatalf("Unknown interface: %s", interfaceName)
 		}
@@ -242,10 +242,10 @@ func (tr *TestRunner) RunInterfaceAcrossFrameworks(t *testing.T, interfaceName s
 		t.Run(string(framework), func(t *testing.T) {
 			engine := tr.frameworks[framework]
 			skipMgr := tr.skipMgrs[framework]
-			cit := NewCommonIntegrationTestsWithConfig(string(framework), engine, tr.config)
+			tc := NewTestCasesWithConfig(string(framework), engine, tr.config)
 
-			cit.RunWithSkipSupport(t, skipMgr, interfaceName, func(t *testing.T) {
-				cit.RunSpecificInterfaceTest(t, interfaceName)
+			tc.RunWithSkipSupport(t, skipMgr, interfaceName, func(t *testing.T) {
+				tc.RunSpecificInterfaceTest(t, interfaceName)
 			})
 		})
 	}
@@ -283,7 +283,7 @@ func (tr *TestRunner) PrintFrameworkSummary(t *testing.T) {
 	for framework, skipMgr := range tr.skipMgrs {
 		skippedTests := skipMgr.GetSkippedTests(string(framework))
 		t.Logf("  %s: %d skipped tests configured", framework, len(skippedTests))
-		
+
 		for _, test := range skippedTests {
 			t.Logf("    - %s.%s: %s", test.Interface, test.Method, test.Reason)
 		}
@@ -317,10 +317,10 @@ func (tr *TestRunner) RunWithOptions(t *testing.T, options TestExecutionOptions)
 					t.Run(string(framework), func(t *testing.T) {
 						engine := tr.frameworks[framework]
 						skipMgr := tr.skipMgrs[framework]
-						cit := NewCommonIntegrationTestsWithConfig(string(framework), engine, tr.config)
+						tc := NewTestCasesWithConfig(string(framework), engine, tr.config)
 
-						cit.RunWithSkipSupport(t, skipMgr, interfaceName, func(t *testing.T) {
-							cit.RunSpecificInterfaceTest(t, interfaceName)
+						tc.RunWithSkipSupport(t, skipMgr, interfaceName, func(t *testing.T) {
+							tc.RunSpecificInterfaceTest(t, interfaceName)
 						})
 					})
 				}
@@ -333,13 +333,13 @@ func (tr *TestRunner) RunWithOptions(t *testing.T, options TestExecutionOptions)
 
 // PerformanceMetrics holds performance metrics for a test run
 type PerformanceMetrics struct {
-	Framework     string
-	Interface     string
-	Duration      time.Duration
-	TestsPassed   int
-	TestsFailed   int
-	TestsSkipped  int
-	Timestamp     time.Time
+	Framework    string
+	Interface    string
+	Duration     time.Duration
+	TestsPassed  int
+	TestsFailed  int
+	TestsSkipped int
+	Timestamp    time.Time
 }
 
 // TrackPerformance runs a test and tracks its performance metrics
@@ -347,10 +347,10 @@ func (tr *TestRunner) TrackPerformance(t *testing.T, framework FrameworkType, in
 	t.Helper()
 
 	start := time.Now()
-	
+
 	// Run the test
 	testFunc(t)
-	
+
 	duration := time.Since(start)
 
 	return &PerformanceMetrics{
@@ -372,10 +372,10 @@ func (tr *TestRunner) CompareFrameworkPerformance(t *testing.T, interfaceName st
 
 	for framework := range tr.frameworks {
 		engine := tr.frameworks[framework]
-		cit := NewCommonIntegrationTestsWithConfig(string(framework), engine, tr.config)
+		tc := NewTestCasesWithConfig(string(framework), engine, tr.config)
 
 		metrics := tr.TrackPerformance(t, framework, interfaceName, func(t *testing.T) {
-			cit.RunSpecificInterfaceTest(t, interfaceName)
+			tc.RunSpecificInterfaceTest(t, interfaceName)
 		})
 
 		results[framework] = metrics
@@ -388,4 +388,58 @@ func (tr *TestRunner) CompareFrameworkPerformance(t *testing.T, interfaceName st
 	}
 
 	return results
+}
+
+// RunAllInterfaceTests runs all interface tests using the new interface testers
+func (tc *TestCases) RunAllInterfaceTests(t *testing.T) {
+	t.Helper()
+
+	t.Logf("Running all interface tests for framework: %s", tc.frameworkName)
+
+	// Run the complete test suite which coordinates all interface testers
+	tc.suite.RunAllTests(t)
+}
+
+// RunIndividualInterfaceTests runs each interface test individually for better isolation
+func (tc *TestCases) RunIndividualInterfaceTests(t *testing.T) {
+	t.Helper()
+
+	t.Logf("Running individual interface tests for framework: %s", tc.frameworkName)
+
+	// Test each interface individually
+	t.Run("RequestInfo", func(t *testing.T) {
+		tc.suite.RunRequestInfoTests(t)
+	})
+
+	t.Run("Request", func(t *testing.T) {
+		tc.suite.RunRequestTests(t)
+	})
+
+	t.Run("BodyAccess", func(t *testing.T) {
+		tc.suite.RunBodyAccessTests(t)
+	})
+
+	t.Run("FormAccess", func(t *testing.T) {
+		tc.suite.RunFormAccessTests(t)
+	})
+
+	t.Run("Binder", func(t *testing.T) {
+		tc.suite.RunBinderTests(t)
+	})
+
+	t.Run("Responder", func(t *testing.T) {
+		tc.suite.RunResponderTests(t)
+	})
+
+	t.Run("StateStore", func(t *testing.T) {
+		tc.suite.RunStateStoreTests(t)
+	})
+
+	t.Run("Router", func(t *testing.T) {
+		tc.suite.RunRouterTests(t)
+	})
+
+	t.Run("Engine", func(t *testing.T) {
+		tc.suite.RunEngineTests(t)
+	})
 }

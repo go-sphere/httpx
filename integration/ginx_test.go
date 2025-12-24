@@ -13,28 +13,28 @@ func TestGinxIntegration(t *testing.T) {
 	engine := ginx.New(ginx.WithServerAddr(":0"))
 
 	// Create common integration tests instance
-	cit := NewCommonIntegrationTests("ginx", engine)
+	tc := NewTestCases("ginx", engine)
 
 	// Validate framework integration first
 	t.Run("ValidateIntegration", func(t *testing.T) {
-		cit.ValidateFrameworkIntegration(t)
+		tc.ValidateFrameworkIntegration(t)
 	})
 
 	// Run all interface tests - ginx should pass all tests as reference implementation
 	t.Run("AllInterfaceTests", func(t *testing.T) {
-		cit.RunAllInterfaceTests(t)
+		tc.RunAllInterfaceTests(t)
 	})
 
 	// Run individual interface tests for better isolation and debugging
 	t.Run("IndividualInterfaceTests", func(t *testing.T) {
-		cit.RunIndividualInterfaceTests(t)
+		tc.RunIndividualInterfaceTests(t)
 	})
 }
 
 // TestGinxSpecificInterfaceTests allows testing specific interfaces individually
 func TestGinxSpecificInterfaceTests(t *testing.T) {
 	engine := ginx.New(ginx.WithServerAddr(":0"))
-	cit := NewCommonIntegrationTests("ginx", engine)
+	tc := NewTestCases("ginx", engine)
 
 	// Test each interface individually - useful for debugging specific issues
 	testCases := []string{
@@ -51,7 +51,7 @@ func TestGinxSpecificInterfaceTests(t *testing.T) {
 
 	for _, interfaceName := range testCases {
 		t.Run(interfaceName, func(t *testing.T) {
-			cit.RunSpecificInterfaceTest(t, interfaceName)
+			tc.RunSpecificInterfaceTest(t, interfaceName)
 		})
 	}
 }
@@ -66,10 +66,10 @@ func TestGinxWithCustomConfig(t *testing.T) {
 		VerboseLogging: true,
 	}
 
-	cit := NewCommonIntegrationTestsWithConfig("ginx", engine, config)
+	tc := NewTestCasesWithConfig("ginx", engine, config)
 
 	t.Run("CustomConfigTests", func(t *testing.T) {
-		cit.RunAllInterfaceTests(t)
+		tc.RunAllInterfaceTests(t)
 	})
 }
 
