@@ -175,32 +175,39 @@ func (c *ginContext) Status(code int) {
 	c.ctx.Status(code)
 }
 
-func (c *ginContext) JSON(code int, v any) {
+func (c *ginContext) JSON(code int, v any) error {
 	c.ctx.JSON(code, v)
+	return nil
 }
 
-func (c *ginContext) Text(code int, s string) {
+func (c *ginContext) Text(code int, s string) error {
 	c.ctx.String(code, s)
+	return nil
 }
 
-func (c *ginContext) NoContent(code int) {
+func (c *ginContext) NoContent(code int) error {
 	c.ctx.Status(code)
+	return nil
 }
 
-func (c *ginContext) Bytes(code int, b []byte, contentType string) {
+func (c *ginContext) Bytes(code int, b []byte, contentType string) error {
 	c.ctx.Data(code, contentType, b)
+	return nil
 }
 
-func (c *ginContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
+func (c *ginContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
 	c.ctx.DataFromReader(code, int64(size), contentType, r, nil)
+	return nil
 }
 
-func (c *ginContext) File(path string) {
+func (c *ginContext) File(path string) error {
 	c.ctx.File(path)
+	return nil
 }
 
-func (c *ginContext) Redirect(code int, location string) {
+func (c *ginContext) Redirect(code int, location string) error {
 	c.ctx.Redirect(code, location)
+	return nil
 }
 
 func (c *ginContext) SetHeader(key, value string) {
@@ -208,10 +215,9 @@ func (c *ginContext) SetHeader(key, value string) {
 }
 
 func (c *ginContext) SetCookie(cookie *http.Cookie) {
-	if cookie == nil {
-		return
+	if cookie != nil {
+		http.SetCookie(c.ctx.Writer, cookie)
 	}
-	http.SetCookie(c.ctx.Writer, cookie)
 }
 
 // StateStore (httpx.StateStore)
@@ -222,16 +228,6 @@ func (c *ginContext) Set(key string, val any) {
 
 func (c *ginContext) Get(key string) (any, bool) {
 	return c.ctx.Get(key)
-}
-
-// Aborter (httpx.Aborter)
-
-func (c *ginContext) Abort() {
-	c.ctx.Abort()
-}
-
-func (c *ginContext) IsAborted() bool {
-	return c.ctx.IsAborted()
 }
 
 // Context (context.Context + Next)
@@ -252,6 +248,15 @@ func (c *ginContext) Value(key any) any {
 	return c.ctx.Value(key)
 }
 
-func (c *ginContext) Next() {
+func (c *ginContext) Next() error {
 	c.ctx.Next()
+
+	// Check if any errors were added during middleware execution
+	// Gin collects errors in ctx.Errors - return the last error if any
+	if len(c.ctx.Errors) > 0 {
+		// Return the most recent error (last in the slice)
+		return c.ctx.Errors.Last()
+	}
+
+	return nil
 }

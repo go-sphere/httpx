@@ -16,11 +16,12 @@ import (
 var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
-	group *route.RouterGroup
+	group      *route.RouterGroup
+	errHandler ErrorHandler
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(adaptMiddlewares(m)...)
+	r.group.Use(adaptMiddlewares(m, r.errHandler)...)
 }
 
 func (r *Router) BasePath() string {
@@ -29,7 +30,8 @@ func (r *Router) BasePath() string {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group: r.group.Group(prefix, adaptMiddlewares(m)...),
+		group:      r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),
+		errHandler: r.errHandler,
 	}
 }
 
@@ -47,9 +49,6 @@ func (r *Router) Static(prefix, root string) {
 }
 
 func (r *Router) StaticFS(prefix string, fs fs.FS) {
-	if strings.Contains(prefix, ":") || strings.Contains(prefix, "*") {
-		panic("URL parameters can not be used when serving a static folder")
-	}
 	absolutePath := path.Join(r.group.BasePath(), prefix)
 	fileServer := http.StripPrefix(absolutePath, http.FileServer(http.FS(fs)))
 	handler := adaptor.HertzHandler(fileServer)
@@ -96,6 +95,8 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
 		hc := newHertzContext(ctx, rc)
-		h(hc)
+		if err := h(hc); err != nil {
+			r.errHandler(ctx, rc, err)
+		}
 	}
 }

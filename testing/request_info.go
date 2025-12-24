@@ -20,7 +20,7 @@ func NewRequestInfoTester(engine httpx.Engine) *RequestInfoTester {
 // TestMethod tests the Method() method
 func (rit *RequestInfoTester) TestMethod(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name   string
 		method string
@@ -33,20 +33,20 @@ func (rit *RequestInfoTester) TestMethod(t *testing.T) {
 		{"HEAD method", "HEAD"},
 		{"OPTIONS method", "OPTIONS"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			// Use unique route path for each test case to avoid conflicts
 			uniquePath := GenerateUniqueTestPath()
-			router.Handle(tc.method, uniquePath, func(ctx httpx.Context) {
+			router.Handle(tc.method, uniquePath, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				AssertEqual(t, tc.method, ctx.Method(), "Method should match")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -55,7 +55,7 @@ func (rit *RequestInfoTester) TestMethod(t *testing.T) {
 // TestPath tests the Path() method
 func (rit *RequestInfoTester) TestPath(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name         string
 		requestPath  string
@@ -66,20 +66,20 @@ func (rit *RequestInfoTester) TestPath(t *testing.T) {
 		{"Nested path", "/api/v1/users", "/api/v1/users"},
 		{"Path with query", "/test?param=value", "/test"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			// Use unique route path for each test case to avoid conflicts
 			uniquePath := GenerateUniqueTestPath()
-			router.GET(uniquePath, func(ctx httpx.Context) {
+			router.GET(uniquePath, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				AssertEqual(t, tc.expectedPath, ctx.Path(), "Path should match")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -88,7 +88,7 @@ func (rit *RequestInfoTester) TestPath(t *testing.T) {
 // TestFullPath tests the FullPath() method
 func (rit *RequestInfoTester) TestFullPath(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name             string
 		routePattern     string
@@ -98,12 +98,12 @@ func (rit *RequestInfoTester) TestFullPath(t *testing.T) {
 		{"Route with param", "/users/:id", "/users/:id"},
 		{"Nested route with params", "/api/v1/users/:id/posts/:postId", "/api/v1/users/:id/posts/:postId"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			var routeToUse string
 			var expectedFullPath string
 			if tc.routePattern == "/test" {
@@ -113,17 +113,17 @@ func (rit *RequestInfoTester) TestFullPath(t *testing.T) {
 				routeToUse = GenerateUniqueParamPath(tc.routePattern)
 				expectedFullPath = routeToUse
 			}
-			
-			router.GET(routeToUse, func(ctx httpx.Context) {
+
+			router.GET(routeToUse, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				// FullPath returns route pattern when available, empty otherwise
 				fullPath := ctx.FullPath()
 				if fullPath != "" {
 					AssertEqual(t, expectedFullPath, fullPath, "FullPath should match route pattern")
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -132,27 +132,27 @@ func (rit *RequestInfoTester) TestFullPath(t *testing.T) {
 // TestClientIP tests the ClientIP() method
 func (rit *RequestInfoTester) TestClientIP(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name string
 	}{
 		{"Basic client IP detection"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			uniquePath := GenerateUniqueTestPath()
-			router.GET(uniquePath, func(ctx httpx.Context) {
+			router.GET(uniquePath, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				clientIP := ctx.ClientIP()
 				// ClientIP should return some value (best-effort detection)
 				AssertNotEqual(t, "", clientIP, "ClientIP should not be empty")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -161,7 +161,7 @@ func (rit *RequestInfoTester) TestClientIP(t *testing.T) {
 // TestParam tests the Param() method
 func (rit *RequestInfoTester) TestParam(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name          string
 		routePattern  string
@@ -172,22 +172,22 @@ func (rit *RequestInfoTester) TestParam(t *testing.T) {
 		{"Multiple params", "/users/:userId/posts/:postId", "userId", "456"},
 		{"Non-existent param", "/users/:id", "nonexistent", ""},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			uniqueRoute := GenerateUniqueParamPath(tc.routePattern)
-			router.GET(uniqueRoute, func(ctx httpx.Context) {
+			router.GET(uniqueRoute, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				paramValue := ctx.Param(tc.paramKey)
 				if tc.expectedValue != "" {
 					AssertEqual(t, tc.expectedValue, paramValue, "Param value should match")
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -196,7 +196,7 @@ func (rit *RequestInfoTester) TestParam(t *testing.T) {
 // TestParams tests the Params() method
 func (rit *RequestInfoTester) TestParams(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name         string
 		routePattern string
@@ -205,20 +205,20 @@ func (rit *RequestInfoTester) TestParams(t *testing.T) {
 		{"Single param", "/users/:id"},
 		{"Multiple params", "/users/:userId/posts/:postId"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			var routeToUse string
 			if tc.routePattern == "/test" {
 				routeToUse = GenerateUniqueTestPath()
 			} else {
 				routeToUse = GenerateUniqueParamPath(tc.routePattern)
 			}
-			
-			router.GET(routeToUse, func(ctx httpx.Context) {
+
+			router.GET(routeToUse, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				params := ctx.Params()
 				// Params should return nil if no params, otherwise a map
@@ -229,9 +229,9 @@ func (rit *RequestInfoTester) TestParams(t *testing.T) {
 				} else {
 					AssertNotEqual(t, nil, params, "Params should not be nil for parameterized route")
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -240,7 +240,7 @@ func (rit *RequestInfoTester) TestParams(t *testing.T) {
 // TestQuery tests the Query() method
 func (rit *RequestInfoTester) TestQuery(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name          string
 		queryKey      string
@@ -249,19 +249,19 @@ func (rit *RequestInfoTester) TestQuery(t *testing.T) {
 		{"Existing query param", "name", "test"},
 		{"Non-existent query param", "nonexistent", ""},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				queryValue := ctx.Query(tc.queryKey)
 				AssertEqual(t, tc.expectedValue, queryValue, "Query value should match")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -270,26 +270,26 @@ func (rit *RequestInfoTester) TestQuery(t *testing.T) {
 // TestQueries tests the Queries() method
 func (rit *RequestInfoTester) TestQueries(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name string
 	}{
 		{"Query parameters"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				queries := ctx.Queries()
 				// Queries should return nil if no queries, otherwise a map
 				t.Logf("Queries: %v", queries)
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -298,25 +298,25 @@ func (rit *RequestInfoTester) TestQueries(t *testing.T) {
 // TestRawQuery tests the RawQuery() method
 func (rit *RequestInfoTester) TestRawQuery(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name string
 	}{
 		{"Raw query string"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				rawQuery := ctx.RawQuery()
 				t.Logf("Raw query: %s", rawQuery)
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -325,7 +325,7 @@ func (rit *RequestInfoTester) TestRawQuery(t *testing.T) {
 // TestHeader tests the Header() method
 func (rit *RequestInfoTester) TestHeader(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name          string
 		headerKey     string
@@ -334,19 +334,19 @@ func (rit *RequestInfoTester) TestHeader(t *testing.T) {
 		{"Content-Type header", "Content-Type", "application/json"},
 		{"Non-existent header", "X-Non-Existent", ""},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				headerValue := ctx.Header(tc.headerKey)
 				AssertEqual(t, tc.expectedValue, headerValue, "Header value should match")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -355,26 +355,26 @@ func (rit *RequestInfoTester) TestHeader(t *testing.T) {
 // TestHeaders tests the Headers() method
 func (rit *RequestInfoTester) TestHeaders(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name string
 	}{
 		{"All headers"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				headers := ctx.Headers()
 				// Headers should return nil if no headers, otherwise a map
 				t.Logf("Headers: %v", headers)
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -383,7 +383,7 @@ func (rit *RequestInfoTester) TestHeaders(t *testing.T) {
 // TestCookie tests the Cookie() method
 func (rit *RequestInfoTester) TestCookie(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name       string
 		cookieName string
@@ -391,13 +391,13 @@ func (rit *RequestInfoTester) TestCookie(t *testing.T) {
 		{"Existing cookie", "session"},
 		{"Non-existent cookie", "nonexistent"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				cookieValue, err := ctx.Cookie(tc.cookieName)
 				if tc.cookieName == "nonexistent" {
@@ -405,9 +405,9 @@ func (rit *RequestInfoTester) TestCookie(t *testing.T) {
 				} else {
 					t.Logf("Cookie %s: %s (error: %v)", tc.cookieName, cookieValue, err)
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -416,26 +416,26 @@ func (rit *RequestInfoTester) TestCookie(t *testing.T) {
 // TestCookies tests the Cookies() method
 func (rit *RequestInfoTester) TestCookies(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name string
 	}{
 		{"All cookies"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rit.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				cookies := ctx.Cookies()
 				// Cookies should return nil if no cookies, otherwise a map
 				t.Logf("Cookies: %v", cookies)
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}

@@ -12,7 +12,7 @@ type TestSuite struct {
 	engine httpx.Engine
 	config *TestConfig
 	helper *TestHelper
-	
+
 	// Interface testers
 	requestInfoTester *RequestInfoTester
 	requestTester     *RequestTester
@@ -21,9 +21,9 @@ type TestSuite struct {
 	binderTester      *BinderTester
 	responderTester   *ResponderTester
 	stateStoreTester  *StateStoreTester
-	aborterTester     *AborterTester
 	routerTester      *RouterTester
 	engineTester      *EngineTester
+	errorTestingUtils *ErrorTestingUtilities
 }
 
 // NewTestSuite creates a new test suite for the given engine
@@ -36,15 +36,15 @@ func NewTestSuiteWithConfig(name string, engine httpx.Engine, config *TestConfig
 	if config == nil {
 		config = DefaultTestConfig()
 	}
-	
+
 	helper := NewTestHelper(config)
-	
+
 	return &TestSuite{
 		name:   name,
 		engine: engine,
 		config: config,
 		helper: helper,
-		
+
 		// Initialize all interface testers
 		requestInfoTester: NewRequestInfoTester(engine),
 		requestTester:     NewRequestTester(engine),
@@ -53,18 +53,18 @@ func NewTestSuiteWithConfig(name string, engine httpx.Engine, config *TestConfig
 		binderTester:      NewBinderTester(engine),
 		responderTester:   NewResponderTester(engine),
 		stateStoreTester:  NewStateStoreTester(engine),
-		aborterTester:     NewAborterTester(engine),
 		routerTester:      NewRouterTester(engine),
 		engineTester:      NewEngineTester(engine),
+		errorTestingUtils: NewErrorTestingUtilities(engine),
 	}
 }
 
 // RunAllTests runs all interface tests in the suite
 func (ts *TestSuite) RunAllTests(t *testing.T) {
 	t.Helper()
-	
+
 	t.Logf("Running test suite for: %s", ts.name)
-	
+
 	// Test individual interfaces
 	t.Run("RequestInfo", ts.requestInfoTester.RunAllTests)
 	t.Run("Request", ts.requestTester.RunAllTests)
@@ -73,9 +73,9 @@ func (ts *TestSuite) RunAllTests(t *testing.T) {
 	t.Run("Binder", ts.binderTester.RunAllTests)
 	t.Run("Responder", ts.responderTester.RunAllTests)
 	t.Run("StateStore", ts.stateStoreTester.RunAllTests)
-	t.Run("Aborter", ts.aborterTester.RunAllTests)
 	t.Run("Router", ts.routerTester.RunAllTests)
 	t.Run("Engine", ts.engineTester.RunAllTests)
+	t.Run("ErrorTesting", ts.errorTestingUtils.RunAllErrorTests)
 }
 
 // RunRequestInfoTests runs only RequestInfo interface tests
@@ -120,12 +120,6 @@ func (ts *TestSuite) RunStateStoreTests(t *testing.T) {
 	ts.stateStoreTester.RunAllTests(t)
 }
 
-// RunAborterTests runs only Aborter interface tests
-func (ts *TestSuite) RunAborterTests(t *testing.T) {
-	t.Helper()
-	ts.aborterTester.RunAllTests(t)
-}
-
 // RunRouterTests runs only Router interface tests
 func (ts *TestSuite) RunRouterTests(t *testing.T) {
 	t.Helper()
@@ -137,6 +131,13 @@ func (ts *TestSuite) RunEngineTests(t *testing.T) {
 	t.Helper()
 	ts.engineTester.RunAllTests(t)
 }
+
+// RunErrorTests runs only error testing scenarios
+func (ts *TestSuite) RunErrorTests(t *testing.T) {
+	t.Helper()
+	ts.errorTestingUtils.RunAllErrorTests(t)
+}
+
 // GetRequestInfoTester returns the RequestInfo tester
 func (ts *TestSuite) GetRequestInfoTester() *RequestInfoTester {
 	return ts.requestInfoTester
@@ -172,11 +173,6 @@ func (ts *TestSuite) GetStateStoreTester() *StateStoreTester {
 	return ts.stateStoreTester
 }
 
-// GetAborterTester returns the Aborter tester
-func (ts *TestSuite) GetAborterTester() *AborterTester {
-	return ts.aborterTester
-}
-
 // GetRouterTester returns the Router tester
 func (ts *TestSuite) GetRouterTester() *RouterTester {
 	return ts.routerTester
@@ -185,6 +181,11 @@ func (ts *TestSuite) GetRouterTester() *RouterTester {
 // GetEngineTester returns the Engine tester
 func (ts *TestSuite) GetEngineTester() *EngineTester {
 	return ts.engineTester
+}
+
+// GetErrorTestingUtilities returns the error testing utilities
+func (ts *TestSuite) GetErrorTestingUtilities() *ErrorTestingUtilities {
+	return ts.errorTestingUtils
 }
 
 // Name returns the test suite name

@@ -1,36 +1,41 @@
 package ginx
 
 import (
+	"errors"
+
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
 )
 
-func adaptMiddleware(middleware httpx.Middleware) gin.HandlerFunc {
+func adaptMiddleware(middleware httpx.Middleware, errHandler ErrorHandler) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		fc := &ginContext{
 			ctx: ctx,
 		}
-		middleware(fc)
+		if err := middleware(fc); err != nil {
+			errHandler(ctx, err)
+		}
 	}
 }
 
-func adaptMiddlewares(middlewares []httpx.Middleware) []gin.HandlerFunc {
+func adaptMiddlewares(middlewares []httpx.Middleware, errHandler ErrorHandler) []gin.HandlerFunc {
 	if len(middlewares) == 0 {
 		return nil
 	}
 	gMid := make([]gin.HandlerFunc, len(middlewares))
 	for i, m := range middlewares {
-		gMid[i] = adaptMiddleware(m)
+		gMid[i] = adaptMiddleware(m, errHandler)
 	}
 	return gMid
 }
 
 func AdaptGinMiddleware(middleware gin.HandlerFunc) httpx.Middleware {
-	return func(ctx httpx.Context) {
+	return func(ctx httpx.Context) error {
 		fc, ok := ctx.(*ginContext)
 		if !ok {
-			panic("AdaptGinMiddleware: gin context type error")
+			return errors.New("AdaptGinMiddleware: gin context type error")
 		}
 		middleware(fc.ctx)
+		return nil
 	}
 }

@@ -19,7 +19,7 @@ func NewBinderTester(engine httpx.Engine) *BinderTester {
 // TestBindJSON tests the BindJSON() method with comprehensive struct tag validation
 func (bt *BinderTester) TestBindJSON(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		requestBody string
@@ -27,8 +27,8 @@ func (bt *BinderTester) TestBindJSON(t *testing.T) {
 		validate    func(t *testing.T, result TestStruct)
 	}{
 		{
-			"Valid JSON with all fields", 
-			`{"name":"testuser","age":25,"email":"test@example.com"}`, 
+			"Valid JSON with all fields",
+			`{"name":"testuser","age":25,"email":"test@example.com"}`,
 			false,
 			func(t *testing.T, result TestStruct) {
 				AssertEqual(t, "testuser", result.Name, "Name should be bound correctly from JSON")
@@ -37,8 +37,8 @@ func (bt *BinderTester) TestBindJSON(t *testing.T) {
 			},
 		},
 		{
-			"Valid JSON with partial fields", 
-			`{"name":"partial"}`, 
+			"Valid JSON with partial fields",
+			`{"name":"partial"}`,
 			false,
 			func(t *testing.T, result TestStruct) {
 				AssertEqual(t, "partial", result.Name, "Name should be bound from partial JSON")
@@ -47,20 +47,20 @@ func (bt *BinderTester) TestBindJSON(t *testing.T) {
 			},
 		},
 		{
-			"Invalid JSON syntax", 
-			`{"name":"test","age":}`, 
+			"Invalid JSON syntax",
+			`{"name":"test","age":}`,
 			true,
 			nil,
 		},
 		{
-			"Invalid JSON type for age", 
-			`{"name":"test","age":"not_a_number","email":"test@example.com"}`, 
+			"Invalid JSON type for age",
+			`{"name":"test","age":"not_a_number","email":"test@example.com"}`,
 			true,
 			nil,
 		},
 		{
-			"Empty JSON object", 
-			`{}`, 
+			"Empty JSON object",
+			`{}`,
 			false,
 			func(t *testing.T, result TestStruct) {
 				AssertEqual(t, "", result.Name, "Name should be empty for empty JSON")
@@ -69,8 +69,8 @@ func (bt *BinderTester) TestBindJSON(t *testing.T) {
 			},
 		},
 		{
-			"Null JSON", 
-			`null`, 
+			"Null JSON",
+			`null`,
 			false,
 			func(t *testing.T, result TestStruct) {
 				AssertEqual(t, "", result.Name, "Name should be empty for null JSON")
@@ -79,17 +79,17 @@ func (bt *BinderTester) TestBindJSON(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := bt.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				var testStruct TestStruct
 				err := ctx.BindJSON(&testStruct)
-				
+
 				if tc.expectError {
 					AssertError(t, err, "BindJSON should return error for invalid JSON")
 				} else {
@@ -98,9 +98,9 @@ func (bt *BinderTester) TestBindJSON(t *testing.T) {
 						tc.validate(t, testStruct)
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -109,7 +109,7 @@ func (bt *BinderTester) TestBindJSON(t *testing.T) {
 // TestBindQuery tests the BindQuery() method with struct tag validation
 func (bt *BinderTester) TestBindQuery(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		queryParams map[string]string
@@ -153,17 +153,17 @@ func (bt *BinderTester) TestBindQuery(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := bt.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				var testStruct TestStruct
 				err := ctx.BindQuery(&testStruct)
-				
+
 				if tc.expectError {
 					// Some frameworks may handle type conversion errors gracefully
 					if err != nil {
@@ -175,9 +175,9 @@ func (bt *BinderTester) TestBindQuery(t *testing.T) {
 						tc.validate(t, testStruct)
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -186,7 +186,7 @@ func (bt *BinderTester) TestBindQuery(t *testing.T) {
 // TestBindForm tests the BindForm() method with struct tag validation
 func (bt *BinderTester) TestBindForm(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		formData    map[string]string
@@ -230,17 +230,17 @@ func (bt *BinderTester) TestBindForm(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := bt.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				var testStruct TestStruct
 				err := ctx.BindForm(&testStruct)
-				
+
 				if tc.expectError {
 					// Some frameworks may handle type conversion errors gracefully
 					if err != nil {
@@ -252,9 +252,9 @@ func (bt *BinderTester) TestBindForm(t *testing.T) {
 						tc.validate(t, testStruct)
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -263,7 +263,7 @@ func (bt *BinderTester) TestBindForm(t *testing.T) {
 // TestBindURI tests the BindURI() method with struct tag validation
 func (bt *BinderTester) TestBindURI(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name         string
 		routePattern string
@@ -298,18 +298,18 @@ func (bt *BinderTester) TestBindURI(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := bt.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			uniqueRoute := GenerateUniqueParamPath(tc.routePattern)
-			router.GET(uniqueRoute, func(ctx httpx.Context) {
+			router.GET(uniqueRoute, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				var testStruct TestStruct
 				err := ctx.BindURI(&testStruct)
-				
+
 				if tc.expectError {
 					AssertError(t, err, "BindURI should return error")
 				} else {
@@ -318,9 +318,9 @@ func (bt *BinderTester) TestBindURI(t *testing.T) {
 						tc.validate(t, testStruct)
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -329,7 +329,7 @@ func (bt *BinderTester) TestBindURI(t *testing.T) {
 // TestBindHeader tests the BindHeader() method with struct tag validation
 func (bt *BinderTester) TestBindHeader(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		headers     map[string]string
@@ -370,17 +370,17 @@ func (bt *BinderTester) TestBindHeader(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := bt.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				var testStruct TestStruct
 				err := ctx.BindHeader(&testStruct)
-				
+
 				if tc.expectError {
 					// Some frameworks may handle type conversion errors gracefully
 					if err != nil {
@@ -392,9 +392,9 @@ func (bt *BinderTester) TestBindHeader(t *testing.T) {
 						tc.validate(t, testStruct)
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -403,7 +403,7 @@ func (bt *BinderTester) TestBindHeader(t *testing.T) {
 // TestNestedStructBinding tests binding with nested structures
 func (bt *BinderTester) TestNestedStructBinding(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		method      string
@@ -437,22 +437,22 @@ func (bt *BinderTester) TestNestedStructBinding(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := bt.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				var nestedStruct NestedTestStruct
 				var err error
-				
+
 				switch tc.method {
 				case "BindJSON":
 					err = ctx.BindJSON(&nestedStruct)
 				}
-				
+
 				if tc.expectError {
 					AssertError(t, err, "Nested binding should return error for invalid data")
 				} else {
@@ -461,9 +461,9 @@ func (bt *BinderTester) TestNestedStructBinding(t *testing.T) {
 						tc.validate(t, nestedStruct)
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -472,7 +472,7 @@ func (bt *BinderTester) TestNestedStructBinding(t *testing.T) {
 // TestBindingErrorHandling tests comprehensive error handling scenarios
 func (bt *BinderTester) TestBindingErrorHandling(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		bindMethod  string
@@ -502,16 +502,16 @@ func (bt *BinderTester) TestBindingErrorHandling(t *testing.T) {
 			"Invalid JSON should return error",
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := bt.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				var err error
-				
+
 				switch tc.bindMethod {
 				case "BindJSON":
 					err = ctx.BindJSON(tc.data)
@@ -524,7 +524,7 @@ func (bt *BinderTester) TestBindingErrorHandling(t *testing.T) {
 				case "BindHeader":
 					err = ctx.BindHeader(tc.data)
 				}
-				
+
 				if tc.expectError {
 					// Some frameworks may handle errors gracefully
 					if err != nil {
@@ -535,9 +535,9 @@ func (bt *BinderTester) TestBindingErrorHandling(t *testing.T) {
 				} else {
 					AssertNoError(t, err, tc.description)
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}

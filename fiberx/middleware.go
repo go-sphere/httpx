@@ -1,21 +1,19 @@
 package fiberx
 
 import (
-	"fmt"
+	"errors"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 )
-
-type ErrorHandler func(ctx httpx.Context, err error)
 
 func adaptMiddleware(middleware httpx.Middleware) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		fc := &fiberContext{
 			ctx: ctx,
 		}
-		middleware(fc)
-		return nil
+		// Return error directly to fiber's error handling system
+		return middleware(fc)
 	}
 }
 
@@ -26,18 +24,12 @@ func cloneMiddlewares(middlewares []httpx.Middleware, extra ...httpx.Middleware)
 	return out
 }
 
-func AdaptFiberMiddleware(middleware fiber.Handler, errorHandler ErrorHandler) httpx.Middleware {
-	return func(ctx httpx.Context) {
+func AdaptFiberMiddleware(middleware fiber.Handler) httpx.Middleware {
+	return func(ctx httpx.Context) error {
 		fc, ok := ctx.(*fiberContext)
 		if !ok {
-			panic(fmt.Sprintf("AdaptFiberMiddleware: invalid context type %T", ctx))
+			return errors.New("AdaptGinMiddleware: fiber context type error")
 		}
-		if fc.IsAborted() {
-			return
-		}
-		err := middleware(fc.ctx)
-		if err != nil && errorHandler != nil {
-			errorHandler(fc, err)
-		}
+		return middleware(fc.ctx)
 	}
 }

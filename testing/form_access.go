@@ -19,7 +19,7 @@ func NewFormAccessTester(engine httpx.Engine) *FormAccessTester {
 // TestFormValue tests the FormValue() method
 func (fat *FormAccessTester) TestFormValue(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name          string
 		formKey       string
@@ -31,19 +31,19 @@ func (fat *FormAccessTester) TestFormValue(t *testing.T) {
 		{"Empty form field", "empty", map[string]string{"empty": "", "name": "test"}, ""},
 		{"Multiple values same key", "tags", map[string]string{"tags": "go,web,api"}, "go,web,api"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := fat.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				formValue := ctx.FormValue(tc.formKey)
 				AssertEqual(t, tc.expectedValue, formValue, "Form value should match")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -52,7 +52,7 @@ func (fat *FormAccessTester) TestFormValue(t *testing.T) {
 // TestMultipartForm tests the MultipartForm() method and form parsing triggers
 func (fat *FormAccessTester) TestMultipartForm(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		contentType string
@@ -62,16 +62,16 @@ func (fat *FormAccessTester) TestMultipartForm(t *testing.T) {
 		{"Non-multipart content", "application/x-www-form-urlencoded", true},
 		{"Invalid content type", "application/json", true},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := fat.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				multipartForm, err := ctx.MultipartForm()
-				
+
 				if tc.expectError {
 					if err == nil {
 						t.Logf("MultipartForm returned no error for %s (framework may handle gracefully)", tc.contentType)
@@ -86,9 +86,9 @@ func (fat *FormAccessTester) TestMultipartForm(t *testing.T) {
 						t.Logf("MultipartForm parsed successfully")
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -97,7 +97,7 @@ func (fat *FormAccessTester) TestMultipartForm(t *testing.T) {
 // TestFormFile tests the FormFile() method and file handling
 func (fat *FormAccessTester) TestFormFile(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		fileName    string
@@ -107,16 +107,16 @@ func (fat *FormAccessTester) TestFormFile(t *testing.T) {
 		{"Non-existent file field", "nonexistent", true},
 		{"Empty file field name", "", true},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := fat.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				fileHeader, err := ctx.FormFile(tc.fileName)
-				
+
 				if tc.expectError {
 					AssertError(t, err, "Should return error for invalid file field")
 				} else {
@@ -128,9 +128,9 @@ func (fat *FormAccessTester) TestFormFile(t *testing.T) {
 						t.Logf("FormFile found: %s", fileHeader.Filename)
 					}
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -139,7 +139,7 @@ func (fat *FormAccessTester) TestFormFile(t *testing.T) {
 // TestFormParsingTriggers tests that form parsing is triggered appropriately
 func (fat *FormAccessTester) TestFormParsingTriggers(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		method      string
@@ -149,36 +149,36 @@ func (fat *FormAccessTester) TestFormParsingTriggers(t *testing.T) {
 		{"PUT request form parsing", "PUT", "Form parsing should work with PUT requests"},
 		{"PATCH request form parsing", "PATCH", "Form parsing should work with PATCH requests"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := fat.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.Handle(tc.method, GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.Handle(tc.method, GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
-				
+
 				// Test that form parsing methods don't panic and handle gracefully
 				formValue := ctx.FormValue("test")
 				t.Logf("FormValue result: %s", formValue)
-				
+
 				multipartForm, err := ctx.MultipartForm()
 				if err != nil {
 					t.Logf("MultipartForm error (expected): %v", err)
 				} else {
 					t.Logf("MultipartForm parsed: %v", multipartForm != nil)
 				}
-				
+
 				fileHeader, err := ctx.FormFile("file")
 				if err != nil {
 					t.Logf("FormFile error (expected): %v", err)
 				} else {
 					t.Logf("FormFile found: %v", fileHeader != nil)
 				}
-				
-				ctx.Text(200, "OK")
+
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -187,7 +187,7 @@ func (fat *FormAccessTester) TestFormParsingTriggers(t *testing.T) {
 // TestFormSideEffects tests side effects of form parsing methods
 func (fat *FormAccessTester) TestFormSideEffects(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name        string
 		description string
@@ -196,22 +196,22 @@ func (fat *FormAccessTester) TestFormSideEffects(t *testing.T) {
 		{"FormValue after MultipartForm", "FormValue should work after MultipartForm call"},
 		{"MultipartForm after FormValue", "MultipartForm should work after FormValue call"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := fat.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.POST(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
-				
+
 				// Test multiple FormValue calls for consistency
 				if tc.name == "Multiple FormValue calls" {
 					value1 := ctx.FormValue("test")
 					value2 := ctx.FormValue("test")
 					AssertEqual(t, value1, value2, "Multiple FormValue calls should return same result")
 				}
-				
+
 				// Test interaction between FormValue and MultipartForm
 				if tc.name == "FormValue after MultipartForm" {
 					_, err := ctx.MultipartForm()
@@ -221,7 +221,7 @@ func (fat *FormAccessTester) TestFormSideEffects(t *testing.T) {
 					value := ctx.FormValue("test")
 					t.Logf("FormValue after MultipartForm: %s", value)
 				}
-				
+
 				if tc.name == "MultipartForm after FormValue" {
 					value := ctx.FormValue("test")
 					t.Logf("FormValue: %s", value)
@@ -230,10 +230,10 @@ func (fat *FormAccessTester) TestFormSideEffects(t *testing.T) {
 						t.Logf("MultipartForm after FormValue error (expected): %v", err)
 					}
 				}
-				
-				ctx.Text(200, "OK")
+
+				return ctx.Text(200, "OK")
 			})
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}

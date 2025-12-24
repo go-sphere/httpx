@@ -177,37 +177,44 @@ func (c *hertzContext) Status(code int) {
 	c.ctx.Status(code)
 }
 
-func (c *hertzContext) JSON(code int, v any) {
+func (c *hertzContext) JSON(code int, v any) error {
 	c.ctx.JSON(code, v)
+	return nil
 }
 
-func (c *hertzContext) Text(code int, s string) {
+func (c *hertzContext) Text(code int, s string) error {
 	c.ctx.String(code, s)
+	return nil
 }
 
-func (c *hertzContext) NoContent(code int) {
+func (c *hertzContext) NoContent(code int) error {
 	c.ctx.Status(code)
 	c.ctx.Response.ResetBody()
+	return nil
 }
 
-func (c *hertzContext) Bytes(code int, b []byte, contentType string) {
+func (c *hertzContext) Bytes(code int, b []byte, contentType string) error {
 	c.ctx.Data(code, contentType, b)
+	return nil
 }
 
-func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
+func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
 	if contentType != "" {
 		c.ctx.SetContentType(contentType)
 	}
 	c.ctx.Status(code)
 	c.ctx.SetBodyStream(r, size)
+	return nil
 }
 
-func (c *hertzContext) File(path string) {
+func (c *hertzContext) File(path string) error {
 	c.ctx.File(path)
+	return nil
 }
 
-func (c *hertzContext) Redirect(code int, location string) {
+func (c *hertzContext) Redirect(code int, location string) error {
 	c.ctx.Redirect(code, []byte(location))
+	return nil
 }
 
 func (c *hertzContext) SetHeader(key, value string) {
@@ -215,19 +222,18 @@ func (c *hertzContext) SetHeader(key, value string) {
 }
 
 func (c *hertzContext) SetCookie(cookie *http.Cookie) {
-	if cookie == nil {
-		return
+	if cookie != nil {
+		c.ctx.SetCookie(
+			cookie.Name,
+			cookie.Value,
+			cookie.MaxAge,
+			cookie.Path,
+			cookie.Domain,
+			mapSameSite(cookie.SameSite),
+			cookie.Secure,
+			cookie.HttpOnly,
+		)
 	}
-	c.ctx.SetCookie(
-		cookie.Name,
-		cookie.Value,
-		cookie.MaxAge,
-		cookie.Path,
-		cookie.Domain,
-		mapSameSite(cookie.SameSite),
-		cookie.Secure,
-		cookie.HttpOnly,
-	)
 }
 
 // StateStore (httpx.StateStore)
@@ -238,16 +244,6 @@ func (c *hertzContext) Set(key string, val any) {
 
 func (c *hertzContext) Get(key string) (any, bool) {
 	return c.ctx.Get(key)
-}
-
-// Aborter (httpx.Aborter)
-
-func (c *hertzContext) Abort() {
-	c.ctx.Abort()
-}
-
-func (c *hertzContext) IsAborted() bool {
-	return c.ctx.IsAborted()
 }
 
 // Context (context.Context + Next)
@@ -273,8 +269,15 @@ func (c *hertzContext) Value(key any) any {
 	return c.baseCtx.Value(key)
 }
 
-func (c *hertzContext) Next() {
+func (c *hertzContext) Next() error {
 	c.ctx.Next(c.baseCtx)
+
+	if len(c.ctx.Errors) > 0 {
+		// Return the most recent error (last in the slice)
+		return c.ctx.Errors.Last()
+	}
+
+	return nil
 }
 
 func mapSameSite(mode http.SameSite) protocol.CookieSameSite {

@@ -24,7 +24,13 @@ func NewConfig(opts ...Option) *Config {
 		opt(&conf)
 	}
 	if conf.engine == nil {
-		conf.engine = fiber.New()
+		conf.engine = fiber.New(
+			fiber.Config{
+				ErrorHandler: func(ctx fiber.Ctx, err error) error {
+					return ctx.Status(500).JSON(fiber.Map{"error": err.Error()})
+				},
+			},
+		)
 	}
 	if conf.listen == nil {
 		conf.listen = func(app *fiber.App) error {

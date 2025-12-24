@@ -85,8 +85,7 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	return func(ec echo.Context) error {
 		ctx := newEchoContext(ec)
-		h(ctx)
-		return ctx.err
+		return h(ctx)
 	}
 }
 

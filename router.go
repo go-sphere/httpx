@@ -6,10 +6,10 @@ import (
 )
 
 // Handler is the canonical function signature for framework adapters.
-type Handler func(Context)
+type Handler func(Context) error
 
 // Middleware shares the same signature as Handler and drives the chain via ctx.Next().
-type Middleware func(Context)
+type Middleware func(Context) error
 
 // MiddlewareScope attaches middleware to the current scope.
 type MiddlewareScope interface {

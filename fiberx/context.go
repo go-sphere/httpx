@@ -14,10 +14,6 @@ import (
 
 var _ httpx.Context = (*fiberContext)(nil)
 
-type contextKeyType int
-
-const contextAbortKey contextKeyType = 1
-
 type fiberContext struct {
 	ctx fiber.Ctx
 }
@@ -174,43 +170,44 @@ func (c *fiberContext) Status(code int) {
 	c.ctx.Status(code)
 }
 
-func (c *fiberContext) JSON(code int, v any) {
-	_ = c.ctx.Status(code).JSON(v)
+func (c *fiberContext) JSON(code int, v any) error {
+	return c.ctx.Status(code).JSON(v)
 }
 
-func (c *fiberContext) Text(code int, s string) {
-	_ = c.ctx.Status(code).SendString(s)
+func (c *fiberContext) Text(code int, s string) error {
+	return c.ctx.Status(code).SendString(s)
 }
 
-func (c *fiberContext) NoContent(code int) {
+func (c *fiberContext) NoContent(code int) error {
 	c.ctx.Status(code)
 	c.ctx.Response().ResetBody()
+	return nil
 }
 
-func (c *fiberContext) Bytes(code int, b []byte, contentType string) {
+func (c *fiberContext) Bytes(code int, b []byte, contentType string) error {
 	if contentType != "" {
 		c.ctx.Set(fiber.HeaderContentType, contentType)
 	}
-	_ = c.ctx.Status(code).Send(b)
+	return c.ctx.Status(code).Send(b)
 }
 
-func (c *fiberContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
+func (c *fiberContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
 	if contentType != "" {
 		c.ctx.Set(fiber.HeaderContentType, contentType)
 	}
-	_ = c.ctx.Status(code).SendStream(r, size)
+	return c.ctx.Status(code).SendStream(r, size)
 }
 
-func (c *fiberContext) File(path string) {
-	_ = c.ctx.SendFile(path)
+func (c *fiberContext) File(path string) error {
+	return c.ctx.SendFile(path)
 }
 
-func (c *fiberContext) Redirect(code int, location string) {
+func (c *fiberContext) Redirect(code int, location string) error {
 	redirect := c.ctx.Redirect()
 	if code > 0 {
 		redirect.Status(code)
 	}
-	_ = redirect.To(location)
+	return redirect.To(location)
 }
 
 func (c *fiberContext) SetHeader(key, value string) {
@@ -218,11 +215,10 @@ func (c *fiberContext) SetHeader(key, value string) {
 }
 
 func (c *fiberContext) SetCookie(cookie *http.Cookie) {
-	if cookie == nil {
-		return
-	}
-	if s := cookie.String(); s != "" {
-		c.ctx.Response().Header.Add(fiber.HeaderSetCookie, s)
+	if cookie != nil {
+		if s := cookie.String(); s != "" {
+			c.ctx.Response().Header.Add(fiber.HeaderSetCookie, s)
+		}
 	}
 }
 
@@ -238,16 +234,6 @@ func (c *fiberContext) Get(key string) (any, bool) {
 		return nil, false
 	}
 	return val, true
-}
-
-// Aborter (httpx.Aborter)
-
-func (c *fiberContext) Abort() {
-	Abort(c.ctx)
-}
-
-func (c *fiberContext) IsAborted() bool {
-	return IsAborted(c.ctx)
 }
 
 // Context (context.Context + Next)
@@ -273,22 +259,6 @@ func (c *fiberContext) Value(key any) any {
 	return c.ctx.RequestCtx().Value(key)
 }
 
-func (c *fiberContext) Next() {
-	if c.IsAborted() {
-		return
-	}
-	_ = c.ctx.Next()
-}
-
-func IsAborted(ctx fiber.Ctx) bool {
-	value := ctx.Locals(contextAbortKey)
-	if value == nil {
-		return false
-	}
-	flag, ok := value.(bool)
-	return ok && flag
-}
-
-func Abort(ctx fiber.Ctx) {
-	ctx.Locals(contextAbortKey, true)
+func (c *fiberContext) Next() error {
+	return c.ctx.Next()
 }

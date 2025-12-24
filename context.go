@@ -163,9 +163,10 @@ type Binder interface {
 
 // Responder writes HTTP responses in a framework-independent manner.
 //
-// Methods on Responder mutate the outgoing response.
+// Methods on Responder mutate the outgoing response and return errors
+// to indicate success or failure of response operations.
 // Once a response body is written, the response is considered committed,
-// and further attempts to modify status code or headers may have no effect,
+// and further attempts to modify status code or headers may return errors,
 // depending on the underlying framework.
 //
 // Implementations should ensure consistent behavior across frameworks
@@ -174,31 +175,45 @@ type Responder interface {
 	// Status sets the HTTP status code for the response.
 	//
 	// Calling this method does not write the response body.
-	// If a response has already been written, this call may be ignored.
 	Status(code int)
+
+	// SetHeader sets a response header.
+	//
+	// This method does not write the response body.
+	SetHeader(key, value string)
+
+	// SetCookie adds a Set-Cookie header to the response.
+	//
+	// This method does not write the response body.
+	SetCookie(cookie *http.Cookie)
 
 	// JSON writes the given value as a JSON response with the provided status code.
 	//
 	// The Content-Type header should be set to "application/json".
 	// Calling this method commits the response.
-	JSON(code int, v any)
+	// Returns nil on success, error on failure (e.g., JSON marshaling error,
+	// response already committed).
+	JSON(code int, v any) error
 
 	// Text writes the given string as a plain text response with the provided status code.
 	//
 	// The Content-Type header should be set to "text/plain; charset=utf-8".
 	// Calling this method commits the response.
-	Text(code int, s string)
+	// Returns nil on success, error on failure (e.g., response already committed).
+	Text(code int, s string) error
 
 	// NoContent writes a response with no body and the provided status code.
 	//
 	// This method commits the response without writing a body.
-	NoContent(code int)
+	// Returns nil on success, error on failure (e.g., response already committed).
+	NoContent(code int) error
 
 	// Bytes writes raw bytes to the response with the provided status code
 	// and Content-Type.
 	//
 	// Calling this method commits the response.
-	Bytes(code int, b []byte, contentType string)
+	// Returns nil on success, error on failure (e.g., response already committed).
+	Bytes(code int, b []byte, contentType string) error
 
 	// DataFromReader streams data from the provided reader to the response.
 	//
@@ -206,30 +221,23 @@ type Responder interface {
 	// A size of -1 indicates that the size is unknown.
 	//
 	// Calling this method commits the response.
-	DataFromReader(code int, contentType string, r io.Reader, size int)
+	// Returns nil on success, error on failure (e.g., IO error, response already committed).
+	DataFromReader(code int, contentType string, r io.Reader, size int) error
 
 	// File writes the contents of the specified file to the response.
 	//
 	// Implementations may use optimized file transfer mechanisms
 	// provided by the underlying framework.
 	// Calling this method commits the response.
-	File(path string)
+	// Returns nil on success, error on failure (e.g., file not found, response already committed).
+	File(path string) error
 
 	// Redirect sends a redirect response to the client with the provided
 	// status code and target location.
 	//
 	// Calling this method commits the response.
-	Redirect(code int, location string)
-
-	// SetHeader sets a response header.
-	//
-	// If the response has already been committed, this call may have no effect.
-	SetHeader(key, value string)
-
-	// SetCookie adds a Set-Cookie header to the response.
-	//
-	// If the response has already been committed, this call may have no effect.
-	SetCookie(cookie *http.Cookie)
+	// Returns nil on success, error on failure (e.g., invalid status code, response already committed).
+	Redirect(code int, location string) error
 }
 
 // StateStore carries request-scoped values.
@@ -252,23 +260,6 @@ type StateStore interface {
 	//
 	// The returned boolean indicates whether the key was present.
 	Get(key string) (any, bool)
-}
-
-// Aborter allows a handler or middleware to short-circuit the remaining
-// handler chain.
-//
-// Calling Abort signals that no further handlers in the chain should be
-// executed for the current request. Abort does not automatically write
-// a response; callers are responsible for writing a response if needed.
-type Aborter interface {
-	// Abort marks the current request as aborted.
-	//
-	// After calling Abort, the remaining handlers in the chain
-	// should not be executed.
-	Abort()
-
-	// IsAborted reports whether the current request has been aborted.
-	IsAborted() bool
 }
 
 // Context is the cross-framework surface passed into handlers and middleware.
@@ -295,18 +286,16 @@ type Context interface {
 	// StateStore provides request-scoped key-value storage.
 	StateStore
 
-	// Aborter controls handler chain execution.
-	Aborter
-
 	// Context provides access to the standard Go context.
 	//
 	// The returned context should be derived from the underlying
 	// framework context and respect request cancellation and deadlines.
 	context.Context
 
-	// Next executes the next handler in the chain.
+	// Next executes the next handler in the chain and returns any error
+	// that occurred during execution.
 	//
-	// If the request has been aborted, Next should return immediately
-	// without executing further handlers.
-	Next()
+	// If an error is returned, the middleware chain should be interrupted
+	// and the error should be handled appropriately.
+	Next() error
 }

@@ -11,9 +11,12 @@ import (
 
 var _ httpx.Engine = (*Engine)(nil)
 
+type ErrorHandler func(ctx *gin.Context, err error)
+
 type Config struct {
-	engine *gin.Engine
-	server *http.Server
+	engine     *gin.Engine
+	server     *http.Server
+	errHandler ErrorHandler
 }
 
 type Option func(*Config)
@@ -29,6 +32,14 @@ func NewConfig(opts ...Option) *Config {
 	if conf.server == nil {
 		conf.server = &http.Server{
 			Addr: ":8080",
+		}
+	}
+	if conf.errHandler == nil {
+		conf.errHandler = func(ctx *gin.Context, err error) {
+			ctx.JSON(500, gin.H{
+				"error": err.Error(),
+			})
+			ctx.Abort()
 		}
 	}
 	return &conf
@@ -58,10 +69,17 @@ func WithServerAddr(addr string) Option {
 	}
 }
 
+func WithErrorHandler(errHandler ErrorHandler) Option {
+	return func(conf *Config) {
+		conf.errHandler = errHandler
+	}
+}
+
 type Engine struct {
-	engine  *gin.Engine
-	server  *http.Server
-	running atomic.Bool
+	engine     *gin.Engine
+	server     *http.Server
+	errHandler ErrorHandler
+	running    atomic.Bool
 }
 
 // New constructs a gin-backed Engine using core options.
@@ -69,18 +87,20 @@ func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	conf.server.Handler = conf.engine
 	return &Engine{
-		engine: conf.engine,
-		server: conf.server,
+		engine:     conf.engine,
+		server:     conf.server,
+		errHandler: conf.errHandler,
 	}
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.engine.Use(adaptMiddlewares(middleware)...)
+	e.engine.Use(adaptMiddlewares(middleware, e.errHandler)...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group: e.engine.Group(prefix, adaptMiddlewares(m)...),
+		group:      e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
+		errHandler: e.errHandler,
 	}
 }
 

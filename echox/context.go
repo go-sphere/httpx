@@ -18,11 +18,9 @@ var (
 )
 
 type echoContext struct {
-	ctx     echo.Context
-	next    echo.HandlerFunc
-	binder  echo.DefaultBinder
-	err     error
-	aborted bool
+	ctx    echo.Context
+	next   echo.HandlerFunc
+	binder echo.DefaultBinder
 }
 
 func newEchoContext(ctx echo.Context) *echoContext {
@@ -190,41 +188,41 @@ func (c *echoContext) Status(code int) {
 	c.ctx.Response().WriteHeader(code)
 }
 
-func (c *echoContext) JSON(code int, v any) {
-	_ = c.ctx.JSON(code, v)
+func (c *echoContext) JSON(code int, v any) error {
+	return c.ctx.JSON(code, v)
 }
 
-func (c *echoContext) Text(code int, s string) {
-	_ = c.ctx.String(code, s)
+func (c *echoContext) Text(code int, s string) error {
+	return c.ctx.String(code, s)
 }
 
-func (c *echoContext) NoContent(code int) {
-	_ = c.ctx.NoContent(code)
+func (c *echoContext) NoContent(code int) error {
+	return c.ctx.NoContent(code)
 }
 
-func (c *echoContext) Bytes(code int, b []byte, contentType string) {
+func (c *echoContext) Bytes(code int, b []byte, contentType string) error {
 	if contentType == "" {
 		contentType = http.DetectContentType(b)
 	}
-	_ = c.ctx.Blob(code, contentType, b)
+	return c.ctx.Blob(code, contentType, b)
 }
 
-func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, size int) {
+func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
 	if contentType == "" {
 		contentType = http.DetectContentType(nil)
 	}
 	if size >= 0 {
 		c.ctx.Response().Header().Set(echo.HeaderContentLength, strconv.Itoa(size))
 	}
-	_ = c.ctx.Stream(code, contentType, r)
+	return c.ctx.Stream(code, contentType, r)
 }
 
-func (c *echoContext) File(path string) {
-	_ = c.ctx.File(path)
+func (c *echoContext) File(path string) error {
+	return c.ctx.File(path)
 }
 
-func (c *echoContext) Redirect(code int, location string) {
-	_ = c.ctx.Redirect(code, location)
+func (c *echoContext) Redirect(code int, location string) error {
+	return c.ctx.Redirect(code, location)
 }
 
 func (c *echoContext) SetHeader(key, value string) {
@@ -232,10 +230,9 @@ func (c *echoContext) SetHeader(key, value string) {
 }
 
 func (c *echoContext) SetCookie(cookie *http.Cookie) {
-	if cookie == nil {
-		return
+	if cookie != nil {
+		c.ctx.SetCookie(cookie)
 	}
-	c.ctx.SetCookie(cookie)
 }
 
 // StateStore (httpx.StateStore)
@@ -250,16 +247,6 @@ func (c *echoContext) Get(key string) (any, bool) {
 		return nil, false
 	}
 	return val, true
-}
-
-// Aborter (httpx.Aborter)
-
-func (c *echoContext) Abort() {
-	c.aborted = true
-}
-
-func (c *echoContext) IsAborted() bool {
-	return c.aborted
 }
 
 // Context (context.Context + Next)
@@ -285,13 +272,11 @@ func (c *echoContext) Value(key any) any {
 	return c.ctx.Request().Context().Value(key)
 }
 
-func (c *echoContext) Next() {
-	if c.aborted || c.next == nil {
-		return
+func (c *echoContext) Next() error {
+	if c.next == nil {
+		return nil
 	}
 	next := c.next
 	c.next = nil
-	if err := next(c.ctx); err != nil && c.err == nil {
-		c.err = err
-	}
+	return next(c.ctx)
 }

@@ -103,8 +103,8 @@ func (r *Router) combineHandlers(h fiber.Handler) []any {
 func (r *Router) adaptHandler(h httpx.Handler) []any {
 	return r.combineHandlers(func(ctx fiber.Ctx) error {
 		fc := newFiberContext(ctx)
-		h(fc)
-		return nil
+		// Return error directly to fiber's error handling system
+		return h(fc)
 	})
 }
 

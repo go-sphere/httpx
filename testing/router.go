@@ -24,10 +24,10 @@ func NewRouterTester(engine httpx.Engine) *RouterTester {
 // TestHandle tests the Handle() method for registering routes with specific HTTP methods
 func (rt *RouterTester) TestHandle(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
-		name   string
-		method string
+		name       string
+		method     string
 		pathPrefix string
 	}{
 		{"GET route", "GET", "get-test"},
@@ -39,15 +39,15 @@ func (rt *RouterTester) TestHandle(t *testing.T) {
 		{"OPTIONS route", "OPTIONS", "options-test"},
 		{"Custom method", "CUSTOM", "custom-test"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			// Generate unique path for this test case
 			uniquePath := GenerateUniquePath(tc.pathPrefix)
-			
+
 			// Try to register the route, but handle frameworks that don't support custom methods
 			defer func() {
 				if r := recover(); r != nil {
@@ -59,13 +59,13 @@ func (rt *RouterTester) TestHandle(t *testing.T) {
 					panic(r)
 				}
 			}()
-			
-			router.Handle(tc.method, uniquePath, func(ctx httpx.Context) {
+
+			router.Handle(tc.method, uniquePath, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				AssertEqual(t, tc.method, ctx.Method(), "Method should match registered method")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			// Route registration should not panic
 			t.Logf("Test %s completed", tc.name)
 		})
@@ -75,7 +75,7 @@ func (rt *RouterTester) TestHandle(t *testing.T) {
 // TestHTTPMethods tests the HTTP method shortcuts (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
 func (rt *RouterTester) TestHTTPMethods(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name           string
 		method         string
@@ -139,18 +139,18 @@ func (rt *RouterTester) TestHTTPMethods(t *testing.T) {
 			"OPTIONS",
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
 			// var capturedContext httpx.Context
-			
-			tc.registerFunc(router, GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			tc.registerFunc(router, GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				AssertEqual(t, tc.expectedMethod, ctx.Method(), "Method should match expected HTTP method")
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			// Route registration should not panic
 			t.Logf("Test %s completed", tc.name)
 		})
@@ -160,7 +160,7 @@ func (rt *RouterTester) TestHTTPMethods(t *testing.T) {
 // TestAny tests the Any() method for registering routes that respond to all HTTP methods
 func (rt *RouterTester) TestAny(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name   string
 		method string
@@ -170,22 +170,22 @@ func (rt *RouterTester) TestAny(t *testing.T) {
 		{"Any with PUT", "PUT"},
 		{"Any with DELETE", "DELETE"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			// Use unique path for each test case to avoid conflicts
 			uniquePath := GenerateUniquePath("any-test")
-			
-			router.Any(uniquePath, func(ctx httpx.Context) {
+
+			router.Any(uniquePath, func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				// Any route should accept any HTTP method
 				t.Logf("Any route received method: %s", ctx.Method())
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			// Route registration should not panic
 			t.Logf("Test %s completed", tc.name)
 		})
@@ -195,7 +195,7 @@ func (rt *RouterTester) TestAny(t *testing.T) {
 // TestGroup tests the Group() method for creating route groups with prefixes
 func (rt *RouterTester) TestGroup(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name   string
 		prefix string
@@ -206,25 +206,25 @@ func (rt *RouterTester) TestGroup(t *testing.T) {
 		{"Empty prefix", "", "/test"},
 		{"Root prefix", "/", "/test"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			group := router.Group(tc.prefix)
 			AssertNotEqual(t, nil, group, "Group should return a valid Router instance")
-			
-			group.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			group.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				// Verify the full path includes the group prefix
 				fullPath := ctx.FullPath()
 				if fullPath != "" {
 					t.Logf("Group route full path: %s", fullPath)
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			// Group creation and route registration should not panic
 			t.Logf("Test %s completed", tc.name)
 		})
@@ -234,7 +234,7 @@ func (rt *RouterTester) TestGroup(t *testing.T) {
 // TestGroupWithMiddleware tests the Group() method with middleware attachment
 func (rt *RouterTester) TestGroupWithMiddleware(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name            string
 		prefix          string
@@ -244,31 +244,31 @@ func (rt *RouterTester) TestGroupWithMiddleware(t *testing.T) {
 		{"Group with multiple middleware", "/api/v1", 2},
 		{"Group with no middleware", "/simple", 0},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
 			// var capturedContext httpx.Context
 			// var middlewareExecuted int
-			
+
 			// Create middleware functions
 			middlewares := make([]httpx.Middleware, tc.middlewareCount)
 			for i := 0; i < tc.middlewareCount; i++ {
-				middlewares[i] = func(ctx httpx.Context) {
+				middlewares[i] = func(ctx httpx.Context) error {
 					// middlewareExecuted++
-					ctx.Next()
+					return ctx.Next()
 				}
 			}
-			
+
 			group := router.Group(tc.prefix, middlewares...)
 			AssertNotEqual(t, nil, group, "Group with middleware should return a valid Router instance")
-			
-			group.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			group.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				// Note: middleware execution count can't be verified without actual HTTP requests
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			// Group creation with middleware should not panic
 			t.Logf("Test %s completed", tc.name)
 		})
@@ -278,7 +278,7 @@ func (rt *RouterTester) TestGroupWithMiddleware(t *testing.T) {
 // TestUse tests the Use() method for attaching middleware to routes
 func (rt *RouterTester) TestUse(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name            string
 		middlewareCount int
@@ -287,27 +287,27 @@ func (rt *RouterTester) TestUse(t *testing.T) {
 		{"Multiple middleware", 3},
 		{"No middleware", 0},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
 			// var capturedContext httpx.Context
 			// var middlewareExecuted int
-			
+
 			// Add middleware using Use()
 			for i := 0; i < tc.middlewareCount; i++ {
-				router.Use(func(ctx httpx.Context) {
+				router.Use(func(ctx httpx.Context) error {
 					// middlewareExecuted++
-					ctx.Next()
+					return ctx.Next()
 				})
 			}
-			
-			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+
+			router.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				// Note: middleware execution count can't be verified without actual HTTP requests
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			// Middleware registration should not panic
 			t.Logf("Test %s completed", tc.name)
 		})
@@ -317,7 +317,7 @@ func (rt *RouterTester) TestUse(t *testing.T) {
 // TestBasePath tests the BasePath() method for retrieving the router's base path
 func (rt *RouterTester) TestBasePath(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name           string
 		prefix         string
@@ -327,23 +327,23 @@ func (rt *RouterTester) TestBasePath(t *testing.T) {
 		{"API base path", "/api", "/api"},
 		{"Nested base path", "/api/v1", "/api/v1"},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
-			
+
 			group := router.Group(tc.prefix)
 			basePath := group.BasePath()
-			
+
 			// BasePath should return the group's prefix
 			// Note: Some frameworks may normalize paths differently
 			t.Logf("Group prefix: %s, BasePath: %s", tc.prefix, basePath)
-			
+
 			// Verify BasePath is accessible (implementation may vary by framework)
 			if basePath != tc.expectedPrefix {
 				t.Logf("BasePath differs from expected (framework-specific behavior): expected %s, got %s", tc.expectedPrefix, basePath)
 			}
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -352,7 +352,7 @@ func (rt *RouterTester) TestBasePath(t *testing.T) {
 // TestStatic tests the Static() method for serving static files
 func (rt *RouterTester) TestStatic(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name   string
 		prefix string
@@ -362,18 +362,18 @@ func (rt *RouterTester) TestStatic(t *testing.T) {
 		{"Static files from testing directory", GenerateUniquePath("files"), "./testing"},
 		{"Root static files", GenerateUniquePath("root"), "."},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
-			
+
 			// Register static file serving
 			router.Static(tc.prefix, tc.root)
-			
+
 			// Static registration should not panic or error
 			// Actual file serving would require HTTP requests in integration tests
 			t.Logf("Static route registered: prefix=%s, root=%s", tc.prefix, tc.root)
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -382,7 +382,7 @@ func (rt *RouterTester) TestStatic(t *testing.T) {
 // TestStaticFS tests the StaticFS() method for serving files from an embedded filesystem
 func (rt *RouterTester) TestStaticFS(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name   string
 		prefix string
@@ -398,18 +398,18 @@ func (rt *RouterTester) TestStaticFS(t *testing.T) {
 			return sub
 		}()},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
-			
+
 			// Register static filesystem serving
 			router.StaticFS(tc.prefix, tc.fs)
-			
+
 			// StaticFS registration should not panic or error
 			// Actual file serving would require HTTP requests in integration tests
 			t.Logf("StaticFS route registered: prefix=%s", tc.prefix)
-			
+
 			t.Logf("Test %s completed", tc.name)
 		})
 	}
@@ -418,7 +418,7 @@ func (rt *RouterTester) TestStaticFS(t *testing.T) {
 // TestNestedGroups tests nested group creation and path composition
 func (rt *RouterTester) TestNestedGroups(t *testing.T) {
 	t.Helper()
-	
+
 	testCases := []struct {
 		name     string
 		prefixes []string
@@ -427,29 +427,29 @@ func (rt *RouterTester) TestNestedGroups(t *testing.T) {
 		{"Three-level nesting", []string{"/api", "/v1", "/users"}},
 		{"Mixed nesting", []string{"/app", "/admin", "/dashboard"}},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := rt.engine.Group("")
 			// var capturedContext httpx.Context
-			
+
 			// Create nested groups
 			currentRouter := router
 			for _, prefix := range tc.prefixes {
 				currentRouter = currentRouter.Group(prefix)
 				AssertNotEqual(t, nil, currentRouter, "Nested group should return valid Router instance")
 			}
-			
+
 			// Add a route to the deepest nested group
-			currentRouter.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) {
+			currentRouter.GET(GenerateUniqueTestPath(), func(ctx httpx.Context) error {
 				// capturedContext = ctx
 				fullPath := ctx.FullPath()
 				if fullPath != "" {
 					t.Logf("Nested group route full path: %s", fullPath)
 				}
-				ctx.Text(200, "OK")
+				return ctx.Text(200, "OK")
 			})
-			
+
 			// Nested group creation and route registration should not panic
 			t.Logf("Test %s completed", tc.name)
 		})
