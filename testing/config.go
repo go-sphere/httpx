@@ -1,62 +1,49 @@
 package testing
 
 import (
-	"fmt"
 	"time"
 )
 
-// TestError represents a testing framework error with detailed context.
-type TestError struct {
-	Component string
-	Operation string
-	Expected  interface{}
-	Actual    interface{}
-	Message   string
+// TestConfig holds configuration for testing framework behavior
+type TestConfig struct {
+	ServerAddr      string        // Server address (default: ":0")
+	RequestTimeout  time.Duration // Request timeout (default: 5s)
+	ConcurrentUsers int           // Concurrent users for load tests
+	TestDataSize    int           // Size of test data payloads
+	SkipSlowTests   bool          // Skip tests that are known to be slow
+	VerboseLogging  bool          // Enable verbose test logging
+	MaxRetries      int           // Maximum number of retries for flaky tests
 }
 
-// Error implements the error interface for TestError.
-func (e *TestError) Error() string {
-	return fmt.Sprintf("%s.%s: expected %v, got %v - %s",
-		e.Component, e.Operation, e.Expected, e.Actual, e.Message)
-}
-
-// NewTestError creates a new TestError with the provided details.
-func NewTestError(component, operation string, expected, actual interface{}, message string) *TestError {
-	return &TestError{
-		Component: component,
-		Operation: operation,
-		Expected:  expected,
-		Actual:    actual,
-		Message:   message,
+// DefaultTestConfig returns a TestConfig with sensible defaults
+func DefaultTestConfig() *TestConfig {
+	return &TestConfig{
+		ServerAddr:      ":0",
+		RequestTimeout:  5 * time.Second,
+		ConcurrentUsers: 10,
+		TestDataSize:    1024,
+		SkipSlowTests:   false,
+		VerboseLogging:  false,
+		MaxRetries:      3,
 	}
 }
 
-// TestConfig holds configuration for the testing framework.
-type TestConfig struct {
-	ServerAddr      string
-	RequestTimeout  time.Duration
-	ConcurrentUsers int
-	TestDataSize    int
-}
-
-// DefaultTestConfig provides sensible defaults for testing configuration.
-var DefaultTestConfig = TestConfig{
-	ServerAddr:      ":0", // Random port
-	RequestTimeout:  5 * time.Second,
-	ConcurrentUsers: 10,
-	TestDataSize:    1024,
-}
-
-// TestStruct is a standard structure used for binding tests across all adapters.
+// TestStruct is a standard test structure for binding tests
 type TestStruct struct {
 	Name  string `json:"name" form:"name" query:"name" uri:"name" header:"X-Name"`
 	Age   int    `json:"age" form:"age" query:"age" uri:"age" header:"X-Age"`
 	Email string `json:"email" form:"email" query:"email"`
 }
 
-// NestedTestStruct is used for complex binding tests with nested structures.
+// NestedTestStruct is a nested structure for complex binding tests
 type NestedTestStruct struct {
-	User   TestStruct `json:"user" form:"user"`
-	Active bool       `json:"active" form:"active"`
-	Tags   []string   `json:"tags" form:"tags"`
+	User    TestStruct `json:"user" form:"user"`
+	Address Address    `json:"address" form:"address"`
+}
+
+// Address represents an address for nested testing
+type Address struct {
+	Street string `json:"street" form:"street" query:"street"`
+	City   string `json:"city" form:"city" query:"city"`
+	Zip    string `json:"zip" form:"zip" query:"zip"`
 }

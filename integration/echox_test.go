@@ -4,95 +4,134 @@ import (
 	"testing"
 
 	"github.com/go-sphere/httpx/echox"
-	"github.com/labstack/echo/v4"
+	httptesting "github.com/go-sphere/httpx/testing"
 )
 
-// TestEchoxIntegration demonstrates how to use the httpx testing framework
-// with the echox adapter. This serves as both a test and an example for
-// other developers who want to integrate the testing framework.
+// setupEchoxSkipManager configures known failing tests for echox
+func setupEchoxSkipManager() *TestSkipManager {
+	skipManager := NewTestSkipManager()
+	
+	// Add known failing tests for echox - these should be updated as issues are fixed
+	// Example skipped tests (these may need to be adjusted based on actual test results):
+	
+	// Uncomment and adjust these as needed based on actual test failures:
+	// skipManager.AddSkippedTest("echox", "Binder", "BindURI", "URI parameter binding differences")
+	// skipManager.AddSkippedTest("echox", "RequestInfo", "Params", "Parameter handling differences")
+	// skipManager.AddSkippedTest("echox", "Responder", "SetCookie", "Cookie handling differences")
+	
+	return skipManager
+}
+
+// TestEchoxIntegration tests the echox framework adapter with skip support
 func TestEchoxIntegration(t *testing.T) {
-	// Create an echox engine with test configuration
-	engine := echox.New(
-		echox.WithServerAddr(":0"), // Use random port for testing
-	)
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "echox")
-	common.RunBasicIntegrationTests(t)
-}
-
-// TestEchoxTestingFrameworkIntegration demonstrates how to properly integrate
-// the testing framework with echox for comprehensive testing.
-func TestEchoxTestingFrameworkIntegration(t *testing.T) {
+	// Create echox engine with test configuration
 	engine := echox.New(echox.WithServerAddr(":0"))
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "echox")
-	common.RunTestingFrameworkIntegrationTests(t)
-}
-
-// TestEchoxAbortTracking demonstrates how to test middleware abort behavior
-// specifically with the echox adapter.
-func TestEchoxAbortTracking(t *testing.T) {
-	engine := echox.New(echox.WithServerAddr(":0"))
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "echox")
-	common.RunAbortTrackingTests(t)
-}
-
-// TestEchoxSpecificFeatures tests echox-specific features and behaviors
-// that might differ from other adapters.
-func TestEchoxSpecificFeatures(t *testing.T) {
-	// Test with echo's built-in middleware
-	echoEngine := echo.New()
-
-	engine := echox.New(
-		echox.WithEngine(echoEngine),
-		echox.WithServerAddr(":0"),
-	)
-
-	// Test router functionality with echo-specific features
-	t.Run("RouterWithEchoMiddleware", func(t *testing.T) {
-		common := NewCommonIntegrationTests(engine, "echox")
-		common.RunRouterTests(t)
+	
+	// Create common integration tests instance
+	cit := NewCommonIntegrationTests("echox", engine)
+	
+	// Set up skip manager for known failing tests
+	skipManager := setupEchoxSkipManager()
+	
+	// Validate framework integration first
+	t.Run("ValidateIntegration", func(t *testing.T) {
+		cit.ValidateFrameworkIntegration(t)
 	})
-
-	// Test binding functionality which might have echo-specific behavior
-	t.Run("BinderWithEchoFeatures", func(t *testing.T) {
-		common := NewCommonIntegrationTests(engine, "echox")
-		common.RunBinderTests(t)
+	
+	// Run all interface tests with skip support
+	t.Run("AllInterfaceTests", func(t *testing.T) {
+		cit.RunAllInterfaceTests(t)
+	})
+	
+	// Run individual interface tests with skip support for better isolation
+	t.Run("IndividualInterfaceTestsWithSkipSupport", func(t *testing.T) {
+		cit.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
 	})
 }
 
-// BenchmarkEchoxPerformance runs performance benchmarks for the echox adapter
-// using the testing framework's benchmark tools.
-func BenchmarkEchoxPerformance(b *testing.B) {
+// TestEchoxSpecificInterfaceTests allows testing specific interfaces individually with skip support
+func TestEchoxSpecificInterfaceTests(t *testing.T) {
 	engine := echox.New(echox.WithServerAddr(":0"))
-	common := NewCommonIntegrationTests(engine, "echox")
-	common.RunBenchmarks(b)
+	cit := NewCommonIntegrationTests("echox", engine)
+	skipManager := setupEchoxSkipManager()
+	
+	// Test each interface individually with skip support
+	testCases := []string{
+		"RequestInfo",
+		"Request", 
+		"BodyAccess",
+		"FormAccess",
+		"Binder",
+		"Responder",
+		"StateStore",
+		"Aborter",
+		"Router",
+		"Engine",
+	}
+	
+	for _, interfaceName := range testCases {
+		t.Run(interfaceName, func(t *testing.T) {
+			cit.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
+				cit.RunSpecificInterfaceTest(t, interfaceName)
+			})
+		})
+	}
 }
 
-// TestEchoxBindingIntegration tests echox binding functionality with real HTTP requests
-func TestEchoxBindingIntegration(t *testing.T) {
+// TestEchoxWithCustomConfig tests echox with custom configuration
+func TestEchoxWithCustomConfig(t *testing.T) {
 	engine := echox.New(echox.WithServerAddr(":0"))
-	common := NewCommonIntegrationTests(engine, "echox")
-	common.RunBindingIntegrationTests(t)
+	
+	// Create custom test configuration
+	config := &httptesting.TestConfig{
+		ServerAddr:     ":0",
+		VerboseLogging: true,
+	}
+	
+	cit := NewCommonIntegrationTestsWithConfig("echox", engine, config)
+	skipManager := setupEchoxSkipManager()
+	
+	t.Run("CustomConfigTests", func(t *testing.T) {
+		// Run tests with skip support
+		cit.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
+			cit.RunAllInterfaceTests(t)
+		})
+	})
 }
 
-// Example_echoxIntegration shows how to use the testing framework with echox
-// in a simple, straightforward way.
-func Example_echoxIntegration() {
-	// Create echox engine
-	engine := echox.New(echox.WithServerAddr(":8080"))
+// BenchmarkEchoxIntegration provides performance benchmarks for echox
+func BenchmarkEchoxIntegration(b *testing.B) {
+	engine := echox.New(echox.WithServerAddr(":0"))
+	cit := NewCommonIntegrationTests("echox", engine)
+	
+	// Benchmark interface tests
+	cit.BenchmarkInterfaceTests(b)
+}
 
-	// Create test suite using common helper
-	common := NewCommonIntegrationTests(engine, "echox")
-	suite := common.CreateExampleTestSuite()
+// TestEchoxSkipManagerConfiguration tests the skip manager configuration
+func TestEchoxSkipManagerConfiguration(t *testing.T) {
+	skipManager := setupEchoxSkipManager()
+	
+	// Test that skip manager is properly configured
+	skippedTests := skipManager.GetSkippedTests("echox")
+	t.Logf("Echox has %d configured skipped tests", len(skippedTests))
+	
+	// Log skipped tests for visibility
+	for _, test := range skippedTests {
+		t.Logf("Skipped test: %s.%s - %s", test.Interface, test.Method, test.Reason)
+	}
+}
 
-	// In a real test, you would call:
-	// suite.RunAllTests(t)
-
-	// This example demonstrates the basic setup
-	_ = suite
+// TestEchoxEngineLifecycle tests the engine start/stop lifecycle
+func TestEchoxEngineLifecycle(t *testing.T) {
+	engine := echox.New(echox.WithServerAddr(":0"))
+	
+	// Test initial state
+	if engine.IsRunning() {
+		t.Error("Engine should not be running initially")
+	}
+	
+	// Note: We don't actually start/stop the engine in tests to avoid port conflicts
+	// The actual lifecycle testing is handled by the Engine interface tester
+	t.Log("Engine lifecycle testing delegated to Engine interface tester")
 }

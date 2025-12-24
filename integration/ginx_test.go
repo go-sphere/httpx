@@ -3,90 +3,111 @@ package integration
 import (
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx/ginx"
+	httptesting "github.com/go-sphere/httpx/testing"
 )
 
-// TestGinxIntegration demonstrates how to use the httpx testing framework
-// with the ginx adapter. This serves as both a test and an example for
-// other developers who want to integrate the testing framework.
+// TestGinxIntegration tests the ginx framework adapter as the reference implementation
 func TestGinxIntegration(t *testing.T) {
-	// Set gin to test mode to reduce noise in test output
-	gin.SetMode(gin.TestMode)
-
-	// Create a ginx engine with test configuration
-	engine := ginx.New(
-		ginx.WithServerAddr(":0"), // Use random port for testing
-	)
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "ginx")
-	common.RunBasicIntegrationTests(t)
-}
-
-// TestGinxTestingFrameworkIntegration demonstrates how to properly integrate
-// the testing framework with ginx for comprehensive testing.
-func TestGinxTestingFrameworkIntegration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
+	// Create ginx engine with test configuration
 	engine := ginx.New(ginx.WithServerAddr(":0"))
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "ginx")
-	common.RunTestingFrameworkIntegrationTests(t)
-}
-
-// TestGinxAbortTracking demonstrates how to test middleware abort behavior
-// specifically with the ginx adapter.
-func TestGinxAbortTracking(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	engine := ginx.New(ginx.WithServerAddr(":0"))
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "ginx")
-	common.RunAbortTrackingTests(t)
-}
-
-// TestGinxBindingIntegration tests ginx binding functionality with real HTTP requests
-func TestGinxBindingIntegration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	// Test HTTP-based binding
-	t.Run("HTTPBindingTests", func(t *testing.T) {
-		// Create a fresh engine for HTTP tests
-		engine := ginx.New(ginx.WithServerAddr(":0"))
-		common := NewCommonIntegrationTests(engine, "ginx")
-		common.RunBindingIntegrationTests(t)
+	
+	// Create common integration tests instance
+	cit := NewCommonIntegrationTests("ginx", engine)
+	
+	// Validate framework integration first
+	t.Run("ValidateIntegration", func(t *testing.T) {
+		cit.ValidateFrameworkIntegration(t)
+	})
+	
+	// Run all interface tests - ginx should pass all tests as reference implementation
+	t.Run("AllInterfaceTests", func(t *testing.T) {
+		cit.RunAllInterfaceTests(t)
+	})
+	
+	// Run individual interface tests for better isolation and debugging
+	t.Run("IndividualInterfaceTests", func(t *testing.T) {
+		cit.RunIndividualInterfaceTests(t)
 	})
 }
 
-// BenchmarkGinxPerformance runs performance benchmarks for the ginx adapter
-// using the testing framework's benchmark tools.
-func BenchmarkGinxPerformance(b *testing.B) {
-	gin.SetMode(gin.TestMode)
-
+// TestGinxSpecificInterfaceTests allows testing specific interfaces individually
+func TestGinxSpecificInterfaceTests(t *testing.T) {
 	engine := ginx.New(ginx.WithServerAddr(":0"))
-	common := NewCommonIntegrationTests(engine, "ginx")
-	common.RunBenchmarks(b)
+	cit := NewCommonIntegrationTests("ginx", engine)
+	
+	// Test each interface individually - useful for debugging specific issues
+	testCases := []string{
+		"RequestInfo",
+		"Request", 
+		"BodyAccess",
+		"FormAccess",
+		"Binder",
+		"Responder",
+		"StateStore",
+		"Aborter",
+		"Router",
+		"Engine",
+	}
+	
+	for _, interfaceName := range testCases {
+		t.Run(interfaceName, func(t *testing.T) {
+			cit.RunSpecificInterfaceTest(t, interfaceName)
+		})
+	}
 }
 
-// Example_ginxIntegration shows how to use the testing framework with ginx
-// in a simple, straightforward way.
-func Example_ginxIntegration() {
-	// Set gin to test mode
-	gin.SetMode(gin.TestMode)
+// TestGinxWithCustomConfig tests ginx with custom configuration
+func TestGinxWithCustomConfig(t *testing.T) {
+	engine := ginx.New(ginx.WithServerAddr(":0"))
+	
+	// Create custom test configuration
+	config := &httptesting.TestConfig{
+		ServerAddr:     ":0",
+		VerboseLogging: true,
+	}
+	
+	cit := NewCommonIntegrationTestsWithConfig("ginx", engine, config)
+	
+	t.Run("CustomConfigTests", func(t *testing.T) {
+		cit.RunAllInterfaceTests(t)
+	})
+}
 
-	// Create ginx engine
-	engine := ginx.New(ginx.WithServerAddr(":8080"))
+// TestGinxFlexibleExecution demonstrates flexible execution for ginx
+func TestGinxFlexibleExecution(t *testing.T) {
+	runner := NewTestRunner()
+	
+	// Test different execution modes
+	t.Run("IndividualMode", func(t *testing.T) {
+		runner.RunSingleFramework(t, FrameworkGinx, ModeIndividual)
+	})
+	
+	t.Run("BatchMode", func(t *testing.T) {
+		runner.RunSingleFramework(t, FrameworkGinx, ModeBatch)
+	})
+	
+	t.Run("ValidationMode", func(t *testing.T) {
+		runner.RunSingleFramework(t, FrameworkGinx, ModeValidation)
+	})
+}
 
-	// Create test suite using common helper
-	common := NewCommonIntegrationTests(engine, "ginx")
-	suite := common.CreateExampleTestSuite()
+// BenchmarkGinxFlexible provides flexible benchmarking for ginx
+func BenchmarkGinxFlexible(b *testing.B) {
+	runner := NewTestRunner()
+	runner.BenchmarkSingleFramework(b, FrameworkGinx)
+}
 
-	// In a real test, you would call:
-	// suite.RunAllTests(t)
-
-	// This example demonstrates the basic setup
-	_ = suite
+// TestGinxEngineLifecycle tests the engine start/stop lifecycle
+func TestGinxEngineLifecycle(t *testing.T) {
+	engine := ginx.New(ginx.WithServerAddr(":0"))
+	
+	// Test initial state
+	if engine.IsRunning() {
+		t.Error("Engine should not be running initially")
+	}
+	
+	// Note: We don't actually start/stop the engine in tests to avoid port conflicts
+	// The actual lifecycle testing is handled by the Engine interface tester
+	t.Log("Engine lifecycle testing delegated to Engine interface tester")
 }

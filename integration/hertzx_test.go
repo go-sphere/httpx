@@ -3,94 +3,136 @@ package integration
 import (
 	"testing"
 
-	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-sphere/httpx/hertzx"
+	httptesting "github.com/go-sphere/httpx/testing"
 )
 
-// TestHertzxIntegration demonstrates how to use the httpx testing framework
-// with the hertzx adapter. This serves as both a test and an example for
-// other developers who want to integrate the testing framework.
+// setupHertzxSkipManager configures known failing tests for hertzx
+func setupHertzxSkipManager() *TestSkipManager {
+	skipManager := NewTestSkipManager()
+	
+	// Add known failing tests for hertzx - these should be updated as issues are fixed
+	
+	// Currently no tests need to be skipped - framework-specific behaviors are handled in the tests
+	
+	// Uncomment and adjust these as needed based on actual test failures:
+	// skipManager.AddSkippedTest("hertzx", "RequestInfo", "Headers", "Header handling differences")
+	// skipManager.AddSkippedTest("hertzx", "Responder", "JSON", "JSON response differences")
+	// skipManager.AddSkippedTest("hertzx", "Router", "Static", "Static file serving differences")
+	
+	return skipManager
+}
+
+// TestHertzxIntegration tests the hertzx framework adapter with skip support
 func TestHertzxIntegration(t *testing.T) {
-	// Create a hertzx engine with test configuration
+	// Create hertzx engine with test configuration
 	engine := hertzx.New()
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "hertzx")
-	common.RunBasicIntegrationTests(t)
-}
-
-// TestHertzxTestingFrameworkIntegration demonstrates how to properly integrate
-// the testing framework with hertzx for comprehensive testing.
-func TestHertzxTestingFrameworkIntegration(t *testing.T) {
-	engine := hertzx.New()
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "hertzx")
-	common.RunTestingFrameworkIntegrationTests(t)
-}
-
-// TestHertzxAbortTracking demonstrates how to test middleware abort behavior
-// specifically with the hertzx adapter.
-func TestHertzxAbortTracking(t *testing.T) {
-	engine := hertzx.New()
-
-	// Use common integration tests
-	common := NewCommonIntegrationTests(engine, "hertzx")
-	common.RunAbortTrackingTests(t)
-}
-
-// TestHertzxSpecificFeatures tests hertzx-specific features and behaviors
-// that might differ from other adapters. Note that hertzx is a minimal-level
-// adaptation, so some features may have limitations.
-func TestHertzxSpecificFeatures(t *testing.T) {
-	// Test with hertz's built-in configuration
-	hertzEngine := server.Default()
-
-	engine := hertzx.New(
-		hertzx.WithEngine(hertzEngine),
-	)
-
-	// Test router functionality with hertz-specific features
-	t.Run("RouterWithHertzFeatures", func(t *testing.T) {
-		common := NewCommonIntegrationTests(engine, "hertzx")
-		common.RunRouterTests(t)
+	
+	// Create common integration tests instance
+	cit := NewCommonIntegrationTests("hertzx", engine)
+	
+	// Set up skip manager for known failing tests
+	skipManager := setupHertzxSkipManager()
+	
+	// Validate framework integration first
+	t.Run("ValidateIntegration", func(t *testing.T) {
+		cit.ValidateFrameworkIntegration(t)
 	})
-
-	// Test binding functionality - hertzx may have limitations
-	t.Run("BinderWithHertzFeatures", func(t *testing.T) {
-		common := NewCommonIntegrationTests(engine, "hertzx")
-		common.RunBinderTests(t)
+	
+	// Run all interface tests with skip support
+	t.Run("AllInterfaceTests", func(t *testing.T) {
+		cit.RunAllInterfaceTests(t)
+	})
+	
+	// Run individual interface tests with skip support for better isolation
+	t.Run("IndividualInterfaceTestsWithSkipSupport", func(t *testing.T) {
+		cit.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
 	})
 }
 
-// BenchmarkHertzxPerformance runs performance benchmarks for the hertzx adapter
-// using the testing framework's benchmark tools.
-func BenchmarkHertzxPerformance(b *testing.B) {
+// TestHertzxSpecificInterfaceTests allows testing specific interfaces individually with skip support
+func TestHertzxSpecificInterfaceTests(t *testing.T) {
 	engine := hertzx.New()
-	common := NewCommonIntegrationTests(engine, "hertzx")
-	common.RunBenchmarks(b)
+	cit := NewCommonIntegrationTests("hertzx", engine)
+	skipManager := setupHertzxSkipManager()
+	
+	// Test each interface individually with skip support
+	testCases := []string{
+		"RequestInfo",
+		"Request", 
+		"BodyAccess",
+		"FormAccess",
+		"Binder",
+		"Responder",
+		"StateStore",
+		"Aborter",
+		"Router",
+		"Engine",
+	}
+	
+	for _, interfaceName := range testCases {
+		t.Run(interfaceName, func(t *testing.T) {
+			cit.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
+				cit.RunSpecificInterfaceTest(t, interfaceName)
+			})
+		})
+	}
 }
 
-// TestHertzxBindingIntegration tests hertzx binding functionality with real HTTP requests
-func TestHertzxBindingIntegration(t *testing.T) {
+// TestHertzxWithCustomConfig tests hertzx with custom configuration
+func TestHertzxWithCustomConfig(t *testing.T) {
 	engine := hertzx.New()
-	common := NewCommonIntegrationTests(engine, "hertzx")
-	common.RunBindingIntegrationTests(t)
+	
+	// Create custom test configuration
+	config := &httptesting.TestConfig{
+		ServerAddr:     ":0",
+		VerboseLogging: true,
+	}
+	
+	cit := NewCommonIntegrationTestsWithConfig("hertzx", engine, config)
+	skipManager := setupHertzxSkipManager()
+	
+	t.Run("CustomConfigTests", func(t *testing.T) {
+		// Run tests with skip support
+		cit.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
+			cit.RunAllInterfaceTests(t)
+		})
+	})
 }
 
-// Example_hertzxIntegration shows how to use the testing framework with hertzx
-// in a simple, straightforward way.
-func Example_hertzxIntegration() {
-	// Create hertzx engine
+// BenchmarkHertzxIntegration provides performance benchmarks for hertzx
+func BenchmarkHertzxIntegration(b *testing.B) {
 	engine := hertzx.New()
+	cit := NewCommonIntegrationTests("hertzx", engine)
+	
+	// Benchmark interface tests
+	cit.BenchmarkInterfaceTests(b)
+}
 
-	// Create test suite using common helper
-	common := NewCommonIntegrationTests(engine, "hertzx")
-	suite := common.CreateExampleTestSuite()
+// TestHertzxSkipManagerConfiguration tests the skip manager configuration
+func TestHertzxSkipManagerConfiguration(t *testing.T) {
+	skipManager := setupHertzxSkipManager()
+	
+	// Test that skip manager is properly configured
+	skippedTests := skipManager.GetSkippedTests("hertzx")
+	t.Logf("Hertzx has %d configured skipped tests", len(skippedTests))
+	
+	// Log skipped tests for visibility
+	for _, test := range skippedTests {
+		t.Logf("Skipped test: %s.%s - %s", test.Interface, test.Method, test.Reason)
+	}
+}
 
-	// In a real test, you would call:
-	// suite.RunAllTests(t)
-
-	// This example demonstrates the basic setup
-	_ = suite
+// TestHertzxEngineLifecycle tests the engine start/stop lifecycle
+func TestHertzxEngineLifecycle(t *testing.T) {
+	engine := hertzx.New()
+	
+	// Test initial state
+	if engine.IsRunning() {
+		t.Error("Engine should not be running initially")
+	}
+	
+	// Note: We don't actually start/stop the engine in tests to avoid port conflicts
+	// The actual lifecycle testing is handled by the Engine interface tester
+	t.Log("Engine lifecycle testing delegated to Engine interface tester")
 }
