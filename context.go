@@ -7,23 +7,21 @@ import (
 	"net/http"
 )
 
-type H map[string]any
-
 // RequestInfo exposes a stable, read-only view of an incoming HTTP request.
 //
-// All methods on RequestInfo are side effect free:
+// All methods on RequestInfo are side-effect-free:
 // calling them MUST NOT consume the request body, trigger form parsing,
 // or mutate any internal request state.
 //
 // This interface is intended to be safely used by middleware and handlers
-// that only need request metadata such as routing, headers, queries, and cookies.
+// that only need to request metadata such as routing, headers, queries, and cookies.
 //
 // Implementations should provide best-effort, framework-independent behavior
 // across supported HTTP frameworks.
 type RequestInfo interface {
 	Method() string
-	Path() string     // Always returns request path
-	FullPath() string // Returns route pattern when available, empty otherwise
+	Path() string     // Always returns a request path
+	FullPath() string // Returns a route pattern when available, empty otherwise
 	ClientIP() string // Best-effort client IP detection
 
 	Param(key string) string

@@ -5,6 +5,8 @@ import (
 	"io/fs"
 )
 
+type H map[string]any
+
 // Handler is the canonical function signature for framework adapters.
 type Handler func(Context) error
 
@@ -53,4 +55,27 @@ type Engine interface {
 	Start() error
 	Stop(ctx context.Context) error
 	IsRunning() bool // Server status check
+}
+
+// WithJson wraps a handler with JSON response.
+func WithJson[T any](handler func(ctx Context) (T, error)) Handler {
+	return func(ctx Context) error {
+		defer func() {
+			if r := recover(); r != nil {
+				if e, ok := r.(error); ok {
+					_ = ctx.JSON(500, H{"error": e.Error()})
+				} else {
+					_ = ctx.JSON(500, H{"error": "internal server error"})
+				}
+			}
+		}()
+		data, err := handler(ctx)
+		if err != nil {
+			return err
+		}
+		return ctx.JSON(200, H{
+			"success": true,
+			"data":    data,
+		})
+	}
 }
