@@ -74,27 +74,27 @@
 //  3. Run full test suite before committing
 //
 // CI/CD pipeline:
-//  - Use Batch mode for fast validation (default behavior)
-//  - Run Benchmark mode periodically to detect performance regressions
+//   - Use Batch mode for fast validation (default behavior)
+//   - Run Benchmark mode periodically to detect performance regressions
 //
 // # Framework Support
 //
 // Currently supported frameworks:
-//  - Ginx (github.com/go-sphere/httpx/ginx) - Gin adapter
-//  - Fiberx (github.com/go-sphere/httpx/fiberx) - Fiber adapter
-//  - Echox (github.com/go-sphere/httpx/echox) - Echo adapter
-//  - Hertzx (github.com/go-sphere/httpx/hertzx) - Hertz adapter
+//   - Ginx (github.com/go-sphere/httpx/ginx) - Gin adapter
+//   - Fiberx (github.com/go-sphere/httpx/fiberx) - Fiber adapter
+//   - Echox (github.com/go-sphere/httpx/echox) - Echo adapter
+//   - Hertzx (github.com/go-sphere/httpx/hertzx) - Hertz adapter
 //
 // # Test Coverage
 //
 // The integration package validates the following httpx interfaces:
-//  - RequestInfo: HTTP request information (method, path, headers, queries)
-//  - Binder: Request body and parameter binding
-//  - Responder: HTTP response generation
-//  - Router: Route registration and request routing
-//  - StateStore: Request-scoped state management
-//  - BodyAccess: Request body reading and parsing
-//  - FormAccess: Form data and file upload handling
+//   - RequestInfo: HTTP request information (method, path, headers, queries)
+//   - Binder: Request body and parameter binding
+//   - Responder: HTTP response generation
+//   - Router: Route registration and request routing
+//   - StateStore: Request-scoped state management
+//   - BodyAccess: Request body reading and parsing
+//   - FormAccess: Form data and file upload handling
 //
 // # Skip Management
 //
@@ -107,9 +107,9 @@
 // Skipped tests are clearly reported in test output with reasons.
 //
 // For more details, see:
-//  - Test execution modes: ../specs/001-test-suite-optimization/quickstart.md
-//  - Implementation plan: ../specs/001-test-suite-optimization/plan.md
-//  - Architecture details: ../specs/001-test-suite-optimization/research.md
+//   - Test execution modes: ../specs/001-test-suite-optimization/quickstart.md
+//   - Implementation plan: ../specs/001-test-suite-optimization/plan.md
+//   - Architecture details: ../specs/001-test-suite-optimization/research.md
 package integration
 
 import (
@@ -150,12 +150,12 @@ const (
 	// ModeIndividual runs each interface test separately for maximum isolation and debugging detail.
 	// Use this mode when debugging specific interface failures or investigating test issues.
 	ModeIndividual TestExecutionMode = "individual"
-	
+
 	// ModeBatch runs all interface tests together for faster execution in CI/CD pipelines.
 	// This mode includes framework integration validation as a first step.
 	// Use this mode for continuous integration, pull request checks, and release validation.
 	ModeBatch TestExecutionMode = "batch"
-	
+
 	// ModeBenchmark runs benchmark tests for performance regression detection.
 	// Use this mode to measure and compare interface implementation performance across frameworks.
 	ModeBenchmark TestExecutionMode = "benchmark"

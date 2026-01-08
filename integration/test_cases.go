@@ -184,11 +184,11 @@ func (tc *TestCases) BenchmarkInterfaceTests(b *testing.B) {
 
 	// Benchmark individual interfaces using the map
 	benchmarkInterfaces := []string{"RequestInfo", "BodyAccess", "Binder", "Responder"}
-	
+
 	for _, interfaceName := range benchmarkInterfaces {
 		interfaceName := interfaceName // Capture for closure
 		testFunc := interfaceTestMap[interfaceName]
-		
+
 		b.Run(interfaceName, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				t := &testing.T{}
@@ -216,7 +216,7 @@ func (tc *TestCases) RunAllInterfaceTestsWithReporting(t *testing.T) {
 	for _, interfaceName := range interfaces {
 		interfaceName := interfaceName // Capture for closure
 		testFunc := interfaceTestMap[interfaceName]
-		
+
 		t.Run(interfaceName, func(t *testing.T) {
 			tc.suite.Helper().ReportInterfaceTestStart(t, tc.frameworkName, interfaceName)
 
