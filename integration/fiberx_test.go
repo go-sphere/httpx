@@ -11,78 +11,27 @@ import (
 
 // TestFiberxIntegration tests the fiberx framework adapter with skip support
 func TestFiberxIntegration(t *testing.T) {
-	// Create fiberx engine with test configuration
 	engine := fiberx.New(fiberx.WithListen(":0"))
-
-	// Create common integration tests instance
-	tc := NewTestCases("fiberx", engine)
-
-	// Set up skip manager for known failing tests
 	skipManager := setupFiberxSkipManager()
-
-	// Validate framework integration first
-	t.Run("ValidateIntegration", func(t *testing.T) {
-		tc.ValidateFrameworkIntegration(t)
-	})
-
-	// Run all interface tests with skip support
-	t.Run("AllInterfaceTests", func(t *testing.T) {
-		tc.RunAllInterfaceTests(t)
-	})
-
-	// Run individual interface tests with skip support for better isolation
-	t.Run("IndividualInterfaceTestsWithSkipSupport", func(t *testing.T) {
-		tc.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
-	})
+	RunFrameworkIntegrationTests(t, "fiberx", engine, skipManager)
 }
 
 // TestFiberxSpecificInterfaceTests allows testing specific interfaces individually with skip support
 func TestFiberxSpecificInterfaceTests(t *testing.T) {
 	engine := fiberx.New(fiberx.WithListen(":0"))
-	tc := NewTestCases("fiberx", engine)
 	skipManager := setupFiberxSkipManager()
-
-	// Test each interface individually with skip support
-	testCases := []string{
-		"RequestInfo",
-		"Request",
-		"BodyAccess",
-		"FormAccess",
-		"Binder",
-		"Responder",
-		"StateStore",
-		"Router",
-		"Engine",
-	}
-
-	for _, interfaceName := range testCases {
-		t.Run(interfaceName, func(t *testing.T) {
-			tc.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
-				tc.RunSpecificInterfaceTest(t, interfaceName)
-			})
-		})
-	}
+	RunFrameworkSpecificInterfaceTests(t, "fiberx", engine, skipManager)
 }
 
 // TestFiberxWithCustomConfig tests fiberx with custom configuration
 func TestFiberxWithCustomConfig(t *testing.T) {
 	engine := fiberx.New(fiberx.WithListen(":0"))
-
-	// Create custom test configuration
 	config := &httptesting.TestConfig{
 		ServerAddr:     ":0",
 		VerboseLogging: true,
 	}
-
-	tc := NewTestCasesWithConfig("fiberx", engine, config)
 	skipManager := setupFiberxSkipManager()
-
-	t.Run("CustomConfigTests", func(t *testing.T) {
-		// Run tests with skip support
-		tc.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
-			tc.RunAllInterfaceTests(t)
-		})
-	})
+	RunFrameworkWithCustomConfig(t, "fiberx", engine, config, skipManager)
 }
 
 // TestFiberxFlexibleExecution demonstrates flexible execution for fiberx
@@ -98,8 +47,8 @@ func TestFiberxFlexibleExecution(t *testing.T) {
 		runner.RunSingleFramework(t, FrameworkFiberx, ModeBatch)
 	})
 
-	t.Run("ValidationMode", func(t *testing.T) {
-		runner.RunSingleFramework(t, FrameworkFiberx, ModeValidation)
+	t.Run("BatchMode", func(t *testing.T) {
+		runner.RunSingleFramework(t, FrameworkFiberx, ModeBatch)
 	})
 }
 

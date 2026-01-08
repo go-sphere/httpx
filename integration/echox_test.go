@@ -11,78 +11,27 @@ import (
 
 // TestEchoxIntegration tests the echox framework adapter with skip support
 func TestEchoxIntegration(t *testing.T) {
-	// Create echox engine with test configuration
 	engine := echox.New(echox.WithServerAddr(":0"))
-
-	// Create common integration tests instance
-	tc := NewTestCases("echox", engine)
-
-	// Set up skip manager for known failing tests
 	skipManager := setupEchoxSkipManager()
-
-	// Validate framework integration first
-	t.Run("ValidateIntegration", func(t *testing.T) {
-		tc.ValidateFrameworkIntegration(t)
-	})
-
-	// Run all interface tests with skip support
-	t.Run("AllInterfaceTests", func(t *testing.T) {
-		tc.RunAllInterfaceTests(t)
-	})
-
-	// Run individual interface tests with skip support for better isolation
-	t.Run("IndividualInterfaceTestsWithSkipSupport", func(t *testing.T) {
-		tc.RunIndividualInterfaceTestsWithSkipSupport(t, skipManager)
-	})
+	RunFrameworkIntegrationTests(t, "echox", engine, skipManager)
 }
 
 // TestEchoxSpecificInterfaceTests allows testing specific interfaces individually with skip support
 func TestEchoxSpecificInterfaceTests(t *testing.T) {
 	engine := echox.New(echox.WithServerAddr(":0"))
-	tc := NewTestCases("echox", engine)
 	skipManager := setupEchoxSkipManager()
-
-	// Test each interface individually with skip support
-	testCases := []string{
-		"RequestInfo",
-		"Request",
-		"BodyAccess",
-		"FormAccess",
-		"Binder",
-		"Responder",
-		"StateStore",
-		"Router",
-		"Engine",
-	}
-
-	for _, interfaceName := range testCases {
-		t.Run(interfaceName, func(t *testing.T) {
-			tc.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
-				tc.RunSpecificInterfaceTest(t, interfaceName)
-			})
-		})
-	}
+	RunFrameworkSpecificInterfaceTests(t, "echox", engine, skipManager)
 }
 
 // TestEchoxWithCustomConfig tests echox with custom configuration
 func TestEchoxWithCustomConfig(t *testing.T) {
 	engine := echox.New(echox.WithServerAddr(":0"))
-
-	// Create custom test configuration
 	config := &httptesting.TestConfig{
 		ServerAddr:     ":0",
 		VerboseLogging: true,
 	}
-
-	tc := NewTestCasesWithConfig("echox", engine, config)
 	skipManager := setupEchoxSkipManager()
-
-	t.Run("CustomConfigTests", func(t *testing.T) {
-		// Run tests with skip support
-		tc.RunWithSkipSupport(t, skipManager, "all", func(t *testing.T) {
-			tc.RunAllInterfaceTests(t)
-		})
-	})
+	RunFrameworkWithCustomConfig(t, "echox", engine, config, skipManager)
 }
 
 // BenchmarkEchoxIntegration provides performance benchmarks for echox

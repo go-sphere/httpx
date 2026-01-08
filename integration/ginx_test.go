@@ -9,68 +9,24 @@ import (
 
 // TestGinxIntegration tests the ginx framework adapter as the reference implementation
 func TestGinxIntegration(t *testing.T) {
-	// Create ginx engine with test configuration
 	engine := ginx.New(ginx.WithServerAddr(":0"))
-
-	// Create common integration tests instance
-	tc := NewTestCases("ginx", engine)
-
-	// Validate framework integration first
-	t.Run("ValidateIntegration", func(t *testing.T) {
-		tc.ValidateFrameworkIntegration(t)
-	})
-
-	// Run all interface tests - ginx should pass all tests as reference implementation
-	t.Run("AllInterfaceTests", func(t *testing.T) {
-		tc.RunAllInterfaceTests(t)
-	})
-
-	// Run individual interface tests for better isolation and debugging
-	t.Run("IndividualInterfaceTests", func(t *testing.T) {
-		tc.RunIndividualInterfaceTests(t)
-	})
+	RunFrameworkIntegrationTests(t, "ginx", engine, nil)
 }
 
 // TestGinxSpecificInterfaceTests allows testing specific interfaces individually
 func TestGinxSpecificInterfaceTests(t *testing.T) {
 	engine := ginx.New(ginx.WithServerAddr(":0"))
-	tc := NewTestCases("ginx", engine)
-
-	// Test each interface individually - useful for debugging specific issues
-	testCases := []string{
-		"RequestInfo",
-		"Request",
-		"BodyAccess",
-		"FormAccess",
-		"Binder",
-		"Responder",
-		"StateStore",
-		"Router",
-		"Engine",
-	}
-
-	for _, interfaceName := range testCases {
-		t.Run(interfaceName, func(t *testing.T) {
-			tc.RunSpecificInterfaceTest(t, interfaceName)
-		})
-	}
+	RunFrameworkSpecificInterfaceTests(t, "ginx", engine, nil)
 }
 
 // TestGinxWithCustomConfig tests ginx with custom configuration
 func TestGinxWithCustomConfig(t *testing.T) {
 	engine := ginx.New(ginx.WithServerAddr(":0"))
-
-	// Create custom test configuration
 	config := &httptesting.TestConfig{
 		ServerAddr:     ":0",
 		VerboseLogging: true,
 	}
-
-	tc := NewTestCasesWithConfig("ginx", engine, config)
-
-	t.Run("CustomConfigTests", func(t *testing.T) {
-		tc.RunAllInterfaceTests(t)
-	})
+	RunFrameworkWithCustomConfig(t, "ginx", engine, config, nil)
 }
 
 // TestGinxFlexibleExecution demonstrates flexible execution for ginx
@@ -86,8 +42,8 @@ func TestGinxFlexibleExecution(t *testing.T) {
 		runner.RunSingleFramework(t, FrameworkGinx, ModeBatch)
 	})
 
-	t.Run("ValidationMode", func(t *testing.T) {
-		runner.RunSingleFramework(t, FrameworkGinx, ModeValidation)
+	t.Run("BatchMode", func(t *testing.T) {
+		runner.RunSingleFramework(t, FrameworkGinx, ModeBatch)
 	})
 }
 

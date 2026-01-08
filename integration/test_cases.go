@@ -56,35 +56,33 @@ func (tc *TestCases) Config() *httptesting.TestConfig {
 	return tc.config
 }
 
+// interfaceTestMap maps interface names to their test runner functions.
+// This eliminates the need for repetitive switch-case statements.
+var interfaceTestMap = map[string]func(*httptesting.TestSuite, *testing.T){
+	"RequestInfo": (*httptesting.TestSuite).RunRequestInfoTests,
+	"Request":     (*httptesting.TestSuite).RunRequestTests,
+	"BodyAccess":  (*httptesting.TestSuite).RunBodyAccessTests,
+	"FormAccess":  (*httptesting.TestSuite).RunFormAccessTests,
+	"Binder":      (*httptesting.TestSuite).RunBinderTests,
+	"Responder":   (*httptesting.TestSuite).RunResponderTests,
+	"StateStore":  (*httptesting.TestSuite).RunStateStoreTests,
+	"Router":      (*httptesting.TestSuite).RunRouterTests,
+	"Engine":      (*httptesting.TestSuite).RunEngineTests,
+}
+
 // RunSpecificInterfaceTest runs a test for a specific interface by name.
 // The interfaceName parameter must match one of the httpx interface names.
 func (tc *TestCases) RunSpecificInterfaceTest(t *testing.T, interfaceName string) {
 	t.Helper()
 
-	t.Logf("Running %s interface test for framework: %s", interfaceName, tc.frameworkName)
-
-	switch interfaceName {
-	case "RequestInfo":
-		tc.suite.RunRequestInfoTests(t)
-	case "Request":
-		tc.suite.RunRequestTests(t)
-	case "BodyAccess":
-		tc.suite.RunBodyAccessTests(t)
-	case "FormAccess":
-		tc.suite.RunFormAccessTests(t)
-	case "Binder":
-		tc.suite.RunBinderTests(t)
-	case "Responder":
-		tc.suite.RunResponderTests(t)
-	case "StateStore":
-		tc.suite.RunStateStoreTests(t)
-	case "Router":
-		tc.suite.RunRouterTests(t)
-	case "Engine":
-		tc.suite.RunEngineTests(t)
-	default:
+	testFunc, exists := interfaceTestMap[interfaceName]
+	if !exists {
 		t.Errorf("Unknown interface: %s", interfaceName)
+		return
 	}
+
+	t.Logf("Running %s interface test for framework: %s", interfaceName, tc.frameworkName)
+	testFunc(tc.suite, t)
 }
 
 // RunWithSkipSupport runs a test with skip support based on framework and interface.
@@ -115,60 +113,17 @@ func (tc *TestCases) RunIndividualInterfaceTestsWithSkipSupport(t *testing.T, sk
 
 	t.Logf("Running individual interface tests with skip support for framework: %s", tc.frameworkName)
 
-	// Test each interface individually with skip support
-	t.Run("RequestInfo", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "RequestInfo", func(t *testing.T) {
-			tc.suite.RunRequestInfoTests(t)
-		})
-	})
+	// Test each interface individually with skip support using the map
+	for interfaceName, testFunc := range interfaceTestMap {
+		interfaceName := interfaceName // Capture for closure
+		testFunc := testFunc           // Capture for closure
 
-	t.Run("Request", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "Request", func(t *testing.T) {
-			tc.suite.RunRequestTests(t)
+		t.Run(interfaceName, func(t *testing.T) {
+			tc.RunWithSkipSupport(t, skipManager, interfaceName, func(t *testing.T) {
+				testFunc(tc.suite, t)
+			})
 		})
-	})
-
-	t.Run("BodyAccess", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "BodyAccess", func(t *testing.T) {
-			tc.suite.RunBodyAccessTests(t)
-		})
-	})
-
-	t.Run("FormAccess", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "FormAccess", func(t *testing.T) {
-			tc.suite.RunFormAccessTests(t)
-		})
-	})
-
-	t.Run("Binder", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "Binder", func(t *testing.T) {
-			tc.suite.RunBinderTests(t)
-		})
-	})
-
-	t.Run("Responder", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "Responder", func(t *testing.T) {
-			tc.suite.RunResponderTests(t)
-		})
-	})
-
-	t.Run("StateStore", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "StateStore", func(t *testing.T) {
-			tc.suite.RunStateStoreTests(t)
-		})
-	})
-
-	t.Run("Router", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "Router", func(t *testing.T) {
-			tc.suite.RunRouterTests(t)
-		})
-	})
-
-	t.Run("Engine", func(t *testing.T) {
-		tc.RunWithSkipSupport(t, skipManager, "Engine", func(t *testing.T) {
-			tc.suite.RunEngineTests(t)
-		})
-	})
+	}
 }
 
 // ValidateFrameworkIntegration validates that a framework properly integrates with httpx interfaces.
@@ -227,34 +182,20 @@ func (tc *TestCases) ValidateFrameworkIntegration(t *testing.T) {
 func (tc *TestCases) BenchmarkInterfaceTests(b *testing.B) {
 	b.Logf("Benchmarking interface tests for framework: %s", tc.frameworkName)
 
-	// Benchmark individual interfaces
-	b.Run("RequestInfo", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			t := &testing.T{}
-			tc.suite.RunRequestInfoTests(t)
-		}
-	})
-
-	b.Run("BodyAccess", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			t := &testing.T{}
-			tc.suite.RunBodyAccessTests(t)
-		}
-	})
-
-	b.Run("Binder", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			t := &testing.T{}
-			tc.suite.RunBinderTests(t)
-		}
-	})
-
-	b.Run("Responder", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			t := &testing.T{}
-			tc.suite.RunResponderTests(t)
-		}
-	})
+	// Benchmark individual interfaces using the map
+	benchmarkInterfaces := []string{"RequestInfo", "BodyAccess", "Binder", "Responder"}
+	
+	for _, interfaceName := range benchmarkInterfaces {
+		interfaceName := interfaceName // Capture for closure
+		testFunc := interfaceTestMap[interfaceName]
+		
+		b.Run(interfaceName, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				t := &testing.T{}
+				testFunc(tc.suite, t)
+			}
+		})
+	}
 }
 
 // RunAllInterfaceTestsWithReporting runs all interface tests with enhanced reporting.
@@ -273,30 +214,14 @@ func (tc *TestCases) RunAllInterfaceTestsWithReporting(t *testing.T) {
 	}
 
 	for _, interfaceName := range interfaces {
+		interfaceName := interfaceName // Capture for closure
+		testFunc := interfaceTestMap[interfaceName]
+		
 		t.Run(interfaceName, func(t *testing.T) {
 			tc.suite.Helper().ReportInterfaceTestStart(t, tc.frameworkName, interfaceName)
 
-			// Run the specific interface test
-			switch interfaceName {
-			case "RequestInfo":
-				tc.suite.RunRequestInfoTests(t)
-			case "Request":
-				tc.suite.RunRequestTests(t)
-			case "BodyAccess":
-				tc.suite.RunBodyAccessTests(t)
-			case "FormAccess":
-				tc.suite.RunFormAccessTests(t)
-			case "Binder":
-				tc.suite.RunBinderTests(t)
-			case "Responder":
-				tc.suite.RunResponderTests(t)
-			case "StateStore":
-				tc.suite.RunStateStoreTests(t)
-			case "Router":
-				tc.suite.RunRouterTests(t)
-			case "Engine":
-				tc.suite.RunEngineTests(t)
-			}
+			// Run the specific interface test using the map
+			testFunc(tc.suite, t)
 
 			// Note: Individual test results would be collected here in a real implementation
 			// For now, we'll assume tests passed if no panic occurred
@@ -311,4 +236,33 @@ func (tc *TestCases) RunAllInterfaceTestsWithReporting(t *testing.T) {
 
 	// Report summary
 	tc.suite.Helper().ReportFrameworkTestSummary(t, tc.frameworkName, results)
+}
+
+// RunIndividualInterfaceTests runs each interface test individually for better isolation.
+// Each interface test runs in its own subtest, making it easier to identify failures.
+func (tc *TestCases) RunIndividualInterfaceTests(t *testing.T) {
+	t.Helper()
+
+	t.Logf("Running individual interface tests for framework: %s", tc.frameworkName)
+
+	// Test each interface individually using the map
+	for interfaceName, testFunc := range interfaceTestMap {
+		interfaceName := interfaceName // Capture for closure
+		testFunc := testFunc           // Capture for closure
+
+		t.Run(interfaceName, func(t *testing.T) {
+			testFunc(tc.suite, t)
+		})
+	}
+}
+
+// RunAllInterfaceTests runs all interface tests for the framework in a single test.
+// This is useful for batch execution where you want to run all tests together.
+func (tc *TestCases) RunAllInterfaceTests(t *testing.T) {
+	t.Helper()
+
+	t.Logf("Running all interface tests for framework: %s", tc.frameworkName)
+
+	// Run the complete test suite which coordinates all interface testers
+	tc.suite.RunAllTests(t)
 }

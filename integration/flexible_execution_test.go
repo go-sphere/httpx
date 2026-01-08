@@ -23,14 +23,9 @@ func TestSingleFrameworkExecution(t *testing.T) {
 		runner.RunSingleFramework(t, FrameworkGinx, ModeIndividual)
 	})
 
-	// Test batch mode
+	// Test batch mode (includes validation)
 	t.Run("GinxBatch", func(t *testing.T) {
 		runner.RunSingleFramework(t, FrameworkGinx, ModeBatch)
-	})
-
-	// Test validation mode
-	t.Run("GinxValidation", func(t *testing.T) {
-		runner.RunSingleFramework(t, FrameworkGinx, ModeValidation)
 	})
 }
 
@@ -54,8 +49,9 @@ func TestMultipleFrameworkExecution(t *testing.T) {
 func TestAllFrameworkExecution(t *testing.T) {
 	runner := NewTestRunner()
 
-	t.Run("AllFrameworksValidation", func(t *testing.T) {
-		runner.RunAllFrameworks(t, ModeValidation)
+	// Batch mode includes validation for all frameworks
+	t.Run("AllFrameworksBatch", func(t *testing.T) {
+		runner.RunAllFrameworks(t, ModeBatch)
 	})
 
 	// Uncomment to run full tests (may be slow)
@@ -162,10 +158,10 @@ func TestFrameworkAvailability(t *testing.T) {
 func TestExecutionModes(t *testing.T) {
 	runner := NewTestRunner()
 
+	// Test the three execution modes: Individual, Batch, and Benchmark
 	modes := []TestExecutionMode{
 		ModeIndividual,
 		ModeBatch,
-		ModeValidation,
 	}
 
 	for _, mode := range modes {

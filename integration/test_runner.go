@@ -1,3 +1,115 @@
+// Package integration provides a unified testing framework for httpx framework adapters.
+//
+// # Overview
+//
+// This package implements a flexible test execution system that validates the implementation
+// of httpx interfaces across multiple web frameworks (Gin, Fiber, Echo, Hertz). It ensures
+// consistent behavior and complete interface coverage for all framework adapters.
+//
+// # Architecture
+//
+// The integration package is built around three core components:
+//
+//  1. TestRunner: Orchestrates test execution across frameworks
+//  2. TestCases: Defines comprehensive interface test scenarios
+//  3. SkipManager: Manages framework-specific test exclusions
+//
+// # Test Execution Modes
+//
+// Three execution modes support different development and validation workflows:
+//
+// Individual Mode - For debugging and development:
+//   - Runs each interface test separately with detailed output
+//   - Provides granular test structure for precise error location
+//   - Ideal for: developing new features, debugging interface issues
+//   - Trade-off: Slower execution due to repeated initialization
+//
+// Batch Mode - For CI/CD and comprehensive validation:
+//   - Runs all interface tests + framework validation in one pass
+//   - Optimized for speed with aggregated reporting
+//   - Ideal for: CI/CD pipelines, PR validation, regression testing
+//   - Trade-off: Less granular error reporting (requires Individual for detailed debugging)
+//
+// Benchmark Mode - For performance analysis:
+//   - Measures execution time and memory allocation
+//   - Supports framework performance comparison
+//   - Ideal for: detecting performance regressions, optimization validation
+//   - Trade-off: Requires stable environment for consistent results
+//
+// # Usage Examples
+//
+// Basic framework testing:
+//
+//	func TestGinxIntegration(t *testing.T) {
+//	    runner := integration.NewTestRunner()
+//	    runner.RunSingleFramework(t, integration.FrameworkGinx, integration.ModeBatch)
+//	}
+//
+// Cross-framework validation:
+//
+//	func TestAllFrameworks(t *testing.T) {
+//	    runner := integration.NewTestRunner()
+//	    runner.RunAllFrameworks(t, integration.ModeBatch)
+//	}
+//
+// Interface-specific testing:
+//
+//	func TestBinderInterface(t *testing.T) {
+//	    runner := integration.NewTestRunner()
+//	    runner.RunInterfaceAcrossFrameworks(t, "Binder")
+//	}
+//
+// Performance benchmarking:
+//
+//	func BenchmarkFrameworks(b *testing.B) {
+//	    runner := integration.NewTestRunner()
+//	    runner.BenchmarkComparison(b)
+//	}
+//
+// # Development Workflow
+//
+// Local development:
+//  1. Use Individual mode to debug specific interface implementations
+//  2. Switch to Batch mode to verify overall integration
+//  3. Run full test suite before committing
+//
+// CI/CD pipeline:
+//  - Use Batch mode for fast validation (default behavior)
+//  - Run Benchmark mode periodically to detect performance regressions
+//
+// # Framework Support
+//
+// Currently supported frameworks:
+//  - Ginx (github.com/go-sphere/httpx/ginx) - Gin adapter
+//  - Fiberx (github.com/go-sphere/httpx/fiberx) - Fiber adapter
+//  - Echox (github.com/go-sphere/httpx/echox) - Echo adapter
+//  - Hertzx (github.com/go-sphere/httpx/hertzx) - Hertz adapter
+//
+// # Test Coverage
+//
+// The integration package validates the following httpx interfaces:
+//  - RequestInfo: HTTP request information (method, path, headers, queries)
+//  - Binder: Request body and parameter binding
+//  - Responder: HTTP response generation
+//  - Router: Route registration and request routing
+//  - StateStore: Request-scoped state management
+//  - BodyAccess: Request body reading and parsing
+//  - FormAccess: Form data and file upload handling
+//
+// # Skip Management
+//
+// Framework-specific limitations can be documented using SkipManager:
+//
+//	skipMgr := integration.NewGinxSkipManager()
+//	skipMgr.SkipTest("FormAccess", "TestMultipartForm",
+//	    "Ginx uses different multipart handling")
+//
+// Skipped tests are clearly reported in test output with reasons.
+//
+// For more details, see:
+//  - Test execution modes: ../specs/001-test-suite-optimization/quickstart.md
+//  - Implementation plan: ../specs/001-test-suite-optimization/plan.md
+//  - Architecture details: ../specs/001-test-suite-optimization/research.md
 package integration
 
 import (
@@ -28,18 +140,25 @@ const (
 )
 
 // TestExecutionMode defines how tests should be executed.
-// Different modes provide different trade-offs between isolation, speed, and reporting detail.
+// There are three execution modes, each serving different testing needs:
+//   - Individual: Runs each interface test in isolation for detailed debugging
+//   - Batch: Runs all tests together efficiently for CI/CD pipelines (includes validation)
+//   - Benchmark: Measures performance for regression detection
 type TestExecutionMode string
 
 const (
 	// ModeIndividual runs each interface test separately for maximum isolation and debugging detail.
+	// Use this mode when debugging specific interface failures or investigating test issues.
 	ModeIndividual TestExecutionMode = "individual"
+	
 	// ModeBatch runs all interface tests together for faster execution in CI/CD pipelines.
+	// This mode includes framework integration validation as a first step.
+	// Use this mode for continuous integration, pull request checks, and release validation.
 	ModeBatch TestExecutionMode = "batch"
+	
 	// ModeBenchmark runs benchmark tests for performance regression detection.
+	// Use this mode to measure and compare interface implementation performance across frameworks.
 	ModeBenchmark TestExecutionMode = "benchmark"
-	// ModeValidation runs validation tests only to check framework integration.
-	ModeValidation TestExecutionMode = "validation"
 )
 
 // TestRunner manages flexible test execution across frameworks.
@@ -93,7 +212,8 @@ func (tr *TestRunner) initializeSkipManagers() {
 }
 
 // RunSingleFramework runs tests for a single framework with specified mode.
-// The mode parameter determines how tests are executed: individual, batch, or validation.
+// The mode parameter determines how tests are executed: individual, batch, or benchmark.
+// Batch mode includes framework validation as a first step.
 func (tr *TestRunner) RunSingleFramework(t *testing.T, framework FrameworkType, mode TestExecutionMode) {
 	t.Helper()
 
@@ -115,8 +235,6 @@ func (tr *TestRunner) RunSingleFramework(t *testing.T, framework FrameworkType, 
 	case ModeBenchmark:
 		// Benchmarks need to be run separately, log info for now
 		t.Logf("Benchmark mode for %s - use BenchmarkSingleFramework method", framework)
-	case ModeValidation:
-		tr.runValidationTests(t, tc)
 	default:
 		// Panic for invalid modes to allow tests to catch with recover()
 		panic(fmt.Sprintf("Unknown test execution mode: %s", mode))
@@ -157,25 +275,21 @@ func (tr *TestRunner) runIndividualTests(t *testing.T, tc *TestCases, skipMgr *T
 	tc.RunIndividualInterfaceTestsWithSkipSupport(t, skipMgr)
 }
 
-// runBatchTests runs all interface tests together
+// runBatchTests runs all interface tests together with validation.
+// This mode first validates framework integration, then runs all interface tests.
+// It's optimized for CI/CD pipelines where speed and comprehensive coverage are important.
 func (tr *TestRunner) runBatchTests(t *testing.T, tc *TestCases, skipMgr *TestSkipManager) {
 	t.Helper()
 
-	// Run validation first
+	// Run validation first to ensure framework is properly integrated
 	t.Run("Validation", func(t *testing.T) {
 		tc.ValidateFrameworkIntegration(t)
 	})
 
-	// Run all tests together
+	// Run all interface tests together
 	t.Run("AllInterfaces", func(t *testing.T) {
 		tc.RunAllInterfaceTestsWithReporting(t)
 	})
-}
-
-// runValidationTests runs only validation tests
-func (tr *TestRunner) runValidationTests(t *testing.T, tc *TestCases) {
-	t.Helper()
-	tc.ValidateFrameworkIntegration(t)
 }
 
 // BenchmarkSingleFramework runs benchmark tests for a single framework.
@@ -232,21 +346,15 @@ func (tr *TestRunner) BenchmarkComparison(b *testing.B) {
 func (tr *TestRunner) benchmarkSpecificInterface(b *testing.B, tc *TestCases, interfaceName string) {
 	b.Helper()
 
+	testFunc, exists := interfaceTestMap[interfaceName]
+	if !exists {
+		b.Fatalf("Unknown interface: %s", interfaceName)
+		return
+	}
+
 	for i := 0; i < b.N; i++ {
 		t := &testing.T{} // Create a dummy testing.T for interface compatibility
-
-		switch interfaceName {
-		case "RequestInfo":
-			tc.suite.RunRequestInfoTests(t)
-		case "BodyAccess":
-			tc.suite.RunBodyAccessTests(t)
-		case "Binder":
-			tc.suite.RunBinderTests(t)
-		case "Responder":
-			tc.suite.RunResponderTests(t)
-		default:
-			b.Fatalf("Unknown interface: %s", interfaceName)
-		}
+		testFunc(tc.suite, t)
 	}
 }
 
@@ -416,60 +524,4 @@ func (tr *TestRunner) CompareFrameworkPerformance(t *testing.T, interfaceName st
 	}
 
 	return results
-}
-
-// RunAllInterfaceTests runs all interface tests using the new interface testers.
-// This is the main entry point for running a complete test suite for a framework.
-func (tc *TestCases) RunAllInterfaceTests(t *testing.T) {
-	t.Helper()
-
-	t.Logf("Running all interface tests for framework: %s", tc.frameworkName)
-
-	// Run the complete test suite which coordinates all interface testers
-	tc.suite.RunAllTests(t)
-}
-
-// RunIndividualInterfaceTests runs each interface test individually for better isolation.
-// Each interface test runs in its own subtest, making it easier to identify failures.
-func (tc *TestCases) RunIndividualInterfaceTests(t *testing.T) {
-	t.Helper()
-
-	t.Logf("Running individual interface tests for framework: %s", tc.frameworkName)
-
-	// Test each interface individually
-	t.Run("RequestInfo", func(t *testing.T) {
-		tc.suite.RunRequestInfoTests(t)
-	})
-
-	t.Run("Request", func(t *testing.T) {
-		tc.suite.RunRequestTests(t)
-	})
-
-	t.Run("BodyAccess", func(t *testing.T) {
-		tc.suite.RunBodyAccessTests(t)
-	})
-
-	t.Run("FormAccess", func(t *testing.T) {
-		tc.suite.RunFormAccessTests(t)
-	})
-
-	t.Run("Binder", func(t *testing.T) {
-		tc.suite.RunBinderTests(t)
-	})
-
-	t.Run("Responder", func(t *testing.T) {
-		tc.suite.RunResponderTests(t)
-	})
-
-	t.Run("StateStore", func(t *testing.T) {
-		tc.suite.RunStateStoreTests(t)
-	})
-
-	t.Run("Router", func(t *testing.T) {
-		tc.suite.RunRouterTests(t)
-	})
-
-	t.Run("Engine", func(t *testing.T) {
-		tc.suite.RunEngineTests(t)
-	})
 }

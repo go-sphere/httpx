@@ -8,10 +8,10 @@ import (
 
 // TestExecutionExamples demonstrates various ways to execute tests flexibly
 func TestExecutionExamples(t *testing.T) {
-	// Example 1: Run all frameworks in validation mode (quick check)
+	// Example 1: Run all frameworks in batch mode (comprehensive check)
 	t.Run("Example1_QuickValidation", func(t *testing.T) {
 		runner := NewTestRunner()
-		runner.RunAllFrameworks(t, ModeValidation)
+		runner.RunAllFrameworks(t, ModeBatch)
 	})
 
 	// Example 2: Run specific frameworks with custom config
@@ -109,9 +109,9 @@ func TestFrameworkSpecificExecution(t *testing.T) {
 
 	for _, framework := range frameworks {
 		t.Run(string(framework), func(t *testing.T) {
-			// Run validation first
+			// Run batch test first
 			t.Run("Validation", func(t *testing.T) {
-				runner.RunSingleFramework(t, framework, ModeValidation)
+				runner.RunSingleFramework(t, framework, ModeBatch)
 			})
 
 			// Then run a subset of interfaces
@@ -184,7 +184,7 @@ func TestExecutionFlexibilityFeatures(t *testing.T) {
 		customRunner := NewTestRunnerWithConfig(customConfig)
 
 		// Run a quick validation with custom config
-		customRunner.RunSingleFramework(t, FrameworkGinx, ModeValidation)
+		customRunner.RunSingleFramework(t, FrameworkGinx, ModeBatch)
 	})
 
 	// Feature 4: Summary reporting
@@ -220,7 +220,6 @@ func TestExecutionModeValidation(t *testing.T) {
 	modes := []TestExecutionMode{
 		ModeIndividual,
 		ModeBatch,
-		ModeValidation,
 	}
 
 	// Test each mode with ginx (reference implementation)
@@ -255,7 +254,7 @@ func TestConcurrentExecution(t *testing.T) {
 			framework := framework // Capture loop variable
 			t.Run(string(framework), func(t *testing.T) {
 				t.Parallel() // Enable parallel execution
-				runner.RunSingleFramework(t, framework, ModeValidation)
+				runner.RunSingleFramework(t, framework, ModeBatch)
 			})
 		}
 	})
