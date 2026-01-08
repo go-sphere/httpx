@@ -49,19 +49,19 @@ func TestTestCasesCreation(t *testing.T) {
 		t.Fatal("TestCases should not be nil")
 	}
 
-	if tc.GetFrameworkName() != "mock" {
-		t.Errorf("Expected framework name 'mock', got '%s'", tc.GetFrameworkName())
+	if tc.FrameworkName() != "mock" {
+		t.Errorf("Expected framework name 'mock', got '%s'", tc.FrameworkName())
 	}
 
-	if tc.GetEngine() != engine {
+	if tc.Engine() != engine {
 		t.Error("Engine should match the provided engine")
 	}
 
-	if tc.GetTestSuite() == nil {
+	if tc.TestSuite() == nil {
 		t.Error("Test suite should not be nil")
 	}
 
-	if tc.GetConfig() == nil {
+	if tc.Config() == nil {
 		t.Error("Config should not be nil (should use default)")
 	}
 }
@@ -79,11 +79,11 @@ func TestTestCasesWithConfig(t *testing.T) {
 		t.Fatal("TestCases should not be nil")
 	}
 
-	if tc.GetConfig().ServerAddr != ":8080" {
-		t.Errorf("Expected server addr ':8080', got '%s'", tc.GetConfig().ServerAddr)
+	if tc.Config().ServerAddr != ":8080" {
+		t.Errorf("Expected server addr ':8080', got '%s'", tc.Config().ServerAddr)
 	}
 
-	if !tc.GetConfig().VerboseLogging {
+	if !tc.Config().VerboseLogging {
 		t.Error("VerboseLogging should be true")
 	}
 }

@@ -140,5 +140,35 @@ fabric.properties
 
 # End of https://www.toptal.com/developers/gitignore/api/goland,go
 
+# httpx-specific patterns
 .gocache/
 .kiro/
+specs/
+.github/agents/
+.github/prompts/
+
+# Build outputs
+dist/
+build/
+bin/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Coverage reports
+coverage.out
+coverage.html
+coverage.txt
+
+# macOS system files
+.DS_Store
+
+# Temporary files
+*.tmp
+*.swp
+*~

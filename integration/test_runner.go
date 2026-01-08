@@ -13,39 +13,51 @@ import (
 	httptesting "github.com/go-sphere/httpx/testing"
 )
 
-// FrameworkType represents different framework types
+// FrameworkType represents different framework types supported by the test runner.
 type FrameworkType string
 
 const (
-	FrameworkGinx   FrameworkType = "ginx"
+	// FrameworkGinx represents the Gin framework adapter.
+	FrameworkGinx FrameworkType = "ginx"
+	// FrameworkFiberx represents the Fiber framework adapter.
 	FrameworkFiberx FrameworkType = "fiberx"
-	FrameworkEchox  FrameworkType = "echox"
+	// FrameworkEchox represents the Echo framework adapter.
+	FrameworkEchox FrameworkType = "echox"
+	// FrameworkHertzx represents the Hertz framework adapter.
 	FrameworkHertzx FrameworkType = "hertzx"
 )
 
-// TestExecutionMode defines how tests should be executed
+// TestExecutionMode defines how tests should be executed.
+// Different modes provide different trade-offs between isolation, speed, and reporting detail.
 type TestExecutionMode string
 
 const (
-	ModeIndividual TestExecutionMode = "individual" // Run each interface test separately
-	ModeBatch      TestExecutionMode = "batch"      // Run all interface tests together
-	ModeBenchmark  TestExecutionMode = "benchmark"  // Run benchmark tests
-	ModeValidation TestExecutionMode = "validation" // Run validation tests only
+	// ModeIndividual runs each interface test separately for maximum isolation and debugging detail.
+	ModeIndividual TestExecutionMode = "individual"
+	// ModeBatch runs all interface tests together for faster execution in CI/CD pipelines.
+	ModeBatch TestExecutionMode = "batch"
+	// ModeBenchmark runs benchmark tests for performance regression detection.
+	ModeBenchmark TestExecutionMode = "benchmark"
+	// ModeValidation runs validation tests only to check framework integration.
+	ModeValidation TestExecutionMode = "validation"
 )
 
-// TestRunner manages flexible test execution across frameworks
+// TestRunner manages flexible test execution across frameworks.
+// It provides methods for running tests in different modes and comparing framework implementations.
 type TestRunner struct {
 	frameworks map[FrameworkType]httpx.Engine
 	config     *httptesting.TestConfig
 	skipMgrs   map[FrameworkType]*TestSkipManager
 }
 
-// NewTestRunner creates a new test runner with all frameworks
+// NewTestRunner creates a new test runner with all frameworks.
+// It initializes all supported frameworks (ginx, fiberx, echox, hertzx) with default configuration.
 func NewTestRunner() *TestRunner {
 	return NewTestRunnerWithConfig(nil)
 }
 
-// NewTestRunnerWithConfig creates a new test runner with custom configuration
+// NewTestRunnerWithConfig creates a new test runner with custom configuration.
+// If config is nil, it uses the default test configuration.
 func NewTestRunnerWithConfig(config *httptesting.TestConfig) *TestRunner {
 	if config == nil {
 		config = httptesting.DefaultTestConfig()
@@ -80,7 +92,8 @@ func (tr *TestRunner) initializeSkipManagers() {
 	tr.skipMgrs[FrameworkHertzx] = setupHertzxSkipManager()
 }
 
-// RunSingleFramework runs tests for a single framework with specified mode
+// RunSingleFramework runs tests for a single framework with specified mode.
+// The mode parameter determines how tests are executed: individual, batch, or validation.
 func (tr *TestRunner) RunSingleFramework(t *testing.T, framework FrameworkType, mode TestExecutionMode) {
 	t.Helper()
 
@@ -110,7 +123,8 @@ func (tr *TestRunner) RunSingleFramework(t *testing.T, framework FrameworkType, 
 	}
 }
 
-// RunAllFrameworks runs tests for all frameworks with specified mode
+// RunAllFrameworks runs tests for all frameworks with specified mode.
+// Each framework's tests are run in a separate subtest for isolation.
 func (tr *TestRunner) RunAllFrameworks(t *testing.T, mode TestExecutionMode) {
 	t.Helper()
 
@@ -123,7 +137,8 @@ func (tr *TestRunner) RunAllFrameworks(t *testing.T, mode TestExecutionMode) {
 	}
 }
 
-// RunSpecificFrameworks runs tests for specified frameworks with specified mode
+// RunSpecificFrameworks runs tests for specified frameworks with specified mode.
+// This is useful for selective testing when you don't need to run all framework tests.
 func (tr *TestRunner) RunSpecificFrameworks(t *testing.T, frameworks []FrameworkType, mode TestExecutionMode) {
 	t.Helper()
 
@@ -163,7 +178,8 @@ func (tr *TestRunner) runValidationTests(t *testing.T, tc *TestCases) {
 	tc.ValidateFrameworkIntegration(t)
 }
 
-// BenchmarkSingleFramework runs benchmark tests for a single framework
+// BenchmarkSingleFramework runs benchmark tests for a single framework.
+// It measures the performance of interface implementations for the specified framework.
 func (tr *TestRunner) BenchmarkSingleFramework(b *testing.B, framework FrameworkType) {
 	b.Helper()
 
@@ -178,7 +194,8 @@ func (tr *TestRunner) BenchmarkSingleFramework(b *testing.B, framework Framework
 	tc.BenchmarkInterfaceTests(b)
 }
 
-// BenchmarkAllFrameworks runs benchmark tests for all frameworks
+// BenchmarkAllFrameworks runs benchmark tests for all frameworks.
+// Each framework's benchmarks are run in a separate sub-benchmark for comparison.
 func (tr *TestRunner) BenchmarkAllFrameworks(b *testing.B) {
 	b.Helper()
 
@@ -189,7 +206,8 @@ func (tr *TestRunner) BenchmarkAllFrameworks(b *testing.B) {
 	}
 }
 
-// BenchmarkComparison runs comparative benchmarks across frameworks
+// BenchmarkComparison runs comparative benchmarks across frameworks.
+// It tests the same interface across all frameworks to identify performance differences.
 func (tr *TestRunner) BenchmarkComparison(b *testing.B) {
 	b.Helper()
 
@@ -232,7 +250,8 @@ func (tr *TestRunner) benchmarkSpecificInterface(b *testing.B, tc *TestCases, in
 	}
 }
 
-// RunInterfaceAcrossFrameworks runs a specific interface test across all frameworks
+// RunInterfaceAcrossFrameworks runs a specific interface test across all frameworks.
+// This is useful for comparing how different frameworks implement the same httpx interface.
 func (tr *TestRunner) RunInterfaceAcrossFrameworks(t *testing.T, interfaceName string) {
 	t.Helper()
 
@@ -251,7 +270,8 @@ func (tr *TestRunner) RunInterfaceAcrossFrameworks(t *testing.T, interfaceName s
 	}
 }
 
-// GetAvailableFrameworks returns a list of available frameworks
+// GetAvailableFrameworks returns a list of available frameworks.
+// The order of frameworks in the returned slice is not guaranteed.
 func (tr *TestRunner) GetAvailableFrameworks() []FrameworkType {
 	frameworks := make([]FrameworkType, 0, len(tr.frameworks))
 	for framework := range tr.frameworks {
@@ -260,19 +280,22 @@ func (tr *TestRunner) GetAvailableFrameworks() []FrameworkType {
 	return frameworks
 }
 
-// GetFrameworkEngine returns the engine for a specific framework
+// GetFrameworkEngine returns the engine for a specific framework.
+// The second return value indicates whether the framework exists in the runner.
 func (tr *TestRunner) GetFrameworkEngine(framework FrameworkType) (httpx.Engine, bool) {
 	engine, exists := tr.frameworks[framework]
 	return engine, exists
 }
 
-// GetFrameworkSkipManager returns the skip manager for a specific framework
+// GetFrameworkSkipManager returns the skip manager for a specific framework.
+// The second return value indicates whether the framework exists in the runner.
 func (tr *TestRunner) GetFrameworkSkipManager(framework FrameworkType) (*TestSkipManager, bool) {
 	skipMgr, exists := tr.skipMgrs[framework]
 	return skipMgr, exists
 }
 
-// PrintFrameworkSummary prints a summary of all frameworks and their skip configurations
+// PrintFrameworkSummary prints a summary of all frameworks and their skip configurations.
+// This is useful for understanding which tests are configured to be skipped for each framework.
 func (tr *TestRunner) PrintFrameworkSummary(t *testing.T) {
 	t.Helper()
 
@@ -290,7 +313,8 @@ func (tr *TestRunner) PrintFrameworkSummary(t *testing.T) {
 	}
 }
 
-// TestExecutionOptions holds options for test execution
+// TestExecutionOptions holds options for test execution.
+// It allows fine-grained control over which frameworks, interfaces, and modes to test.
 type TestExecutionOptions struct {
 	Frameworks []FrameworkType
 	Mode       TestExecutionMode
@@ -298,7 +322,8 @@ type TestExecutionOptions struct {
 	Config     *httptesting.TestConfig
 }
 
-// RunWithOptions runs tests with the specified options
+// RunWithOptions runs tests with the specified options.
+// If no frameworks are specified, it runs tests for all available frameworks.
 func (tr *TestRunner) RunWithOptions(t *testing.T, options TestExecutionOptions) {
 	t.Helper()
 
@@ -331,7 +356,8 @@ func (tr *TestRunner) RunWithOptions(t *testing.T, options TestExecutionOptions)
 
 // Performance tracking utilities
 
-// PerformanceMetrics holds performance metrics for a test run
+// PerformanceMetrics holds performance metrics for a test run.
+// It captures timing information and test outcomes for benchmarking and analysis.
 type PerformanceMetrics struct {
 	Framework    string
 	Interface    string
@@ -342,7 +368,8 @@ type PerformanceMetrics struct {
 	Timestamp    time.Time
 }
 
-// TrackPerformance runs a test and tracks its performance metrics
+// TrackPerformance runs a test and tracks its performance metrics.
+// Returns metrics including duration, test counts, and timestamp for analysis.
 func (tr *TestRunner) TrackPerformance(t *testing.T, framework FrameworkType, interfaceName string, testFunc func(*testing.T)) *PerformanceMetrics {
 	t.Helper()
 
@@ -364,7 +391,8 @@ func (tr *TestRunner) TrackPerformance(t *testing.T, framework FrameworkType, in
 	}
 }
 
-// CompareFrameworkPerformance compares performance across frameworks for a specific interface
+// CompareFrameworkPerformance compares performance across frameworks for a specific interface.
+// Returns a map of framework types to their performance metrics for comparison.
 func (tr *TestRunner) CompareFrameworkPerformance(t *testing.T, interfaceName string) map[FrameworkType]*PerformanceMetrics {
 	t.Helper()
 
@@ -390,7 +418,8 @@ func (tr *TestRunner) CompareFrameworkPerformance(t *testing.T, interfaceName st
 	return results
 }
 
-// RunAllInterfaceTests runs all interface tests using the new interface testers
+// RunAllInterfaceTests runs all interface tests using the new interface testers.
+// This is the main entry point for running a complete test suite for a framework.
 func (tc *TestCases) RunAllInterfaceTests(t *testing.T) {
 	t.Helper()
 
@@ -400,7 +429,8 @@ func (tc *TestCases) RunAllInterfaceTests(t *testing.T) {
 	tc.suite.RunAllTests(t)
 }
 
-// RunIndividualInterfaceTests runs each interface test individually for better isolation
+// RunIndividualInterfaceTests runs each interface test individually for better isolation.
+// Each interface test runs in its own subtest, making it easier to identify failures.
 func (tc *TestCases) RunIndividualInterfaceTests(t *testing.T) {
 	t.Helper()
 

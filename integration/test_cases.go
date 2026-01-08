@@ -36,27 +36,28 @@ func NewTestCasesWithConfig(frameworkName string, engine httpx.Engine, config *h
 	}
 }
 
-// GetFrameworkName returns the name of the framework being tested
-func (tc *TestCases) GetFrameworkName() string {
+// FrameworkName returns the name of the framework being tested.
+func (tc *TestCases) FrameworkName() string {
 	return tc.frameworkName
 }
 
-// GetEngine returns the engine being tested
-func (tc *TestCases) GetEngine() httpx.Engine {
+// Engine returns the engine being tested.
+func (tc *TestCases) Engine() httpx.Engine {
 	return tc.engine
 }
 
-// GetTestSuite returns the underlying test suite
-func (tc *TestCases) GetTestSuite() *httptesting.TestSuite {
+// TestSuite returns the underlying test suite.
+func (tc *TestCases) TestSuite() *httptesting.TestSuite {
 	return tc.suite
 }
 
-// GetConfig returns the test configuration
-func (tc *TestCases) GetConfig() *httptesting.TestConfig {
+// Config returns the test configuration.
+func (tc *TestCases) Config() *httptesting.TestConfig {
 	return tc.config
 }
 
-// RunSpecificInterfaceTest runs a test for a specific interface
+// RunSpecificInterfaceTest runs a test for a specific interface by name.
+// The interfaceName parameter must match one of the httpx interface names.
 func (tc *TestCases) RunSpecificInterfaceTest(t *testing.T, interfaceName string) {
 	t.Helper()
 
@@ -86,7 +87,8 @@ func (tc *TestCases) RunSpecificInterfaceTest(t *testing.T, interfaceName string
 	}
 }
 
-// RunWithSkipSupport runs a test with skip support based on framework and interface
+// RunWithSkipSupport runs a test with skip support based on framework and interface.
+// If the skipManager indicates the test should be skipped, it will be skipped with the reason logged.
 func (tc *TestCases) RunWithSkipSupport(t *testing.T, skipManager *TestSkipManager, interfaceName string, testFunc func(*testing.T)) {
 	t.Helper()
 
@@ -106,7 +108,8 @@ func (tc *TestCases) RunWithSkipSupport(t *testing.T, skipManager *TestSkipManag
 	// Note: Test completion logging is handled by individual test methods
 }
 
-// RunIndividualInterfaceTestsWithSkipSupport runs each interface test individually with skip support
+// RunIndividualInterfaceTestsWithSkipSupport runs each interface test individually with skip support.
+// Tests that are marked to be skipped for a specific framework will be skipped.
 func (tc *TestCases) RunIndividualInterfaceTestsWithSkipSupport(t *testing.T, skipManager *TestSkipManager) {
 	t.Helper()
 
@@ -168,7 +171,8 @@ func (tc *TestCases) RunIndividualInterfaceTestsWithSkipSupport(t *testing.T, sk
 	})
 }
 
-// ValidateFrameworkIntegration validates that a framework properly integrates with httpx interfaces
+// ValidateFrameworkIntegration validates that a framework properly integrates with httpx interfaces.
+// It checks that the engine and test suite are properly initialized and all interface testers are available.
 func (tc *TestCases) ValidateFrameworkIntegration(t *testing.T) {
 	t.Helper()
 
@@ -190,27 +194,27 @@ func (tc *TestCases) ValidateFrameworkIntegration(t *testing.T) {
 	}
 
 	// Validate that all interface testers are available
-	if tc.suite.GetRequestInfoTester() == nil {
+	if tc.suite.RequestInfoTester() == nil {
 		tc.suite.Helper().ReportTestFailure(t, ctx, "RequestInfo tester is nil")
 	}
 
-	if tc.suite.GetBodyAccessTester() == nil {
+	if tc.suite.BodyAccessTester() == nil {
 		tc.suite.Helper().ReportTestFailure(t, ctx, "BodyAccess tester is nil")
 	}
 
-	if tc.suite.GetBinderTester() == nil {
+	if tc.suite.BinderTester() == nil {
 		tc.suite.Helper().ReportTestFailure(t, ctx, "Binder tester is nil")
 	}
 
-	if tc.suite.GetResponderTester() == nil {
+	if tc.suite.ResponderTester() == nil {
 		tc.suite.Helper().ReportTestFailure(t, ctx, "Responder tester is nil")
 	}
 
-	if tc.suite.GetRouterTester() == nil {
+	if tc.suite.RouterTester() == nil {
 		tc.suite.Helper().ReportTestFailure(t, ctx, "Router tester is nil")
 	}
 
-	if tc.suite.GetEngineTester() == nil {
+	if tc.suite.EngineTester() == nil {
 		tc.suite.Helper().ReportTestFailure(t, ctx, "Engine tester is nil")
 	}
 
@@ -218,7 +222,8 @@ func (tc *TestCases) ValidateFrameworkIntegration(t *testing.T) {
 	t.Logf("Framework integration validation completed for: %s", tc.frameworkName)
 }
 
-// BenchmarkInterfaceTests provides benchmarking capabilities for interface tests
+// BenchmarkInterfaceTests provides benchmarking capabilities for interface tests.
+// It runs benchmark tests for RequestInfo, BodyAccess, Binder, and Responder interfaces.
 func (tc *TestCases) BenchmarkInterfaceTests(b *testing.B) {
 	b.Logf("Benchmarking interface tests for framework: %s", tc.frameworkName)
 
@@ -252,7 +257,8 @@ func (tc *TestCases) BenchmarkInterfaceTests(b *testing.B) {
 	})
 }
 
-// RunAllInterfaceTestsWithReporting runs all interface tests with enhanced reporting
+// RunAllInterfaceTestsWithReporting runs all interface tests with enhanced reporting.
+// It collects test results for each interface and reports a summary at the end.
 func (tc *TestCases) RunAllInterfaceTestsWithReporting(t *testing.T) {
 	t.Helper()
 

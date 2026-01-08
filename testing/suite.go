@@ -138,53 +138,53 @@ func (ts *TestSuite) RunErrorTests(t *testing.T) {
 	ts.errorTestingUtils.RunAllErrorTests(t)
 }
 
-// GetRequestInfoTester returns the RequestInfo tester
-func (ts *TestSuite) GetRequestInfoTester() *RequestInfoTester {
+// RequestInfoTester returns the RequestInfo tester.
+func (ts *TestSuite) RequestInfoTester() *RequestInfoTester {
 	return ts.requestInfoTester
 }
 
-// GetRequestTester returns the Request composite interface tester
-func (ts *TestSuite) GetRequestTester() *RequestTester {
+// RequestTester returns the Request composite interface tester.
+func (ts *TestSuite) RequestTester() *RequestTester {
 	return ts.requestTester
 }
 
-// GetBodyAccessTester returns the BodyAccess tester
-func (ts *TestSuite) GetBodyAccessTester() *BodyAccessTester {
+// BodyAccessTester returns the BodyAccess tester.
+func (ts *TestSuite) BodyAccessTester() *BodyAccessTester {
 	return ts.bodyAccessTester
 }
 
-// GetFormAccessTester returns the FormAccess tester
-func (ts *TestSuite) GetFormAccessTester() *FormAccessTester {
+// FormAccessTester returns the FormAccess tester.
+func (ts *TestSuite) FormAccessTester() *FormAccessTester {
 	return ts.formAccessTester
 }
 
-// GetBinderTester returns the Binder tester
-func (ts *TestSuite) GetBinderTester() *BinderTester {
+// BinderTester returns the Binder tester.
+func (ts *TestSuite) BinderTester() *BinderTester {
 	return ts.binderTester
 }
 
-// GetResponderTester returns the Responder tester
-func (ts *TestSuite) GetResponderTester() *ResponderTester {
+// ResponderTester returns the Responder tester.
+func (ts *TestSuite) ResponderTester() *ResponderTester {
 	return ts.responderTester
 }
 
-// GetStateStoreTester returns the StateStore tester
-func (ts *TestSuite) GetStateStoreTester() *StateStoreTester {
+// StateStoreTester returns the StateStore tester.
+func (ts *TestSuite) StateStoreTester() *StateStoreTester {
 	return ts.stateStoreTester
 }
 
-// GetRouterTester returns the Router tester
-func (ts *TestSuite) GetRouterTester() *RouterTester {
+// RouterTester returns the Router tester.
+func (ts *TestSuite) RouterTester() *RouterTester {
 	return ts.routerTester
 }
 
-// GetEngineTester returns the Engine tester
-func (ts *TestSuite) GetEngineTester() *EngineTester {
+// EngineTester returns the Engine tester.
+func (ts *TestSuite) EngineTester() *EngineTester {
 	return ts.engineTester
 }
 
-// GetErrorTestingUtilities returns the error testing utilities
-func (ts *TestSuite) GetErrorTestingUtilities() *ErrorTestingUtilities {
+// ErrorTestingUtilities returns the error testing utilities.
+func (ts *TestSuite) ErrorTestingUtilities() *ErrorTestingUtilities {
 	return ts.errorTestingUtils
 }
 
