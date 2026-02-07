@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/cloudwego/hertz v0.10.4
+	github.com/go-playground/form/v4 v4.3.0
 	github.com/go-sphere/httpx v0.0.2-beta.30
 )
 
@@ -15,9 +16,7 @@ require (
 	github.com/cloudwego/gopkg v0.1.4 // indirect
 	github.com/cloudwego/netpoll v0.7.2 // indirect
 	github.com/fsnotify/fsnotify v1.5.4 // indirect
-	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/nyaruka/phonenumbers v1.0.55 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

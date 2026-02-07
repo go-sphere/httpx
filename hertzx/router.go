@@ -2,13 +2,16 @@ package hertzx
 
 import (
 	"context"
+	"io"
 	"io/fs"
+	"mime"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/common/adaptor"
 	"github.com/cloudwego/hertz/pkg/route"
 	"github.com/go-sphere/httpx"
 )
@@ -45,14 +48,12 @@ func (r *Router) Any(path string, h httpx.Handler) {
 }
 
 func (r *Router) Static(prefix, root string) {
-	r.group.Static(prefix, root)
+	r.StaticFS(prefix, osDirFS(root))
 }
 
 func (r *Router) StaticFS(prefix string, fs fs.FS) {
-	absolutePath := path.Join(r.group.BasePath(), prefix)
-	fileServer := http.StripPrefix(absolutePath, http.FileServer(http.FS(fs)))
-	handler := adaptor.HertzHandler(fileServer)
 	urlPattern := path.Join(prefix, "/*filepath")
+	handler := r.toStaticHandler(fs)
 	r.group.GET(urlPattern, handler)
 	r.group.HEAD(urlPattern, handler)
 }
@@ -99,4 +100,56 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 			r.errHandler(ctx, rc, err)
 		}
 	}
+}
+
+func (r *Router) toStaticHandler(files fs.FS) app.HandlerFunc {
+	return func(ctx context.Context, rc *app.RequestContext) {
+		name := strings.TrimPrefix(rc.Param("filepath"), "/")
+		if name == "" || name == "." {
+			rc.Status(http.StatusNotFound)
+			return
+		}
+
+		clean := path.Clean("/" + name)
+		if strings.Contains(clean, "..") {
+			rc.Status(http.StatusNotFound)
+			return
+		}
+		rel := strings.TrimPrefix(clean, "/")
+
+		file, err := files.Open(rel)
+		if err != nil {
+			rc.Status(http.StatusNotFound)
+			return
+		}
+		defer file.Close()
+
+		info, err := file.Stat()
+		if err != nil || info.IsDir() {
+			rc.Status(http.StatusNotFound)
+			return
+		}
+
+		contentType := mime.TypeByExtension(filepath.Ext(rel))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+
+		rc.SetContentType(contentType)
+		rc.Status(http.StatusOK)
+		if string(rc.Method()) == http.MethodHead {
+			return
+		}
+
+		body, err := io.ReadAll(file)
+		if err != nil {
+			rc.Status(http.StatusInternalServerError)
+			return
+		}
+		rc.Response.SetBody(body)
+	}
+}
+
+func osDirFS(root string) fs.FS {
+	return os.DirFS(root)
 }
