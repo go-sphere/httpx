@@ -238,6 +238,25 @@ type Responder interface {
 	Redirect(code int, location string) error
 }
 
+// ResponseInfo exposes a read-only response state.
+//
+// This optional capability can be used by middleware and handlers that need
+// to inspect the response after downstream handlers have run.
+//
+// Implementations should provide best-effort behavior across frameworks.
+type ResponseInfo interface {
+	// StatusCode returns the current response status code.
+	StatusCode() int
+}
+
+// NativeContextProvider exposes the underlying framework context.
+//
+// This optional capability is an escape hatch for framework-specific features
+// that are intentionally not included in the cross-framework Context surface.
+type NativeContextProvider interface {
+	NativeContext() any
+}
+
 // StateStore carries request-scoped values.
 //
 // StateStore provides a simple key-value storage that is scoped to the
@@ -296,4 +315,24 @@ type Context interface {
 	// If an error is returned, the middleware chain should be interrupted
 	// and the error should be handled appropriately.
 	Next() error
+}
+
+// AsResponseInfo returns response inspection capability when supported.
+func AsResponseInfo(ctx Context) (ResponseInfo, bool) {
+	ri, ok := ctx.(ResponseInfo)
+	return ri, ok
+}
+
+// AsNativeContext returns the underlying native context when supported.
+func AsNativeContext[T any](ctx Context) (T, bool) {
+	var zero T
+	nativeProvider, ok := ctx.(NativeContextProvider)
+	if !ok {
+		return zero, false
+	}
+	native, ok := nativeProvider.NativeContext().(T)
+	if !ok {
+		return zero, false
+	}
+	return native, true
 }

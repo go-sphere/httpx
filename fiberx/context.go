@@ -262,3 +262,11 @@ func (c *fiberContext) Value(key any) any {
 func (c *fiberContext) Next() error {
 	return c.ctx.Next()
 }
+
+func (c *fiberContext) StatusCode() int {
+	return c.ctx.Response().StatusCode()
+}
+
+func (c *fiberContext) NativeContext() any {
+	return c.ctx
+}

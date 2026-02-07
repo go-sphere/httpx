@@ -280,3 +280,11 @@ func (c *echoContext) Next() error {
 	c.next = nil
 	return next(c.ctx)
 }
+
+func (c *echoContext) StatusCode() int {
+	return c.ctx.Response().Status
+}
+
+func (c *echoContext) NativeContext() any {
+	return c.ctx
+}

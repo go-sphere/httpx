@@ -18,7 +18,8 @@ var _ httpx.Context = (*ginContext)(nil)
 var queryBinding = QueryBinding{}
 
 type ginContext struct {
-	ctx *gin.Context
+	ctx        *gin.Context
+	nextCalled bool
 }
 
 func newGinContext(gc *gin.Context) *ginContext {
@@ -249,6 +250,7 @@ func (c *ginContext) Value(key any) any {
 }
 
 func (c *ginContext) Next() error {
+	c.nextCalled = true
 	c.ctx.Next()
 
 	// Check if any errors were added during middleware execution
@@ -259,4 +261,12 @@ func (c *ginContext) Next() error {
 	}
 
 	return nil
+}
+
+func (c *ginContext) StatusCode() int {
+	return c.ctx.Writer.Status()
+}
+
+func (c *ginContext) NativeContext() any {
+	return c.ctx
 }

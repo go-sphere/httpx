@@ -17,8 +17,9 @@ import (
 var _ httpx.Context = (*hertzContext)(nil)
 
 type hertzContext struct {
-	ctx     *app.RequestContext
-	baseCtx context.Context
+	ctx        *app.RequestContext
+	baseCtx    context.Context
+	nextCalled bool
 }
 
 func newHertzContext(ctx context.Context, rc *app.RequestContext) *hertzContext {
@@ -270,6 +271,7 @@ func (c *hertzContext) Value(key any) any {
 }
 
 func (c *hertzContext) Next() error {
+	c.nextCalled = true
 	c.ctx.Next(c.baseCtx)
 
 	if len(c.ctx.Errors) > 0 {
@@ -278,6 +280,14 @@ func (c *hertzContext) Next() error {
 	}
 
 	return nil
+}
+
+func (c *hertzContext) StatusCode() int {
+	return c.ctx.Response.StatusCode()
+}
+
+func (c *hertzContext) NativeContext() any {
+	return c.ctx
 }
 
 func mapSameSite(mode http.SameSite) protocol.CookieSameSite {

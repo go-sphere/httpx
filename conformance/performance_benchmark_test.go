@@ -12,16 +12,7 @@ import (
 
 	"testing"
 
-	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/cloudwego/hertz/pkg/common/hlog"
-	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
-	"github.com/go-sphere/httpx/echox"
-	"github.com/go-sphere/httpx/fiberx"
-	"github.com/go-sphere/httpx/ginx"
-	"github.com/go-sphere/httpx/hertzx"
-	"github.com/gofiber/fiber/v3"
-	"github.com/labstack/echo/v4"
 )
 
 type benchmarkHarness struct {
@@ -34,7 +25,7 @@ type benchmarkHarness struct {
 const benchmarkNoiseRoutes = 1200
 
 func BenchmarkFrameworkRouting(b *testing.B) {
-	frameworks := []string{"ginx", "fiberx", "echox", "hertzx"}
+	frameworks := conformanceFrameworks
 	for _, name := range frameworks {
 		b.Run(name, func(b *testing.B) {
 			h := newBenchmarkHarness(b, name)
@@ -110,7 +101,7 @@ func BenchmarkFrameworkComplexRequest(b *testing.B) {
 		b.Fatalf("marshal benchmark body failed: %v", err)
 	}
 
-	frameworks := []string{"ginx", "fiberx", "echox", "hertzx"}
+	frameworks := conformanceFrameworks
 	for _, name := range frameworks {
 		b.Run(name, func(b *testing.B) {
 			h := newBenchmarkHarness(b, name)
@@ -243,56 +234,10 @@ func registerNoiseRoutes(r httpx.Router, count int) {
 
 func newBenchmarkHarness(b *testing.B, name string) benchmarkHarness {
 	b.Helper()
-
-	client := &http.Client{Timeout: 2 * time.Second}
-
-	switch name {
-	case "ginx":
-		gin.SetMode(gin.ReleaseMode)
-		g := gin.New()
-		g.Use(gin.Recovery())
-		addr := reserveAddr(b)
-		engine := ginx.New(ginx.WithEngine(g), ginx.WithServerAddr(addr))
-		router := engine.Group("")
-		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
-		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + addr, client: client}
-	case "fiberx":
-		app := fiber.New(fiber.Config{
-			ErrorHandler: func(ctx fiber.Ctx, err error) error {
-				return ctx.Status(500).JSON(fiber.Map{"error": err.Error()})
-			},
-		})
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			b.Fatalf("listen failed: %v", err)
-		}
-		engine := fiberx.New(fiberx.WithEngine(app), fiberx.WithListener(ln, fiber.ListenConfig{DisableStartupMessage: true}))
-		router := engine.Group("")
-		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
-		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + ln.Addr().String(), client: client}
-	case "echox":
-		e := echo.New()
-		e.HTTPErrorHandler = func(err error, c echo.Context) {
-			_ = c.JSON(500, echo.Map{"error": err.Error()})
-		}
-		addr := reserveAddr(b)
-		engine := echox.New(echox.WithEngine(e), echox.WithServerAddr(addr))
-		router := engine.Group("")
-		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
-		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + addr, client: client}
-	case "hertzx":
-		hlog.SetSilentMode(true)
-		hlog.SetOutput(io.Discard)
-		addr := reserveAddr(b)
-		h := server.Default(server.WithHostPorts(addr), server.WithDisablePrintRoute(true))
-		engine := hertzx.New(hertzx.WithEngine(h))
-		router := engine.Group("")
-		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
-		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + addr, client: client}
-	default:
-		b.Fatalf("unknown framework: %s", name)
-		return benchmarkHarness{}
-	}
+	bundle := newFrameworkHarnessTB(b, name, harnessOptions{mode: harnessModeNetwork, errorMode: harnessErrorDefault, silenceHertzLog: true})
+	router := bundle.harness.Router
+	router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
+	return benchmarkHarness{router: router, engine: bundle.harness.Engine, baseURL: bundle.baseURL, client: bundle.client}
 }
 
 func startBenchmarkHarness(b *testing.B, h benchmarkHarness) {
@@ -346,16 +291,18 @@ func doRequest(client *http.Client, req *http.Request) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, nil
 }
 
-func reserveAddr(b *testing.B) string {
-	b.Helper()
+func reserveAddrTB(tb testing.TB) string {
+	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		b.Fatalf("reserve addr failed: %v", err)
+		tb.Fatalf("reserve addr failed: %v", err)
 	}
 	addr := ln.Addr().String()
 	_ = ln.Close()

@@ -69,6 +69,29 @@ func TestMiddlewareStyleConformance(t *testing.T) {
 		})
 		assertMatchesGin(t, results)
 	})
+
+	t.Run("WriteWithoutNextStopsHandler", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.Use(func(ctx httpx.Context) error {
+				return ctx.Text(401, "blocked")
+			})
+			r.GET("/mw/blocked", func(ctx httpx.Context) error {
+				return ctx.Text(200, "handler-should-not-run")
+			})
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/mw/blocked", nil)
+		})
+
+		for _, name := range conformanceFrameworks {
+			got := results[name]
+			if got.Status != http.StatusUnauthorized {
+				t.Fatalf("%s status mismatch: want %d, got %d", name, http.StatusUnauthorized, got.Status)
+			}
+			if got.Body != "blocked" {
+				t.Fatalf("%s body mismatch: want %q, got %q", name, "blocked", got.Body)
+			}
+		}
+	})
 }
 
 func TestRouterConformance(t *testing.T) {

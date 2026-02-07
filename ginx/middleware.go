@@ -14,6 +14,14 @@ func adaptMiddleware(middleware httpx.Middleware, errHandler ErrorHandler) gin.H
 		}
 		if err := middleware(fc); err != nil {
 			errHandler(ctx, err)
+			if !ctx.IsAborted() {
+				ctx.Abort()
+			}
+			return
+		}
+
+		if !fc.nextCalled {
+			ctx.Abort()
 		}
 	}
 }
