@@ -147,6 +147,11 @@ func runAcrossFrameworks(t *testing.T, register func(httpx.Router), request func
 
 func newHarness(t *testing.T, name string) frameworkHarness {
 	t.Helper()
+	return newHarnessTB(t, name)
+}
+
+func newHarnessTB(tb testing.TB, name string) frameworkHarness {
+	tb.Helper()
 
 	switch name {
 	case "ginx":
@@ -254,7 +259,7 @@ func newHarness(t *testing.T, name string) frameworkHarness {
 			},
 		}
 	default:
-		t.Fatalf("unknown framework: %s", name)
+		tb.Fatalf("unknown framework: %s", name)
 		return frameworkHarness{}
 	}
 }

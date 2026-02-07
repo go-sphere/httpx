@@ -1,4 +1,4 @@
-.PHONY: test lint lint-all tag tag-all tag-delete help
+.PHONY: test bench lint lint-all tag tag-all tag-delete help
 
 TAG ?=
 LINT_DIRS := . ginx fiberx echox hertzx conformance
@@ -6,6 +6,9 @@ TAG_ADAPTERS := ginx fiberx echox hertzx
 
 test:
 	cd conformance && go test ./... -v
+
+bench:
+	cd conformance && go test -run '^$$' -bench BenchmarkFramework -benchmem ./...
 
 lint: lint-all
 
@@ -52,6 +55,7 @@ help:
 	@printf '%s\n' \
 	  'Targets:' \
 	  '  test                         run conformance tests' \
+	  '  bench                        run framework benchmarks' \
 	  '  lint | lint-all              run checks for all modules' \
 	  '  tag TAG=v0.0.1               create and push root tag' \
 	  '  tag-all TAG=v0.0.1           create and push adapter tags' \
