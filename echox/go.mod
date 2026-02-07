@@ -3,6 +3,7 @@ module github.com/go-sphere/httpx/echox
 go 1.25.5
 
 require (
+	github.com/go-playground/form/v4 v4.3.0
 	github.com/go-sphere/httpx v0.0.2-beta.30
 	github.com/labstack/echo/v4 v4.15.0
 )
