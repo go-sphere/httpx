@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,65 @@ import (
 
 	"github.com/go-sphere/httpx"
 )
+
+func TestMiddlewareStyleConformance(t *testing.T) {
+	t.Run("PassThrough", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.Use(func(ctx httpx.Context) error {
+				ctx.Set("from-middleware", "ok")
+				return ctx.Next()
+			})
+			r.GET("/mw/pass", func(ctx httpx.Context) error {
+				v, _ := ctx.Get("from-middleware")
+				return ctx.JSON(200, map[string]any{"value": v})
+			})
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/mw/pass", nil)
+		})
+		assertMatchesGin(t, results)
+	})
+
+	t.Run("BeforeAfterNext", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			appendOrder := func(ctx httpx.Context, s string) {
+				v, _ := ctx.Get("order")
+				arr, _ := v.([]string)
+				arr = append(arr, s)
+				ctx.Set("order", arr)
+			}
+
+			r.Use(func(ctx httpx.Context) error {
+				ctx.Set("order", []string{"before"})
+				err := ctx.Next()
+				appendOrder(ctx, "after")
+				return err
+			})
+
+			r.GET("/mw/around", func(ctx httpx.Context) error {
+				appendOrder(ctx, "handler")
+				v, _ := ctx.Get("order")
+				return ctx.JSON(200, map[string]any{"order": v})
+			})
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/mw/around", nil)
+		})
+		assertMatchesGin(t, results)
+	})
+
+	t.Run("MiddlewareError", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.Use(func(ctx httpx.Context) error {
+				return errors.New("middleware boom")
+			})
+			r.GET("/mw/error", func(ctx httpx.Context) error {
+				return ctx.Text(200, "handler-should-not-run")
+			})
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/mw/error", nil)
+		})
+		assertMatchesGin(t, results)
+	})
+}
 
 func TestRouterConformance(t *testing.T) {
 	t.Run("GroupUseAnyAndNext", func(t *testing.T) {

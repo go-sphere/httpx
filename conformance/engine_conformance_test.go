@@ -53,6 +53,7 @@ func runAcrossFrameworks(t *testing.T, register func(httpx.Router), request func
 
 	results := make(map[string]responseSnapshot, 4)
 	for _, name := range []string{"ginx", "fiberx", "echox", "hertzx"} {
+		t.Logf("case=%s framework=%s", t.Name(), name)
 		h := newHarness(t, name)
 		register(h.Router)
 		results[name] = h.Do(t, request())
@@ -65,6 +66,7 @@ func newHarness(t *testing.T, name string) frameworkHarness {
 
 	switch name {
 	case "ginx":
+		gin.SetMode(gin.ReleaseMode)
 		g := gin.New()
 		g.Use(gin.Recovery())
 		engine := ginx.New(ginx.WithEngine(g), ginx.WithServerAddr(":0"))
@@ -117,7 +119,10 @@ func newHarness(t *testing.T, name string) frameworkHarness {
 			},
 		}
 	case "hertzx":
-		h := server.Default(server.WithHostPorts("127.0.0.1:0"))
+		h := server.Default(
+			server.WithHostPorts("127.0.0.1:0"),
+			server.WithDisablePrintRoute(true),
+		)
 		engine := hertzx.New(hertzx.WithEngine(h))
 		return frameworkHarness{
 			Name:   name,

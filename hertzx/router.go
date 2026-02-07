@@ -122,7 +122,9 @@ func (r *Router) toStaticHandler(files fs.FS) app.HandlerFunc {
 			rc.Status(http.StatusNotFound)
 			return
 		}
-		defer file.Close()
+		defer func() {
+			_ = file.Close()
+		}()
 
 		info, err := file.Stat()
 		if err != nil || info.IsDir() {
