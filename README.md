@@ -13,32 +13,18 @@ A unified HTTP framework abstraction layer for Go that provides a consistent int
 
 ## Testing
 
-The project includes comprehensive testing infrastructure in two packages:
-
-- **`testing/`** - Reusable test utilities and framework-agnostic test suite
-- **`integration/`** - Cross-framework integration tests with flexible execution modes
-
-### Test Execution Modes
-
-Three execution modes support different testing workflows:
-
-- **Individual Mode** - Run each interface test separately for detailed debugging
-- **Batch Mode** - Fast comprehensive validation for CI/CD pipelines
-- **Benchmark Mode** - Performance testing and regression detection
+The project provides a single conformance test suite under `conformance/`.
+It uses `ginx` as the baseline behavior and checks that other adapters
+(`fiberx`, `echox`, `hertzx`) match it.
 
 Run tests:
 ```bash
-# Run all integration tests
-go test ./integration/... -v
+# Run conformance tests
+go test ./conformance/... -v
 
 # Run with coverage
-go test ./integration/... -cover
-
-# Run benchmarks
-go test -bench=. ./integration/...
+go test ./conformance/... -cover
 ```
-
-For more details, see [Testing Documentation](specs/001-test-suite-optimization/quickstart.md).
 
 ## License
 
