@@ -204,6 +204,16 @@ func TestResponderConformance(t *testing.T) {
 		request  func() *http.Request
 	}{
 		{
+			name: "Status",
+			register: func(r httpx.Router) {
+				r.GET("/status", func(ctx httpx.Context) error {
+					ctx.Status(202)
+					return nil
+				})
+			},
+			request: func() *http.Request { return httptest.NewRequest(http.MethodGet, "http://example.com/status", nil) },
+		},
+		{
 			name: "JSON",
 			register: func(r httpx.Router) {
 				r.GET("/json", func(ctx httpx.Context) error {
@@ -294,6 +304,52 @@ func TestResponderConformance(t *testing.T) {
 			assertMatchesGin(t, results)
 		})
 	}
+}
+
+func TestContextBaseConformance(t *testing.T) {
+	results := runAcrossFrameworks(t, func(r httpx.Router) {
+		r.GET("/ctx/base", func(ctx httpx.Context) error {
+			ctx.Set("trace-id", "trace-1")
+			deadline, hasDeadline := ctx.Deadline()
+			_ = deadline
+			v := ctx.Value("trace-id")
+			trace, _ := v.(string)
+			return ctx.JSON(200, map[string]any{
+				"hasDeadline": hasDeadline,
+				"doneNotNil":  ctx.Done() != nil,
+				"errIsNil":    ctx.Err() == nil,
+				"value":       trace,
+			})
+		})
+	}, func() *http.Request {
+		return httptest.NewRequest(http.MethodGet, "http://example.com/ctx/base", nil)
+	})
+
+	assertMatchesGin(t, results)
+}
+
+func TestWithJSONConformance(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.GET("/withjson/success", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
+				return map[string]any{"name": "ok"}, nil
+			}))
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/withjson/success", nil)
+		})
+		assertMatchesGin(t, results)
+	})
+
+	t.Run("Panic", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.GET("/withjson/panic", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
+				panic("boom")
+			}))
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/withjson/panic", nil)
+		})
+		assertMatchesGin(t, results)
+	})
 }
 
 func mustCookie(ctx httpx.Context, key string) string {

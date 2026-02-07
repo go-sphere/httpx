@@ -18,7 +18,7 @@ require (
 	github.com/go-sphere/httpx/fiberx v0.0.0-00010101000000-000000000000
 	github.com/go-sphere/httpx/ginx v0.0.0-00010101000000-000000000000
 	github.com/go-sphere/httpx/hertzx v0.0.0-00010101000000-000000000000
-	github.com/gofiber/fiber/v3 v3.0.0-rc.3
+	github.com/gofiber/fiber/v3 v3.0.0
 	github.com/labstack/echo/v4 v4.15.0
 )
 
@@ -40,7 +40,7 @@ require (
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.6.0 // indirect
-	github.com/gofiber/utils/v2 v2.0.0-rc.6 // indirect
+	github.com/gofiber/utils/v2 v2.0.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect

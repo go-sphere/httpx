@@ -3,13 +3,17 @@ package conformance
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
 	"github.com/go-sphere/httpx/echox"
@@ -45,6 +49,86 @@ func TestEngineConformance(t *testing.T) {
 				t.Fatalf("%s engine should remain stopped", name)
 			}
 		})
+	}
+}
+
+func TestEngineStartConformance(t *testing.T) {
+	for _, name := range []string{"ginx", "fiberx", "echox", "hertzx"} {
+		t.Run(name, func(t *testing.T) {
+			engine := newStartEngine(t, name)
+
+			startErrCh := make(chan error, 1)
+			go func() {
+				startErrCh <- engine.Start()
+			}()
+
+			deadline := time.Now().Add(800 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				if engine.IsRunning() {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = engine.Stop(stopCtx)
+
+			select {
+			case err := <-startErrCh:
+				if !isExpectedStartExit(err) {
+					t.Fatalf("%s start returned unexpected error: %v", name, err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("%s start did not exit after stop", name)
+			}
+		})
+	}
+}
+
+func isExpectedStartExit(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "server closed") || strings.Contains(msg, "closed")
+}
+
+func newStartEngine(t *testing.T, name string) httpx.Engine {
+	t.Helper()
+	switch name {
+	case "ginx":
+		gin.SetMode(gin.ReleaseMode)
+		g := gin.New()
+		g.Use(gin.Recovery())
+		return ginx.New(ginx.WithEngine(g), ginx.WithServerAddr("127.0.0.1:0"))
+	case "fiberx":
+		app := fiber.New(fiber.Config{
+			ErrorHandler: func(ctx fiber.Ctx, err error) error {
+				return ctx.Status(500).JSON(fiber.Map{"error": err.Error()})
+			},
+		})
+		return fiberx.New(fiberx.WithEngine(app), fiberx.WithListen("127.0.0.1:0", fiber.ListenConfig{DisableStartupMessage: true}))
+	case "echox":
+		e := echo.New()
+		e.HTTPErrorHandler = func(err error, c echo.Context) {
+			_ = c.JSON(500, echo.Map{"error": err.Error()})
+		}
+		return echox.New(echox.WithEngine(e), echox.WithServerAddr("127.0.0.1:0"))
+	case "hertzx":
+		hlog.SetSilentMode(true)
+		hlog.SetOutput(io.Discard)
+		h := server.Default(
+			server.WithHostPorts("127.0.0.1:0"),
+			server.WithDisablePrintRoute(true),
+		)
+		return hertzx.New(hertzx.WithEngine(h))
+	default:
+		t.Fatalf("unknown framework: %s", name)
+		return nil
 	}
 }
 
@@ -177,7 +261,9 @@ func newHarness(t *testing.T, name string) frameworkHarness {
 
 func snapshotFromHTTPResponse(t *testing.T, resp *http.Response) responseSnapshot {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close
+	}()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
