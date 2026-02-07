@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
+	"time"
+
+	"testing"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
@@ -19,12 +22,13 @@ import (
 	"github.com/go-sphere/httpx/hertzx"
 	"github.com/gofiber/fiber/v3"
 	"github.com/labstack/echo/v4"
-	"testing"
 )
 
 type benchmarkHarness struct {
-	router httpx.Router
-	do     func(*http.Request) (int, error)
+	router  httpx.Router
+	engine  httpx.Engine
+	baseURL string
+	client  *http.Client
 }
 
 const benchmarkNoiseRoutes = 1200
@@ -36,13 +40,17 @@ func BenchmarkFrameworkRouting(b *testing.B) {
 			h := newBenchmarkHarness(b, name)
 			registerNoiseRoutes(h.router, benchmarkNoiseRoutes)
 			registerBenchmarkRoute(h.router)
+			startBenchmarkHarness(b, h)
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				req := httptest.NewRequest(http.MethodGet, "http://example.com/bench/42?name=tom", nil)
+				req, err := http.NewRequest(http.MethodGet, h.baseURL+"/bench/42?name=tom", nil)
+				if err != nil {
+					b.Fatalf("build request failed: %v", err)
+				}
 				req.Header.Set("X-Bench", "1")
-				status, err := h.do(req)
+				status, err := doRequest(h.client, req)
 				if err != nil {
 					b.Fatalf("request failed: %v", err)
 				}
@@ -154,19 +162,23 @@ func BenchmarkFrameworkComplexRequest(b *testing.B) {
 					"trace": valueOrEmpty(ctx, "trace"),
 				})
 			})
+			startBenchmarkHarness(b, h)
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				req := httptest.NewRequest(
+				req, err := http.NewRequest(
 					http.MethodPost,
-					"http://example.com/api/v1/orgs/org-01/users/u-88/orders?mode=sync&locale=zh-CN",
+					h.baseURL+"/api/v1/orgs/org-01/users/u-88/orders?mode=sync&locale=zh-CN",
 					bytes.NewReader(bodyBytes),
 				)
+				if err != nil {
+					b.Fatalf("build request failed: %v", err)
+				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("X-Req-ID", "req-123")
 
-				status, err := h.do(req)
+				status, err := doRequest(h.client, req)
 				if err != nil {
 					b.Fatalf("request failed: %v", err)
 				}
@@ -232,93 +244,120 @@ func registerNoiseRoutes(r httpx.Router, count int) {
 func newBenchmarkHarness(b *testing.B, name string) benchmarkHarness {
 	b.Helper()
 
+	client := &http.Client{Timeout: 2 * time.Second}
+
 	switch name {
 	case "ginx":
 		gin.SetMode(gin.ReleaseMode)
 		g := gin.New()
 		g.Use(gin.Recovery())
-		engine := ginx.New(ginx.WithEngine(g), ginx.WithServerAddr(":0"))
-		return benchmarkHarness{
-			router: engine.Group(""),
-			do: func(req *http.Request) (int, error) {
-				rr := httptest.NewRecorder()
-				g.ServeHTTP(rr, req)
-				return rr.Code, nil
-			},
-		}
+		addr := reserveAddr(b)
+		engine := ginx.New(ginx.WithEngine(g), ginx.WithServerAddr(addr))
+		router := engine.Group("")
+		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
+		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + addr, client: client}
 	case "fiberx":
 		app := fiber.New(fiber.Config{
 			ErrorHandler: func(ctx fiber.Ctx, err error) error {
 				return ctx.Status(500).JSON(fiber.Map{"error": err.Error()})
 			},
 		})
-		engine := fiberx.New(fiberx.WithEngine(app), fiberx.WithListen(":0"))
-		return benchmarkHarness{
-			router: engine.Group(""),
-			do: func(req *http.Request) (int, error) {
-				resp, err := app.Test(req)
-				if err != nil {
-					return 0, err
-				}
-				defer resp.Body.Close()
-				_, _ = io.Copy(io.Discard, resp.Body)
-				return resp.StatusCode, nil
-			},
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			b.Fatalf("listen failed: %v", err)
 		}
+		engine := fiberx.New(fiberx.WithEngine(app), fiberx.WithListener(ln, fiber.ListenConfig{DisableStartupMessage: true}))
+		router := engine.Group("")
+		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
+		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + ln.Addr().String(), client: client}
 	case "echox":
 		e := echo.New()
 		e.HTTPErrorHandler = func(err error, c echo.Context) {
 			_ = c.JSON(500, echo.Map{"error": err.Error()})
 		}
-		engine := echox.New(echox.WithEngine(e), echox.WithServerAddr(":0"))
-		return benchmarkHarness{
-			router: engine.Group(""),
-			do: func(req *http.Request) (int, error) {
-				rr := httptest.NewRecorder()
-				e.ServeHTTP(rr, req)
-				return rr.Code, nil
-			},
-		}
+		addr := reserveAddr(b)
+		engine := echox.New(echox.WithEngine(e), echox.WithServerAddr(addr))
+		router := engine.Group("")
+		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
+		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + addr, client: client}
 	case "hertzx":
 		hlog.SetSilentMode(true)
 		hlog.SetOutput(io.Discard)
-		h := server.Default(server.WithHostPorts("127.0.0.1:0"), server.WithDisablePrintRoute(true))
+		addr := reserveAddr(b)
+		h := server.Default(server.WithHostPorts(addr), server.WithDisablePrintRoute(true))
 		engine := hertzx.New(hertzx.WithEngine(h))
-		return benchmarkHarness{
-			router: engine.Group(""),
-			do: func(req *http.Request) (int, error) {
-				urlStr := req.URL.String()
-				if !req.URL.IsAbs() {
-					urlStr = "http://example.com" + req.URL.RequestURI()
-				}
-
-				var bodyBytes []byte
-				if req.Body != nil {
-					var err error
-					bodyBytes, err = io.ReadAll(req.Body)
-					if err != nil {
-						return 0, err
-					}
-				}
-
-				hctx := h.Engine.NewContext()
-				hctx.Request.Header.SetMethod(req.Method)
-				hctx.Request.SetRequestURI(urlStr)
-				if len(bodyBytes) > 0 {
-					hctx.Request.SetBodyStream(bytes.NewReader(bodyBytes), len(bodyBytes))
-				}
-				for key, values := range req.Header {
-					for _, value := range values {
-						hctx.Request.Header.Add(key, value)
-					}
-				}
-				h.Engine.ServeHTTP(context.Background(), hctx)
-				_ = len(hctx.Response.Body())
-				return hctx.Response.StatusCode(), nil
-			},
-		}
+		router := engine.Group("")
+		router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
+		return benchmarkHarness{router: router, engine: engine, baseURL: "http://" + addr, client: client}
 	default:
 		b.Fatalf("unknown framework: %s", name)
 		return benchmarkHarness{}
 	}
+}
+
+func startBenchmarkHarness(b *testing.B, h benchmarkHarness) {
+	b.Helper()
+
+	startErrCh := make(chan error, 1)
+	go func() {
+		startErrCh <- h.engine.Start()
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-startErrCh:
+			if !isExpectedStartExit(err) {
+				b.Fatalf("start exited early: %v", err)
+			}
+			b.Fatalf("engine exited before ready")
+		default:
+		}
+
+		req, err := http.NewRequest(http.MethodGet, h.baseURL+"/__ready", nil)
+		if err != nil {
+			b.Fatalf("build ready request failed: %v", err)
+		}
+		status, err := doRequest(h.client, req)
+		if err == nil && status == http.StatusNoContent {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	b.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = h.engine.Stop(ctx)
+
+		select {
+		case err := <-startErrCh:
+			if !isExpectedStartExit(err) {
+				b.Fatalf("start returned unexpected error: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			b.Fatalf("engine did not exit after stop")
+		}
+	})
+}
+
+func doRequest(client *http.Client, req *http.Request) (int, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
+func reserveAddr(b *testing.B) string {
+	b.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("reserve addr failed: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
 }
