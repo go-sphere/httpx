@@ -5,13 +5,13 @@ LINT_DIRS := . ginx fiberx echox hertzx conformance
 TAG_ADAPTERS := ginx fiberx echox hertzx
 
 test:
-	cd conformance && go test ./... -v
+	go test ./conformance/... -v
 
 bench:
-	cd conformance && go test -run '^$$' -bench BenchmarkFramework -benchmem ./...
+	go test -run '^$$' -bench BenchmarkFramework -benchmem ./conformance/...
 
 bench-5x:
-	cd conformance && go test -run '^$$' -bench BenchmarkFramework -benchmem -count=5 ./...
+	go test -run '^$$' -bench BenchmarkFramework -benchmem -count=5 ./conformance/...
 
 lint: lint-all
 
