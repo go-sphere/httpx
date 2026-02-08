@@ -4,6 +4,7 @@ import (
 	"net/url"
 
 	"github.com/go-playground/form/v4"
+	"github.com/labstack/echo/v4"
 )
 
 var uriDecoder = newURIDecoder()
@@ -14,12 +15,18 @@ func newURIDecoder() *form.Decoder {
 	return decoder
 }
 
-func bindURIWithForm(dst any, params map[string]string) error {
-	if len(params) == 0 {
+func bindURIWithForm(dst any, ctx echo.Context) error {
+	names := ctx.ParamNames()
+	if len(names) == 0 {
 		return nil
 	}
-	values := make(url.Values, len(params))
-	for key, value := range params {
+	params := ctx.ParamValues()
+	values := make(url.Values, len(names))
+	for i, key := range names {
+		value := ""
+		if i < len(params) {
+			value = params[i]
+		}
 		values.Set(key, value)
 	}
 	return uriDecoder.Decode(dst, values)

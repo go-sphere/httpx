@@ -171,18 +171,19 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 		gin.SetMode(gin.ReleaseMode)
 		g := gin.New()
 		g.Use(gin.Recovery())
+		addr := ginLikeAddrForMode(tb, opts.mode)
 
 		var engine httpx.Engine
 		if opts.errorMode == harnessErrorTeapot {
 			engine = ginx.New(
 				ginx.WithEngine(g),
-				ginx.WithServerAddr(ginLikeAddrForMode(tb, opts.mode)),
+				ginx.WithServerAddr(addr),
 				ginx.WithErrorHandler(func(ctx *gin.Context, err error) {
 					ctx.JSON(http.StatusTeapot, gin.H{"error": err.Error()})
 				}),
 			)
 		} else {
-			engine = ginx.New(ginx.WithEngine(g), ginx.WithServerAddr(ginLikeAddrForMode(tb, opts.mode)))
+			engine = ginx.New(ginx.WithEngine(g), ginx.WithServerAddr(addr))
 		}
 
 		h := frameworkHarness{
@@ -197,7 +198,6 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 			},
 		}
 		if opts.mode == harnessModeNetwork {
-			addr := ginLikeAddrForMode(tb, opts.mode)
 			return harnessBundle{harness: h, baseURL: "http://" + addr, client: &http.Client{Timeout: 2 * time.Second}}
 		}
 		return harnessBundle{harness: h}

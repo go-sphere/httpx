@@ -10,10 +10,7 @@ import (
 
 func adaptMiddleware(middleware httpx.Middleware, errHandler ErrorHandler) app.HandlerFunc {
 	return func(c context.Context, ctx *app.RequestContext) {
-		fc := &hertzContext{
-			ctx:     ctx,
-			baseCtx: c,
-		}
+		fc := newHertzContext(c, ctx)
 		if err := middleware(fc); err != nil {
 			_ = ctx.Error(err)
 			if !ctx.IsAborted() {

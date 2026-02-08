@@ -166,7 +166,7 @@ func (c *hertzContext) BindForm(dst any) error {
 }
 
 func (c *hertzContext) BindURI(dst any) error {
-	return bindURIWithForm(dst, c.Params())
+	return bindURIWithForm(dst, c.ctx)
 }
 
 func (c *hertzContext) BindHeader(dst any) error {

@@ -175,7 +175,7 @@ func (c *echoContext) BindForm(dst any) error {
 }
 
 func (c *echoContext) BindURI(dst any) error {
-	return bindURIWithForm(dst, c.Params())
+	return bindURIWithForm(dst, c.ctx)
 }
 
 func (c *echoContext) BindHeader(dst any) error {

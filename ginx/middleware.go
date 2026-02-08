@@ -9,9 +9,7 @@ import (
 
 func adaptMiddleware(middleware httpx.Middleware, errHandler ErrorHandler) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		fc := &ginContext{
-			ctx: ctx,
-		}
+		fc := newGinContext(ctx)
 		if err := middleware(fc); err != nil {
 			_ = ctx.Error(err)
 			if !ctx.IsAborted() {

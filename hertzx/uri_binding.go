@@ -3,6 +3,7 @@ package hertzx
 import (
 	"net/url"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/go-playground/form/v4"
 )
 
@@ -14,13 +15,13 @@ func newURIDecoder() *form.Decoder {
 	return decoder
 }
 
-func bindURIWithForm(dst any, params map[string]string) error {
-	if len(params) == 0 {
+func bindURIWithForm(dst any, rc *app.RequestContext) error {
+	if len(rc.Params) == 0 {
 		return nil
 	}
-	values := make(url.Values, len(params))
-	for key, value := range params {
-		values.Set(key, value)
+	values := make(url.Values, len(rc.Params))
+	for _, p := range rc.Params {
+		values.Set(p.Key, p.Value)
 	}
 	return uriDecoder.Decode(dst, values)
 }
