@@ -1,6 +1,7 @@
 package ginx
 
 import (
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -251,16 +252,32 @@ func (c *ginContext) Value(key any) any {
 
 func (c *ginContext) Next() error {
 	c.nextCalled = true
+	before := len(c.ctx.Errors)
 	c.ctx.Next()
 
-	// Check if any errors were added during middleware execution
-	// Gin collects errors in ctx.Errors - return the last error if any
-	if len(c.ctx.Errors) > 0 {
-		// Return the most recent error (last in the slice)
-		return c.ctx.Errors.Last()
+	if len(c.ctx.Errors) <= before {
+		return nil
 	}
 
-	return nil
+	errList := make([]error, 0, len(c.ctx.Errors)-before)
+	for _, err := range c.ctx.Errors[before:] {
+		if err != nil {
+			errList = append(errList, err.Err)
+		}
+	}
+
+	return joinErrors(errList)
+}
+
+func joinErrors(errs []error) error {
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return errors.Join(errs...)
+	}
 }
 
 func (c *ginContext) StatusCode() int {

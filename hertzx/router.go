@@ -97,7 +97,11 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
 		hc := newHertzContext(ctx, rc)
 		if err := h(hc); err != nil {
+			_ = rc.Error(err)
 			r.errHandler(ctx, rc, err)
+			if !rc.IsAborted() {
+				rc.Abort()
+			}
 		}
 	}
 }

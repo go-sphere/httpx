@@ -92,6 +92,51 @@ func TestMiddlewareStyleConformance(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("NextReturnsJoinedDownstreamErrors", func(t *testing.T) {
+		for _, name := range conformanceFrameworks {
+			t.Run(name, func(t *testing.T) {
+				h := newHarness(t, name)
+
+				errA := errors.New("err-a")
+				errB := errors.New("err-b")
+
+				var outerErr error
+
+				h.Router.Use(func(ctx httpx.Context) error {
+					outerErr = ctx.Next()
+					return outerErr
+				})
+
+				h.Router.Use(func(ctx httpx.Context) error {
+					err := ctx.Next()
+					if err == nil {
+						return errB
+					}
+					return errors.Join(err, errB)
+				})
+
+				h.Router.GET("/mw/next/join-errors", func(ctx httpx.Context) error {
+					return errA
+				})
+
+				got := h.Do(t, httptest.NewRequest(http.MethodGet, "http://example.com/mw/next/join-errors", nil))
+				if got.Status != http.StatusInternalServerError {
+					t.Fatalf("%s status mismatch: want %d, got %d", name, http.StatusInternalServerError, got.Status)
+				}
+
+				if outerErr == nil {
+					t.Fatalf("%s outer ctx.Next() should return non-nil error", name)
+				}
+				if !errors.Is(outerErr, errA) {
+					t.Fatalf("%s outer ctx.Next() should contain errA", name)
+				}
+				if !errors.Is(outerErr, errB) {
+					t.Fatalf("%s outer ctx.Next() should contain errB", name)
+				}
+			})
+		}
+	})
 }
 
 func TestRouterConformance(t *testing.T) {

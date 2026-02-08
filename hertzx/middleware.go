@@ -15,7 +15,10 @@ func adaptMiddleware(middleware httpx.Middleware, errHandler ErrorHandler) app.H
 			baseCtx: c,
 		}
 		if err := middleware(fc); err != nil {
-			errHandler(c, ctx, err)
+			_ = ctx.Error(err)
+			if !ctx.IsAborted() {
+				errHandler(c, ctx, err)
+			}
 			if !ctx.IsAborted() {
 				ctx.Abort()
 			}

@@ -85,7 +85,11 @@ func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 	return func(gc *gin.Context) {
 		ctx := newGinContext(gc)
 		if err := h(ctx); err != nil {
+			_ = gc.Error(err)
 			r.errHandler(gc, err)
+			if !gc.IsAborted() {
+				gc.Abort()
+			}
 		}
 	}
 }

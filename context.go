@@ -309,8 +309,12 @@ type Context interface {
 	// framework context and respect request cancellation and deadlines.
 	context.Context
 
-	// Next executes the next handler in the chain and returns any error
-	// that occurred during execution.
+	// Next executes downstream handlers in the chain.
+	//
+	// It returns nil if no error occurred downstream.
+	// If one or more errors occurred downstream, it returns a non-nil error.
+	// Implementations may aggregate multiple errors (for example, via errors.Join)
+	// and are not required to preserve framework-specific ordering semantics.
 	//
 	// If an error is returned, the middleware chain should be interrupted
 	// and the error should be handled appropriately.
