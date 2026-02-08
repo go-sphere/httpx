@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -290,6 +291,9 @@ func doRequest(client *http.Client, req *http.Request) (int, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
+	}
+	if resp == nil || resp.Body == nil {
+		return 0, errors.New("nil response or body")
 	}
 	defer func() {
 		_ = resp.Body.Close()

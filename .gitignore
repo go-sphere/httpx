@@ -142,10 +142,7 @@ fabric.properties
 
 # httpx-specific patterns
 .gocache/
-.kiro/
-specs/
-.github/agents/
-.github/prompts/
+
 
 # Build outputs
 dist/
