@@ -21,15 +21,9 @@ type fiberContext struct {
 }
 
 func newFiberContext(ctx fiber.Ctx) *fiberContext {
-	baseCtx := ctx.Context()
-	if baseCtx == nil {
-		baseCtx = context.Background()
-		ctx.SetContext(baseCtx)
-	}
-
 	return &fiberContext{
 		ctx:     ctx,
-		baseCtx: baseCtx,
+		baseCtx: ctx.Context(),
 	}
 }
 
