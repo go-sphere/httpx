@@ -26,10 +26,26 @@ type Registrar interface {
 	StaticFS(prefix string, fs fs.FS)
 }
 
+// RouterFeature identifies an optional router capability.
+type RouterFeature string
+
+const (
+	// RouterFeatureNamedWildcard indicates support for named wildcard params in paths,
+	// for example, /files/*filepath
+	RouterFeatureNamedWildcard RouterFeature = "named_wildcard"
+)
+
+// RouterFeatureProvider exposes optional router capability detection.
+type RouterFeatureProvider interface {
+	SupportsRouterFeature(feature RouterFeature) bool
+}
+
 // Router is a full-featured route scope.
 type Router interface {
-	MiddlewareScope
 	Registrar
+	MiddlewareScope
+	RouterFeatureProvider
+
 	BasePath() string
 	Group(prefix string, m ...Middleware) Router
 

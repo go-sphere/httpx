@@ -29,6 +29,15 @@ func (r *Router) BasePath() string {
 	return r.basePath
 }
 
+func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
+	switch feature {
+	case httpx.RouterFeatureNamedWildcard:
+		return false
+	default:
+		return false
+	}
+}
+
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
 		basePath:    joinPaths(r.basePath, prefix),

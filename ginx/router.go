@@ -23,6 +23,15 @@ func (r *Router) BasePath() string {
 	return r.group.BasePath()
 }
 
+func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
+	switch feature {
+	case httpx.RouterFeatureNamedWildcard:
+		return true
+	default:
+		return false
+	}
+}
+
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
 		group:      r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),

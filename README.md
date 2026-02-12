@@ -26,6 +26,20 @@ go test ./conformance/... -v
 go test ./conformance/... -cover
 ```
 
+## Router Feature Detection
+
+`httpx` exposes optional router capability detection through helper functions.
+
+```go
+supports := httpx.SupportsNamedWildcard(router)
+```
+
+Currently supported router feature keys:
+
+- `httpx.RouterFeatureNamedWildcard` - named wildcard params in route path patterns, e.g. `/*filepath`
+
+Feature values are adapter declarations and can be extended in future versions.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
