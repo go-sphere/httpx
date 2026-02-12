@@ -208,6 +208,11 @@ func (c *echoContext) Bytes(code int, b []byte, contentType string) error {
 }
 
 func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
+	if rc, ok := r.(io.Closer); ok {
+		defer func() {
+			_ = rc.Close()
+		}()
+	}
 	if contentType == "" {
 		contentType = http.DetectContentType(nil)
 	}

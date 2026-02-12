@@ -198,6 +198,11 @@ func (c *ginContext) Bytes(code int, b []byte, contentType string) error {
 }
 
 func (c *ginContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
+	if rc, ok := r.(io.Closer); ok {
+		defer func() {
+			_ = rc.Close()
+		}()
+	}
 	c.ctx.DataFromReader(code, int64(size), contentType, r, nil)
 	return nil
 }
