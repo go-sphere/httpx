@@ -2,6 +2,7 @@ package fiberx
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -15,12 +16,20 @@ import (
 var _ httpx.Context = (*fiberContext)(nil)
 
 type fiberContext struct {
-	ctx fiber.Ctx
+	ctx     fiber.Ctx
+	baseCtx context.Context
 }
 
 func newFiberContext(ctx fiber.Ctx) *fiberContext {
+	baseCtx := ctx.Context()
+	if baseCtx == nil {
+		baseCtx = context.Background()
+		ctx.SetContext(baseCtx)
+	}
+
 	return &fiberContext{
-		ctx: ctx,
+		ctx:     ctx,
+		baseCtx: baseCtx,
 	}
 }
 
@@ -239,15 +248,15 @@ func (c *fiberContext) Get(key string) (any, bool) {
 // Context (context.Context + Next)
 
 func (c *fiberContext) Deadline() (deadline time.Time, ok bool) {
-	return c.ctx.RequestCtx().Deadline()
+	return c.baseCtx.Deadline()
 }
 
 func (c *fiberContext) Done() <-chan struct{} {
-	return c.ctx.RequestCtx().Done()
+	return c.baseCtx.Done()
 }
 
 func (c *fiberContext) Err() error {
-	return c.ctx.RequestCtx().Err()
+	return c.baseCtx.Err()
 }
 
 func (c *fiberContext) Value(key any) any {
@@ -256,7 +265,7 @@ func (c *fiberContext) Value(key any) any {
 			return val
 		}
 	}
-	return c.ctx.RequestCtx().Value(key)
+	return c.baseCtx.Value(key)
 }
 
 func (c *fiberContext) Next() error {
