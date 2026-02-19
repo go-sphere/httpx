@@ -214,7 +214,7 @@ func registerNoiseRoutes(r httpx.Router, count int) {
 		"/noise/data/v3/org/:orgID/team/:teamID/member/:memberID/action/:action",
 	}
 
-	for i := 0; i < count; i++ {
+	for i := range count {
 		base := templates[i%len(templates)]
 		path := fmt.Sprintf("%s/slot/%04d", base, i)
 

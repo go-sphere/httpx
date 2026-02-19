@@ -19,6 +19,7 @@ lint-all:
 	@set -e; \
 	for dir in $(LINT_DIRS); do \
 		cd $$dir; \
+		go fix ./...; \
 		go fmt ./...; \
 		go vet ./...; \
 		go get ./...; \
