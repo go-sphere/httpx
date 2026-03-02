@@ -257,11 +257,19 @@ type NativeContextProvider interface {
 	NativeContext() any
 }
 
-// StateStore carries request-scoped values.
+// StateStore carries request-scoped values shared across the handler chain.
 //
 // StateStore provides a simple key-value storage that is scoped to the
 // lifetime of a single request. Values stored in StateStore are intended
-// to be shared between middleware and handlers handling the same request.
+// to be shared between middleware and handlers handling the same request,
+// within the same handler chain execution.
+//
+// IMPORTANT: Values stored via Set are NOT propagated through the standard
+// context.Context returned by Context.Context(). They are visible only to
+// middleware and handlers that share the same httpx.Context instance for
+// the current request. To propagate values through context.Context (e.g.
+// into downstream business logic, goroutines, or RPC calls), use
+// SetContext with context.WithValue instead.
 //
 // Stored values MUST NOT be accessed concurrently without external
 // synchronization unless the implementation explicitly guarantees
@@ -270,12 +278,18 @@ type StateStore interface {
 	// Set associates the given value with the provided key for the
 	// lifetime of the current request.
 	//
+	// The value is accessible only within the current handler chain
+	// (i.e., by subsequent middleware and the final handler). It is
+	// NOT propagated through context.Context.
+	//
 	// Setting a value with an existing key replaces the previous value.
 	Set(key string, val any)
 
 	// Get retrieves the value associated with the given key.
 	//
 	// The returned boolean indicates whether the key was present.
+	// Only values set via Set on the same httpx.Context instance
+	// are visible; values stored in context.Context are not accessible here.
 	Get(key string) (any, bool)
 }
 
@@ -287,6 +301,12 @@ type StateStore interface {
 //
 // Context is valid only for the lifetime of a single request and MUST NOT
 // be retained or accessed after the request has completed.
+//
+// To pass request-scoped metadata (such as trace IDs or deadlines) into
+// business logic, middleware, or background goroutines, always use the
+// standard context.Context obtained via the Context() method. Do NOT pass
+// the httpx.Context itself across goroutine boundaries — it may be backed
+// by a pooled object whose lifetime ends when the HTTP response is sent.
 //
 // Implementations should provide consistent behavior across supported
 // HTTP frameworks while respecting their underlying execution models.
@@ -303,11 +323,26 @@ type Context interface {
 	// StateStore provides request-scoped key-value storage.
 	StateStore
 
-	// Context provides access to the standard Go context.
+	// Context returns the standard Go context.Context for the current request.
 	//
-	// The returned context should be derived from the underlying
-	// framework context and respect request cancellation and deadlines.
-	context.Context
+	// The returned context is derived from the underlying framework context
+	// and respects request cancellation and deadlines. It is safe to pass
+	// this value to downstream business logic, database calls, or RPC clients.
+	//
+	// Values stored via StateStore.Set are NOT visible through the returned
+	// context.Context. Use SetContext with context.WithValue to propagate
+	// values through the standard context chain.
+	Context() context.Context
+
+	// SetContext replaces the standard Go context.Context for the current request.
+	//
+	// This is typically used by middleware to inject request-scoped metadata:
+	//
+	//   ctx.SetContext(context.WithValue(ctx.Context(), traceIDKey, id))
+	//
+	// The provided context should be derived from ctx.Context() to preserve
+	// cancellation and deadline propagation.
+	SetContext(ctx context.Context)
 
 	// Next executes downstream handlers in the chain.
 	//

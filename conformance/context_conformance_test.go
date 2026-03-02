@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -311,14 +312,15 @@ func TestContextBaseConformance(t *testing.T) {
 	results := runAcrossFrameworks(t, func(r httpx.Router) {
 		r.GET("/ctx/base", func(ctx httpx.Context) error {
 			ctx.Set("trace-id", "trace-1")
-			deadline, hasDeadline := ctx.Deadline()
+			stdCtx := ctx.Context()
+			deadline, hasDeadline := stdCtx.Deadline()
 			_ = deadline
-			v := ctx.Value("trace-id")
+			v, _ := ctx.Get("trace-id")
 			trace, _ := v.(string)
 			return ctx.JSON(200, map[string]any{
 				"hasDeadline": hasDeadline,
-				"doneNotNil":  ctx.Done() != nil,
-				"errIsNil":    ctx.Err() == nil,
+				"doneNotNil":  stdCtx.Done() != nil,
+				"errIsNil":    stdCtx.Err() == nil,
 				"value":       trace,
 			})
 		})
@@ -327,6 +329,70 @@ func TestContextBaseConformance(t *testing.T) {
 	})
 
 	assertMatchesGin(t, results)
+}
+
+func TestContextSetContextConformance(t *testing.T) {
+	type ctxKey struct{}
+
+	t.Run("SetContextAndRetrieve", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.Use(func(ctx httpx.Context) error {
+				ctx.SetContext(context.WithValue(ctx.Context(), ctxKey{}, "injected-value"))
+				return ctx.Next()
+			})
+			r.GET("/ctx/setctx", func(ctx httpx.Context) error {
+				val, _ := ctx.Context().Value(ctxKey{}).(string)
+				return ctx.JSON(200, map[string]any{
+					"value": val,
+				})
+			})
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/ctx/setctx", nil)
+		})
+		assertMatchesGin(t, results)
+	})
+
+	t.Run("StateStoreAndContextAreSeparate", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.GET("/ctx/separate", func(ctx httpx.Context) error {
+				// Set via StateStore
+				ctx.Set("store-key", "store-value")
+				// Set via context.Context
+				ctx.SetContext(context.WithValue(ctx.Context(), ctxKey{}, "ctx-value"))
+
+				// StateStore value should be available via Get, not via Context().Value()
+				storeVal, storeOk := ctx.Get("store-key")
+				storeStr, _ := storeVal.(string)
+
+				// Context value should be available via Context().Value()
+				ctxVal, _ := ctx.Context().Value(ctxKey{}).(string)
+
+				return ctx.JSON(200, map[string]any{
+					"storeOk":  storeOk,
+					"storeVal": storeStr,
+					"ctxVal":   ctxVal,
+				})
+			})
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/ctx/separate", nil)
+		})
+		assertMatchesGin(t, results)
+	})
+
+	t.Run("ContextPreservesCancellation", func(t *testing.T) {
+		results := runAcrossFrameworks(t, func(r httpx.Router) {
+			r.GET("/ctx/cancel", func(ctx httpx.Context) error {
+				stdCtx := ctx.Context()
+				// The context should not be cancelled during active request
+				return ctx.JSON(200, map[string]any{
+					"errIsNil": stdCtx.Err() == nil,
+				})
+			})
+		}, func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "http://example.com/ctx/cancel", nil)
+		})
+		assertMatchesGin(t, results)
+	})
 }
 
 func TestOptionalContextCapabilitiesConformance(t *testing.T) {

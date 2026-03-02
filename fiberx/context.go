@@ -7,7 +7,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"time"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
@@ -16,14 +15,12 @@ import (
 var _ httpx.Context = (*fiberContext)(nil)
 
 type fiberContext struct {
-	ctx     fiber.Ctx
-	baseCtx context.Context
+	ctx fiber.Ctx
 }
 
 func newFiberContext(ctx fiber.Ctx) *fiberContext {
 	return &fiberContext{
-		ctx:     ctx,
-		baseCtx: ctx.Context(),
+		ctx: ctx,
 	}
 }
 
@@ -239,27 +236,14 @@ func (c *fiberContext) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context (context.Context + Next)
+// Context (context.Context accessor + Next)
 
-func (c *fiberContext) Deadline() (deadline time.Time, ok bool) {
-	return c.baseCtx.Deadline()
+func (c *fiberContext) Context() context.Context {
+	return c.ctx.Context()
 }
 
-func (c *fiberContext) Done() <-chan struct{} {
-	return c.baseCtx.Done()
-}
-
-func (c *fiberContext) Err() error {
-	return c.baseCtx.Err()
-}
-
-func (c *fiberContext) Value(key any) any {
-	if keyString, ok := key.(string); ok {
-		if val, exists := c.Get(keyString); exists {
-			return val
-		}
-	}
-	return c.baseCtx.Value(key)
+func (c *fiberContext) SetContext(ctx context.Context) {
+	c.ctx.SetContext(ctx)
 }
 
 func (c *fiberContext) Next() error {

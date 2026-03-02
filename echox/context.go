@@ -2,12 +2,12 @@ package echox
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"strconv"
-	"time"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
@@ -254,27 +254,14 @@ func (c *echoContext) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context (context.Context + Next)
+// Context (context.Context accessor + Next)
 
-func (c *echoContext) Deadline() (deadline time.Time, ok bool) {
-	return c.ctx.Request().Context().Deadline()
+func (c *echoContext) Context() context.Context {
+	return c.ctx.Request().Context()
 }
 
-func (c *echoContext) Done() <-chan struct{} {
-	return c.ctx.Request().Context().Done()
-}
-
-func (c *echoContext) Err() error {
-	return c.ctx.Request().Context().Err()
-}
-
-func (c *echoContext) Value(key any) any {
-	if str, ok := key.(string); ok {
-		if val, exists := c.Get(str); exists {
-			return val
-		}
-	}
-	return c.ctx.Request().Context().Value(key)
+func (c *echoContext) SetContext(ctx context.Context) {
+	c.ctx.SetRequest(c.ctx.Request().WithContext(ctx))
 }
 
 func (c *echoContext) Next() error {

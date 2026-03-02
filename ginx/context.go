@@ -1,13 +1,13 @@
 package ginx
 
 import (
+	"context"
 	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -237,22 +237,14 @@ func (c *ginContext) Get(key string) (any, bool) {
 	return c.ctx.Get(key)
 }
 
-// Context (context.Context + Next)
+// Context (context.Context accessor + Next)
 
-func (c *ginContext) Deadline() (deadline time.Time, ok bool) {
-	return c.ctx.Deadline()
+func (c *ginContext) Context() context.Context {
+	return c.ctx.Request.Context()
 }
 
-func (c *ginContext) Done() <-chan struct{} {
-	return c.ctx.Done()
-}
-
-func (c *ginContext) Err() error {
-	return c.ctx.Err()
-}
-
-func (c *ginContext) Value(key any) any {
-	return c.ctx.Value(key)
+func (c *ginContext) SetContext(ctx context.Context) {
+	c.ctx.Request = c.ctx.Request.WithContext(ctx)
 }
 
 func (c *ginContext) Next() error {

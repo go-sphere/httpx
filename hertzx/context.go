@@ -8,7 +8,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol"
@@ -248,27 +247,14 @@ func (c *hertzContext) Get(key string) (any, bool) {
 	return c.ctx.Get(key)
 }
 
-// Context (context.Context + Next)
+// Context (context.Context accessor + Next)
 
-func (c *hertzContext) Deadline() (deadline time.Time, ok bool) {
-	return c.baseCtx.Deadline()
+func (c *hertzContext) Context() context.Context {
+	return c.baseCtx
 }
 
-func (c *hertzContext) Done() <-chan struct{} {
-	return c.baseCtx.Done()
-}
-
-func (c *hertzContext) Err() error {
-	return c.baseCtx.Err()
-}
-
-func (c *hertzContext) Value(key any) any {
-	if str, ok := key.(string); ok {
-		if val, exist := c.Get(str); exist {
-			return val
-		}
-	}
-	return c.baseCtx.Value(key)
+func (c *hertzContext) SetContext(ctx context.Context) {
+	c.baseCtx = ctx
 }
 
 func (c *hertzContext) Next() error {
