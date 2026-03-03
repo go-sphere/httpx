@@ -23,8 +23,8 @@ github.com/go-playground/assert/v2 v2.2.0 h1:JvknZsQTYeFEAhQwI4qEt9cyV5ONwRHC+lY
 github.com/go-playground/assert/v2 v2.2.0/go.mod h1:VDjEfimB/XKnb+ZQfWdccd7VUvScMdVu0Titje2rxJ4=
 github.com/go-playground/form/v4 v4.3.0 h1:OVttojbQv2WNCs4P+VnjPtrt/+30Ipw4890W3OaFlvk=
 github.com/go-playground/form/v4 v4.3.0/go.mod h1:Cpe1iYJKoXb1vILRXEwxpWMGWyQuqplQ/4cvPecy+Jo=
-github.com/go-sphere/httpx v0.0.2-beta.30.0.20260302014950-228491f299da h1:ivvHmgMAGgAUHTkoKZe9WwwvzUopk9ZDUyUNVYwoJ8Y=
-github.com/go-sphere/httpx v0.0.2-beta.30.0.20260302014950-228491f299da/go.mod h1:Vtyau99EFGlImJN/frGdbI8pfR39MojnWMyHXdCCw8U=
+github.com/go-sphere/httpx v0.0.3-beta.1 h1:aKGTjJ7OyPN4a0fYgfBEKz0gtFNzHa4OSKDHD2O84bM=
+github.com/go-sphere/httpx v0.0.3-beta.1/go.mod h1:Vtyau99EFGlImJN/frGdbI8pfR39MojnWMyHXdCCw8U=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=

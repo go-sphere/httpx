@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	github.com/cloudwego/hertz v0.10.4
 	github.com/go-playground/form/v4 v4.3.0
-	github.com/go-sphere/httpx v0.0.2-beta.30.0.20260302014950-228491f299da
+	github.com/go-sphere/httpx v0.0.3-beta.1
 )
 
 require (

@@ -13,7 +13,7 @@ replace (
 require (
 	github.com/cloudwego/hertz v0.10.4
 	github.com/gin-gonic/gin v1.12.0
-	github.com/go-sphere/httpx v0.0.2-beta.30.0.20260302014950-228491f299da
+	github.com/go-sphere/httpx v0.0.3-beta.1
 	github.com/go-sphere/httpx/echox v0.0.0-00010101000000-000000000000
 	github.com/go-sphere/httpx/fiberx v0.0.0-00010101000000-000000000000
 	github.com/go-sphere/httpx/ginx v0.0.0-00010101000000-000000000000
