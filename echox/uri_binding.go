@@ -7,12 +7,23 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-var uriDecoder = newURIDecoder()
+var (
+	uriDecoder  = newDecoder("uri")
+	formDecoder = newDecoder("form")
+)
 
-func newURIDecoder() *form.Decoder {
+func newDecoder(tag string) *form.Decoder {
 	decoder := form.NewDecoder()
-	decoder.SetTagName("uri")
+	decoder.SetTagName(tag)
 	return decoder
+}
+
+func bindForm(dst any, ctx echo.Context) error {
+	values, err := ctx.FormParams()
+	if err != nil {
+		return err
+	}
+	return formDecoder.Decode(dst, values)
 }
 
 func bindURIWithForm(dst any, ctx echo.Context) error {

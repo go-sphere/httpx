@@ -3,6 +3,7 @@ package echox
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -163,7 +164,7 @@ func (c *echoContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *echoContext) BindJSON(dst any) error {
-	return c.binder.BindBody(c.ctx, dst)
+	return json.NewDecoder(c.ctx.Request().Body).Decode(dst)
 }
 
 func (c *echoContext) BindQuery(dst any) error {
@@ -171,7 +172,7 @@ func (c *echoContext) BindQuery(dst any) error {
 }
 
 func (c *echoContext) BindForm(dst any) error {
-	return c.binder.BindBody(c.ctx, dst)
+	return bindForm(dst, c.ctx)
 }
 
 func (c *echoContext) BindURI(dst any) error {
