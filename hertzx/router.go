@@ -123,12 +123,7 @@ func (r *Router) toStaticHandler(files fs.FS) app.HandlerFunc {
 			return
 		}
 
-		clean := path.Clean("/" + name)
-		if strings.Contains(clean, "..") {
-			rc.Status(http.StatusNotFound)
-			return
-		}
-		rel := strings.TrimPrefix(clean, "/")
+		rel := strings.TrimPrefix(path.Clean("/"+name), "/")
 
 		file, err := files.Open(rel)
 		if err != nil {
