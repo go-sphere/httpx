@@ -297,13 +297,15 @@ func (c *hertzContext) NativeContext() any {
 
 func mapSameSite(mode http.SameSite) protocol.CookieSameSite {
 	switch mode {
+	case http.SameSiteLaxMode:
+		return protocol.CookieSameSiteLaxMode
 	case http.SameSiteStrictMode:
 		return protocol.CookieSameSiteStrictMode
 	case http.SameSiteNoneMode:
 		return protocol.CookieSameSiteNoneMode
-	case http.SameSiteDefaultMode:
-		return protocol.CookieSameSiteDefaultMode
 	default:
-		return protocol.CookieSameSiteLaxMode
+		// http.SameSiteDefaultMode and the zero value both fall here so that
+		// the SameSite attribute is omitted, matching net/http cookie.String().
+		return protocol.CookieSameSiteDisabled
 	}
 }

@@ -73,24 +73,62 @@ func compareSetCookie(t *testing.T, framework string, want, got []string) {
 	if len(got) < len(want) {
 		t.Fatalf("%s set-cookie mismatch: want at least %d, got %d", framework, len(want), len(got))
 	}
-	for _, expected := range want {
-		pair := cookiePair(expected)
-		found := false
-		for _, actual := range got {
-			if cookiePair(actual) == pair {
-				found = true
+	gotCookies := parseSetCookies(t, framework, got)
+	for _, raw := range want {
+		w, err := http.ParseSetCookie(raw)
+		if err != nil {
+			t.Fatalf("invalid gin set-cookie %q: %v", raw, err)
+		}
+		var g *http.Cookie
+		for _, c := range gotCookies {
+			if c.Name == w.Name {
+				g = c
 				break
 			}
 		}
-		if !found {
-			t.Fatalf("%s missing cookie %q in %v", framework, pair, got)
+		if g == nil {
+			t.Fatalf("%s missing cookie %q in %v", framework, w.Name, got)
 		}
+		assertCookieEqual(t, framework, w, g)
 	}
 }
 
-func cookiePair(v string) string {
-	parts := strings.Split(v, ";")
-	return strings.TrimSpace(parts[0])
+func parseSetCookies(t *testing.T, framework string, raw []string) []*http.Cookie {
+	t.Helper()
+	out := make([]*http.Cookie, 0, len(raw))
+	for _, v := range raw {
+		c, err := http.ParseSetCookie(v)
+		if err != nil {
+			t.Fatalf("%s invalid set-cookie %q: %v", framework, v, err)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func assertCookieEqual(t *testing.T, framework string, want, got *http.Cookie) {
+	t.Helper()
+	if want.Value != got.Value {
+		t.Fatalf("%s cookie %q value mismatch: want %q, got %q", framework, want.Name, want.Value, got.Value)
+	}
+	if want.Path != got.Path {
+		t.Fatalf("%s cookie %q path mismatch: want %q, got %q", framework, want.Name, want.Path, got.Path)
+	}
+	if want.Domain != got.Domain {
+		t.Fatalf("%s cookie %q domain mismatch: want %q, got %q", framework, want.Name, want.Domain, got.Domain)
+	}
+	if want.MaxAge != got.MaxAge {
+		t.Fatalf("%s cookie %q max-age mismatch: want %d, got %d", framework, want.Name, want.MaxAge, got.MaxAge)
+	}
+	if want.Secure != got.Secure {
+		t.Fatalf("%s cookie %q secure mismatch: want %v, got %v", framework, want.Name, want.Secure, got.Secure)
+	}
+	if want.HttpOnly != got.HttpOnly {
+		t.Fatalf("%s cookie %q httponly mismatch: want %v, got %v", framework, want.Name, want.HttpOnly, got.HttpOnly)
+	}
+	if want.SameSite != got.SameSite {
+		t.Fatalf("%s cookie %q samesite mismatch: want %v, got %v", framework, want.Name, want.SameSite, got.SameSite)
+	}
 }
 
 func isJSON(contentType string) bool {
