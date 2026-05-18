@@ -201,9 +201,10 @@ func TestResponderConformance(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		register func(httpx.Router)
-		request  func() *http.Request
+		name        string
+		register    func(httpx.Router)
+		request     func() *http.Request
+		extraAssert func(*testing.T, map[string]responseSnapshot)
 	}{
 		{
 			name: "Status",
@@ -261,6 +262,24 @@ func TestResponderConformance(t *testing.T) {
 			request: func() *http.Request { return httptest.NewRequest(http.MethodGet, "http://example.com/reader", nil) },
 		},
 		{
+			name: "DataFromReaderUnknownSize",
+			register: func(r httpx.Router) {
+				r.GET("/reader-unknown", func(ctx httpx.Context) error {
+					return ctx.DataFromReader(200, "text/plain", strings.NewReader("stream"), -1)
+				})
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodGet, "http://example.com/reader-unknown", nil)
+			},
+			extraAssert: func(t *testing.T, results map[string]responseSnapshot) {
+				for name, snap := range results {
+					if snap.Headers.Get("Content-Length") == "-1" {
+						t.Fatalf("%s emitted illegal Content-Length: -1", name)
+					}
+				}
+			},
+		},
+		{
 			name: "File",
 			register: func(r httpx.Router) {
 				r.GET("/file", func(ctx httpx.Context) error {
@@ -304,6 +323,9 @@ func TestResponderConformance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			results := runAcrossFrameworks(t, tc.register, tc.request)
 			assertMatchesGin(t, results)
+			if tc.extraAssert != nil {
+				tc.extraAssert(t, results)
+			}
 		})
 	}
 }

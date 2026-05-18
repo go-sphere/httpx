@@ -203,6 +203,14 @@ func (c *ginContext) DataFromReader(code int, contentType string, r io.Reader, s
 			_ = rc.Close()
 		}()
 	}
+	if size < 0 {
+		if contentType != "" {
+			c.ctx.Header("Content-Type", contentType)
+		}
+		c.ctx.Status(code)
+		_, err := io.Copy(c.ctx.Writer, r)
+		return err
+	}
 	c.ctx.DataFromReader(code, int64(size), contentType, r, nil)
 	return nil
 }
