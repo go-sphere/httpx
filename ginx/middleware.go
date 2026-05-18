@@ -45,6 +45,6 @@ func AdaptGinMiddleware(middleware gin.HandlerFunc) httpx.Middleware {
 			return errors.New("AdaptGinMiddleware: gin context type error")
 		}
 		middleware(fc.ctx)
-		return nil
+		return ctx.Next()
 	}
 }

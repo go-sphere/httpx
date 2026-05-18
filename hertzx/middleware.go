@@ -46,6 +46,6 @@ func AdaptHertzMiddleware(middleware app.HandlerFunc) httpx.Middleware {
 			return errors.New("AdaptHertzMiddleware: invalid context type")
 		}
 		middleware(fc.baseCtx, fc.ctx)
-		return nil
+		return ctx.Next()
 	}
 }
