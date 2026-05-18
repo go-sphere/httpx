@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/app/middlewares/server/recovery"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-sphere/httpx"
 )
@@ -14,8 +15,9 @@ var _ httpx.Engine = (*Engine)(nil)
 type ErrorHandler func(ctx context.Context, rc *app.RequestContext, err error)
 
 type Config struct {
-	engine     *server.Hertz
-	errHandler ErrorHandler
+	engine            *server.Hertz
+	errHandler        ErrorHandler
+	defaultMiddleware bool
 }
 
 type Option func(*Config)
@@ -26,7 +28,7 @@ func NewConfig(opts ...Option) *Config {
 		opt(&conf)
 	}
 	if conf.engine == nil {
-		conf.engine = server.Default()
+		conf.engine = server.New()
 	}
 	if conf.errHandler == nil {
 		conf.errHandler = func(ctx context.Context, rc *app.RequestContext, err error) {
@@ -50,6 +52,14 @@ func WithErrorHandler(errHandler ErrorHandler) Option {
 	}
 }
 
+// WithDefaultMiddleware enables Hertz's default Recovery middleware.
+// Without this option the engine starts with no middleware, matching the other adapters.
+func WithDefaultMiddleware() Option {
+	return func(conf *Config) {
+		conf.defaultMiddleware = true
+	}
+}
+
 type Engine struct {
 	engine     *server.Hertz
 	errHandler ErrorHandler
@@ -58,6 +68,9 @@ type Engine struct {
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
+	if conf.defaultMiddleware {
+		conf.engine.Use(recovery.Recovery())
+	}
 	engine := &Engine{
 		engine:     conf.engine,
 		errHandler: conf.errHandler,

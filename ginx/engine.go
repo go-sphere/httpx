@@ -14,9 +14,10 @@ var _ httpx.Engine = (*Engine)(nil)
 type ErrorHandler func(ctx *gin.Context, err error)
 
 type Config struct {
-	engine     *gin.Engine
-	server     *http.Server
-	errHandler ErrorHandler
+	engine            *gin.Engine
+	server            *http.Server
+	errHandler        ErrorHandler
+	defaultMiddleware bool
 }
 
 type Option func(*Config)
@@ -27,7 +28,7 @@ func NewConfig(opts ...Option) *Config {
 		opt(&conf)
 	}
 	if conf.engine == nil {
-		conf.engine = gin.Default()
+		conf.engine = gin.New()
 	}
 	if conf.server == nil {
 		conf.server = &http.Server{
@@ -75,6 +76,14 @@ func WithErrorHandler(errHandler ErrorHandler) Option {
 	}
 }
 
+// WithDefaultMiddleware enables Gin's default Logger and Recovery middleware.
+// Without this option the engine starts with no middleware, matching the other adapters.
+func WithDefaultMiddleware() Option {
+	return func(conf *Config) {
+		conf.defaultMiddleware = true
+	}
+}
+
 type Engine struct {
 	engine     *gin.Engine
 	server     *http.Server
@@ -85,6 +94,9 @@ type Engine struct {
 // New constructs a gin-backed Engine using core options.
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
+	if conf.defaultMiddleware {
+		conf.engine.Use(gin.Logger(), gin.Recovery())
+	}
 	conf.server.Handler = conf.engine
 	return &Engine{
 		engine:     conf.engine,
