@@ -2,7 +2,6 @@ package hertzx
 
 import (
 	"context"
-	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -130,12 +129,10 @@ func (r *Router) toStaticHandler(files fs.FS) app.HandlerFunc {
 			rc.Status(http.StatusNotFound)
 			return
 		}
-		defer func() {
-			_ = file.Close()
-		}()
 
 		info, err := file.Stat()
 		if err != nil || info.IsDir() {
+			_ = file.Close()
 			rc.Status(http.StatusNotFound)
 			return
 		}
@@ -147,16 +144,10 @@ func (r *Router) toStaticHandler(files fs.FS) app.HandlerFunc {
 
 		rc.SetContentType(contentType)
 		rc.Status(http.StatusOK)
+		rc.Response.SetBodyStream(file, int(info.Size()))
 		if string(rc.Method()) == http.MethodHead {
-			return
+			rc.Response.ResetBody()
 		}
-
-		body, err := io.ReadAll(file)
-		if err != nil {
-			rc.Status(http.StatusInternalServerError)
-			return
-		}
-		rc.Response.SetBody(body)
 	}
 }
 
