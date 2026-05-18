@@ -511,6 +511,47 @@ func TestWithJSONConformance(t *testing.T) {
 		})
 		assertMatchesGin(t, results)
 	})
+
+	t.Run("PanicRoutesThroughCustomErrorHandler", func(t *testing.T) {
+		for _, name := range conformanceFrameworks {
+			t.Run(name, func(t *testing.T) {
+				h := newCustomErrorHandlerHarness(t, name)
+				h.Router.GET("/withjson/panic/custom", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
+					panic("boom")
+				}))
+
+				got := h.Do(t, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/panic/custom", nil))
+
+				if got.Status != http.StatusTeapot {
+					t.Fatalf("%s status mismatch: want %d, got %d; body=%q", name, http.StatusTeapot, got.Status, got.Body)
+				}
+				var payload map[string]string
+				if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+					t.Fatalf("%s parse body failed: %v; body=%q", name, err, got.Body)
+				}
+				if payload["error"] != "boom" {
+					t.Fatalf("%s body mismatch: want error %q, got %q", name, "boom", payload["error"])
+				}
+			})
+		}
+	})
+
+	t.Run("HandlerErrorRoutesThroughCustomErrorHandler", func(t *testing.T) {
+		for _, name := range conformanceFrameworks {
+			t.Run(name, func(t *testing.T) {
+				h := newCustomErrorHandlerHarness(t, name)
+				h.Router.GET("/withjson/err/custom", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
+					return nil, errors.New("boom")
+				}))
+
+				got := h.Do(t, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/err/custom", nil))
+
+				if got.Status != http.StatusTeapot {
+					t.Fatalf("%s status mismatch: want %d, got %d; body=%q", name, http.StatusTeapot, got.Status, got.Body)
+				}
+			})
+		}
+	})
 }
 
 func mustCookie(ctx httpx.Context, key string) string {

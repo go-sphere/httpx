@@ -2,7 +2,9 @@ package httpx
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
+	"net/http"
 )
 
 type H map[string]any
@@ -73,19 +75,18 @@ type Engine interface {
 	IsRunning() bool // Server status check
 }
 
-// WithJson wraps a handler with JSON response.
+// WithJson wraps a handler with a JSON success envelope.
+// A panic inside handler is recovered into a 500 Error and returned through
+// the normal Handler error path so the engine's configured error handler runs.
 func WithJson[T any](handler func(ctx Context) (T, error)) Handler {
-	return func(ctx Context) error {
+	return func(ctx Context) (err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				if e, ok := r.(error); ok {
-					_ = ctx.JSON(500, H{"error": e.Error()})
-				} else {
-					_ = ctx.JSON(500, H{"error": "internal server error"})
-				}
+				err = recoverToError(r)
 			}
 		}()
-		data, err := handler(ctx)
+		var data T
+		data, err = handler(ctx)
 		if err != nil {
 			return err
 		}
@@ -93,5 +94,18 @@ func WithJson[T any](handler func(ctx Context) (T, error)) Handler {
 			"success": true,
 			"data":    data,
 		})
+	}
+}
+
+func recoverToError(r any) Error {
+	switch v := r.(type) {
+	case Error:
+		return v
+	case error:
+		return NewError(http.StatusInternalServerError, http.StatusInternalServerError, "", v)
+	case string:
+		return NewWithStatus(http.StatusInternalServerError, v)
+	default:
+		return NewWithStatus(http.StatusInternalServerError, fmt.Sprintf("%v", v))
 	}
 }
