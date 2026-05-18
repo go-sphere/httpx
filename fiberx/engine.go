@@ -63,26 +63,22 @@ func WithListener(ln net.Listener, config ...fiber.ListenConfig) Option {
 }
 
 type Engine struct {
-	engine      *fiber.App
-	middlewares []httpx.Middleware
-	listen      func(*fiber.App) error
-	running     atomic.Bool
+	engine  *fiber.App
+	listen  func(*fiber.App) error
+	running atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	engine := &Engine{
-		engine:      conf.engine,
-		middlewares: []httpx.Middleware{},
-		listen:      conf.listen,
+		engine: conf.engine,
+		listen: conf.listen,
 	}
 	engine.running.Store(false)
 	return engine
 }
 
 func (e *Engine) Use(middlewares ...httpx.Middleware) {
-	e.middlewares = append(e.middlewares, middlewares...)
-	// Register middlewares globally on the fiber app
 	for _, middleware := range middlewares {
 		e.engine.Use(adaptMiddleware(middleware))
 	}
@@ -92,7 +88,7 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
 		basePath:    joinPaths("/", prefix),
 		group:       e.engine.Group(prefix),
-		middlewares: cloneMiddlewares([]httpx.Middleware{}, m...), // Don't include global middlewares here since they're already registered
+		middlewares: cloneMiddlewares(nil, m...),
 	}
 }
 
