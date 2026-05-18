@@ -217,6 +217,18 @@ func TestResponderConformance(t *testing.T) {
 			request: func() *http.Request { return httptest.NewRequest(http.MethodGet, "http://example.com/status", nil) },
 		},
 		{
+			name: "StatusThenJSON",
+			register: func(r httpx.Router) {
+				r.GET("/status-json", func(ctx httpx.Context) error {
+					ctx.Status(202)
+					return ctx.JSON(201, map[string]any{"ok": true})
+				})
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodGet, "http://example.com/status-json", nil)
+			},
+		},
+		{
 			name: "JSON",
 			register: func(r httpx.Router) {
 				r.GET("/json", func(ctx httpx.Context) error {

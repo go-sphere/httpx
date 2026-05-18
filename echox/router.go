@@ -94,7 +94,13 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	return func(ec echo.Context) error {
 		ctx := newEchoContext(ec)
-		return h(ctx)
+		err := h(ctx)
+		if err == nil {
+			if resp := ec.Response(); !resp.Committed {
+				resp.WriteHeader(resp.Status)
+			}
+		}
+		return err
 	}
 }
 
