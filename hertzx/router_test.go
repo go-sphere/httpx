@@ -43,12 +43,12 @@ func doStatic(t *testing.T, h *server.Hertz, method, target string) staticResp {
 
 func TestStaticHandler(t *testing.T) {
 	files := fstest.MapFS{
-		"hello.txt":          {Data: []byte("hello world")},
-		"nested/deep.txt":    {Data: []byte("deep")},
-		"my..file.txt":       {Data: []byte("dotted")},
-		"a..b.tar.gz":        {Data: []byte("archive")},
-		"unknown.weirdxyz":   {Data: []byte("blob")},
-		"sub/index.html":     {Data: []byte("<h1>hi</h1>")},
+		"hello.txt":        {Data: []byte("hello world")},
+		"nested/deep.txt":  {Data: []byte("deep")},
+		"my..file.txt":     {Data: []byte("dotted")},
+		"a..b.tar.gz":      {Data: []byte("archive")},
+		"unknown.weirdxyz": {Data: []byte("blob")},
+		"sub/index.html":   {Data: []byte("<h1>hi</h1>")},
 	}
 	h := newStaticServer(t, files)
 

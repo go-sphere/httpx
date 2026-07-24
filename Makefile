@@ -1,4 +1,4 @@
-.PHONY: test bench bench-5x lint lint-all tag tag-all tag-delete help
+.PHONY: test verify api-compat bench bench-5x lint lint-all tag tag-all tag-delete help
 
 TAG ?=
 LINT_DIRS := . ginx fiberx echox hertzx conformance
@@ -6,6 +6,23 @@ TAG_ADAPTERS := ginx fiberx echox hertzx
 
 test:
 	go test ./conformance/... -v
+
+verify:
+	@set -e; \
+	for dir in $(LINT_DIRS); do \
+		echo "==> verify $$dir"; \
+		cd $$dir; \
+		test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*'))" || \
+			{ echo "Go files need formatting"; gofmt -l $$(find . -name '*.go' -not -path './vendor/*'); exit 1; }; \
+		go mod tidy -diff; \
+		go vet ./...; \
+		go test -race ./...; \
+		cd - >/dev/null; \
+	done
+	./scripts/check-api-compat.sh
+
+api-compat:
+	./scripts/check-api-compat.sh
 
 bench:
 	go test -run '^$$' -bench BenchmarkFramework -benchmem ./conformance/...
@@ -59,6 +76,8 @@ help:
 	@printf '%s\n' \
 	  'Targets:' \
 	  '  test                         run conformance tests' \
+	  '  verify                       run non-mutating checks for all modules' \
+	  '  api-compat                   compare public APIs with v0.0.3' \
 	  '  bench                        run framework benchmarks' \
 	  '  bench-5x                     run framework benchmarks 5 times' \
 	  '  lint | lint-all              run checks for all modules' \
