@@ -145,23 +145,23 @@ func (c *fiberContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *fiberContext) BindJSON(dst any) error {
-	return c.ctx.Bind().JSON(dst)
+	return httpx.WrapBindError(c.ctx.Bind().JSON(dst))
 }
 
 func (c *fiberContext) BindQuery(dst any) error {
-	return c.ctx.Bind().Query(dst)
+	return httpx.WrapBindError(c.ctx.Bind().Query(dst))
 }
 
 func (c *fiberContext) BindForm(dst any) error {
-	return c.ctx.Bind().Form(dst)
+	return httpx.WrapBindError(c.ctx.Bind().Form(dst))
 }
 
 func (c *fiberContext) BindURI(dst any) error {
-	return c.ctx.Bind().URI(dst)
+	return httpx.WrapBindError(c.ctx.Bind().URI(dst))
 }
 
 func (c *fiberContext) BindHeader(dst any) error {
-	return c.ctx.Bind().Header(dst)
+	return httpx.WrapBindError(c.ctx.Bind().Header(dst))
 }
 
 // Responder (httpx.Responder)

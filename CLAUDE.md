@@ -49,7 +49,7 @@ Optional capabilities are exposed as separate interfaces probed via type asserti
 
 ### Errors
 
-`httpx.Error` composes `StatusError + CodeError + MessageError`. The concrete type is unexported on purpose — return the `Error` interface from constructors. `ParseError(err)` is the canonical extractor used by adapters' error handlers; prefer it over direct type assertions.
+`httpx.Error` composes `StatusError + CodeError + MessageError`. The concrete type is unexported on purpose — return the `Error` interface from constructors. `ParseError(err)` extracts those fields. Adapter default error handlers use `RenderError` / `ClassifyError` (status + `{success, code, message}`, no raw `err.Error()`). `NewXxxError(msg)` puts `msg` in `GetMessage()`; `XxxError(err)` without extra arguments does not. Bind failures should go through `WrapBindError`.
 
 ### Adapter pattern
 

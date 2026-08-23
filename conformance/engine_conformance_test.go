@@ -207,7 +207,8 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 				if opts.errorMode == harnessErrorTeapot {
 					return ctx.Status(http.StatusTeapot).JSON(fiber.Map{"error": err.Error()})
 				}
-				return ctx.Status(500).JSON(fiber.Map{"error": err.Error()})
+				status, body := httpx.RenderError(err)
+				return ctx.Status(status).JSON(body)
 			},
 		})
 
@@ -247,11 +248,12 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 	case "echox":
 		e := echo.New()
 		e.HTTPErrorHandler = func(err error, c echo.Context) {
-			status := http.StatusInternalServerError
 			if opts.errorMode == harnessErrorTeapot {
-				status = http.StatusTeapot
+				_ = c.JSON(http.StatusTeapot, echo.Map{"error": err.Error()})
+				return
 			}
-			_ = c.JSON(status, echo.Map{"error": err.Error()})
+			status, body := httpx.RenderError(err)
+			_ = c.JSON(status, body)
 		}
 
 		addr := ginLikeAddrForMode(tb, opts.mode)

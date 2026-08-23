@@ -153,23 +153,23 @@ func (c *hertzContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *hertzContext) BindJSON(dst any) error {
-	return c.ctx.BindJSON(dst)
+	return httpx.WrapBindError(c.ctx.BindJSON(dst))
 }
 
 func (c *hertzContext) BindQuery(dst any) error {
-	return c.ctx.BindQuery(dst)
+	return httpx.WrapBindError(c.ctx.BindQuery(dst))
 }
 
 func (c *hertzContext) BindForm(dst any) error {
-	return c.ctx.BindForm(dst)
+	return httpx.WrapBindError(c.ctx.BindForm(dst))
 }
 
 func (c *hertzContext) BindURI(dst any) error {
-	return bindURIWithForm(dst, c.ctx)
+	return httpx.WrapBindError(bindURIWithForm(dst, c.ctx))
 }
 
 func (c *hertzContext) BindHeader(dst any) error {
-	return c.ctx.BindHeader(dst)
+	return httpx.WrapBindError(c.ctx.BindHeader(dst))
 }
 
 // Responder (httpx.Responder)

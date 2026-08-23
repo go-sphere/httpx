@@ -94,7 +94,7 @@ func WithStatus(status int32, err error, messages ...string) Error {
 }
 
 func NewWithStatus(status int32, message string) Error {
-	return WithStatus(status, errors.New(message))
+	return NewError(status, 0, message, errors.New(message))
 }
 
 func BadRequestError(err error, messages ...string) Error {
@@ -102,7 +102,7 @@ func BadRequestError(err error, messages ...string) Error {
 }
 
 func NewBadRequestError(message string) Error {
-	return WithStatus(http.StatusBadRequest, errors.New(message))
+	return NewWithStatus(http.StatusBadRequest, message)
 }
 
 func UnauthorizedError(err error, messages ...string) Error {
@@ -110,7 +110,7 @@ func UnauthorizedError(err error, messages ...string) Error {
 }
 
 func NewUnauthorizedError(message string) Error {
-	return WithStatus(http.StatusUnauthorized, errors.New(message))
+	return NewWithStatus(http.StatusUnauthorized, message)
 }
 
 func ForbiddenError(err error, messages ...string) Error {
@@ -118,7 +118,7 @@ func ForbiddenError(err error, messages ...string) Error {
 }
 
 func NewForbiddenError(message string) Error {
-	return WithStatus(http.StatusForbidden, errors.New(message))
+	return NewWithStatus(http.StatusForbidden, message)
 }
 
 func NotFoundError(err error, messages ...string) Error {
@@ -126,7 +126,7 @@ func NotFoundError(err error, messages ...string) Error {
 }
 
 func NewNotFoundError(message string) Error {
-	return WithStatus(http.StatusNotFound, errors.New(message))
+	return NewWithStatus(http.StatusNotFound, message)
 }
 
 func InternalServerError(err error, messages ...string) Error {
@@ -134,7 +134,62 @@ func InternalServerError(err error, messages ...string) Error {
 }
 
 func NewInternalServerError(message string) Error {
-	return WithStatus(http.StatusInternalServerError, errors.New(message))
+	return NewWithStatus(http.StatusInternalServerError, message)
+}
+
+// WrapBindError marks a binder failure as HTTP 400. Already classified
+// httpx.Error values are returned unchanged. A nil err stays nil.
+func WrapBindError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var he Error
+	if errors.As(err, &he) {
+		return err
+	}
+	return BadRequestError(err)
+}
+
+// ErrorBody is the JSON written by adapter default error handlers.
+// It matches the public fields of sphere/httpz.ErrorResponse (no debug Error).
+type ErrorBody struct {
+	Success bool   `json:"success"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// RenderError maps err to an HTTP status and a non-leaking JSON body.
+// Unclassified errors report code 0 and the generic status text.
+func RenderError(err error) (status int, body ErrorBody) {
+	code, status32, message := ClassifyError(err)
+	return int(status32), ErrorBody{
+		Success: false,
+		Code:    int(code),
+		Message: message,
+	}
+}
+
+// ClassifyError extracts application code, HTTP status, and a user-facing
+// message. Status is clamped to 100–599. code is 0 unless err implements
+// CodeError. message is the generic status text unless err implements
+// MessageError with a non-empty message.
+func ClassifyError(err error) (code int32, status int32, message string) {
+	if err == nil {
+		return 0, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError)
+	}
+	code, status, message = ParseError(err)
+	if status < 100 || status > 599 {
+		status = http.StatusInternalServerError
+	}
+	var ce CodeError
+	if !errors.As(err, &ce) {
+		code = 0
+	}
+	var me MessageError
+	if !errors.As(err, &me) || message == "" {
+		message = http.StatusText(int(status))
+	}
+	return
 }
 
 func httpStatusError(status int32) error {

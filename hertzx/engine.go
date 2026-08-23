@@ -32,9 +32,8 @@ func NewConfig(opts ...Option) *Config {
 	}
 	if conf.errHandler == nil {
 		conf.errHandler = func(ctx context.Context, rc *app.RequestContext, err error) {
-			rc.JSON(500, map[string]string{
-				"error": err.Error(),
-			})
+			status, body := httpx.RenderError(err)
+			rc.JSON(status, body)
 			rc.Abort()
 		}
 	}

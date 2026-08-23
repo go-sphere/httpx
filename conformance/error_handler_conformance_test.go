@@ -55,3 +55,35 @@ func newCustomErrorHandlerHarness(tb testing.TB, name string) frameworkHarness {
 	b := newFrameworkHarnessTB(tb, name, harnessOptions{mode: harnessModeInProcess, errorMode: harnessErrorTeapot})
 	return b.harness
 }
+
+func TestDefaultErrorHandlerUsesStatusAndDoesNotLeak(t *testing.T) {
+	for _, name := range conformanceFrameworks {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, name)
+			h.Router.Use(func(ctx httpx.Context) error {
+				return httpx.NewUnauthorizedError("login required")
+			})
+			h.Router.GET("/mw/unauth", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "ok")
+			})
+
+			got := h.Do(t, httptest.NewRequest(http.MethodGet, "http://example.com/mw/unauth", nil))
+			if got.Status != http.StatusUnauthorized {
+				t.Fatalf("%s status mismatch: want %d, got %d; body=%q", name, http.StatusUnauthorized, got.Status, got.Body)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+				t.Fatalf("%s parse body failed: %v; body=%q", name, err, got.Body)
+			}
+			if payload["success"] != false {
+				t.Fatalf("%s success: %v", name, payload["success"])
+			}
+			if payload["message"] != "login required" {
+				t.Fatalf("%s message: %v", name, payload["message"])
+			}
+			if _, ok := payload["error"]; ok {
+				t.Fatalf("%s leaked error field: %v", name, payload["error"])
+			}
+		})
+	}
+}

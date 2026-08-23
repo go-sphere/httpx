@@ -26,9 +26,11 @@ func NewConfig(opts ...Option) *Config {
 	if conf.engine == nil {
 		conf.engine = echo.New()
 		conf.engine.HTTPErrorHandler = func(err error, c echo.Context) {
-			_ = c.JSON(500, echo.Map{
-				"error": err.Error(),
-			})
+			if c.Response().Committed {
+				return
+			}
+			status, body := httpx.RenderError(err)
+			_ = c.JSON(status, body)
 		}
 	}
 	if conf.server == nil {

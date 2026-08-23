@@ -2,9 +2,9 @@ package httpx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
-	"net/http"
 )
 
 type H map[string]any
@@ -102,10 +102,10 @@ func recoverToError(r any) Error {
 	case Error:
 		return v
 	case error:
-		return NewError(http.StatusInternalServerError, http.StatusInternalServerError, "", v)
+		return InternalServerError(v)
 	case string:
-		return NewWithStatus(http.StatusInternalServerError, v)
+		return InternalServerError(errors.New(v))
 	default:
-		return NewWithStatus(http.StatusInternalServerError, fmt.Sprintf("%v", v))
+		return InternalServerError(fmt.Errorf("%v", r))
 	}
 }

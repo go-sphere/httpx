@@ -27,7 +27,8 @@ func NewConfig(opts ...Option) *Config {
 		conf.engine = fiber.New(
 			fiber.Config{
 				ErrorHandler: func(ctx fiber.Ctx, err error) error {
-					return ctx.Status(500).JSON(fiber.Map{"error": err.Error()})
+					status, body := httpx.RenderError(err)
+					return ctx.Status(status).JSON(body)
 				},
 			},
 		)

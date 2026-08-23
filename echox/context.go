@@ -164,23 +164,23 @@ func (c *echoContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *echoContext) BindJSON(dst any) error {
-	return json.NewDecoder(c.ctx.Request().Body).Decode(dst)
+	return httpx.WrapBindError(json.NewDecoder(c.ctx.Request().Body).Decode(dst))
 }
 
 func (c *echoContext) BindQuery(dst any) error {
-	return c.binder.BindQueryParams(c.ctx, dst)
+	return httpx.WrapBindError(c.binder.BindQueryParams(c.ctx, dst))
 }
 
 func (c *echoContext) BindForm(dst any) error {
-	return bindForm(dst, c.ctx)
+	return httpx.WrapBindError(bindForm(dst, c.ctx))
 }
 
 func (c *echoContext) BindURI(dst any) error {
-	return bindURIWithForm(dst, c.ctx)
+	return httpx.WrapBindError(bindURIWithForm(dst, c.ctx))
 }
 
 func (c *echoContext) BindHeader(dst any) error {
-	return c.binder.BindHeaders(c.ctx, dst)
+	return httpx.WrapBindError(c.binder.BindHeaders(c.ctx, dst))
 }
 
 // Responder (httpx.Responder)

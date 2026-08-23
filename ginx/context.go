@@ -29,6 +29,12 @@ func newGinContext(gc *gin.Context) *ginContext {
 	}
 }
 
+// FromGin wraps a gin.Context as httpx.Context. Use it from a gin ErrorHandler
+// to write through httpx helpers such as sphere/httpz.AbortWithJsonError.
+func FromGin(gc *gin.Context) httpx.Context {
+	return newGinContext(gc)
+}
+
 // Request (httpx.Request)
 
 func (c *ginContext) Method() string {
@@ -148,27 +154,27 @@ func (c *ginContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *ginContext) BindJSON(dst any) error {
-	return c.ctx.ShouldBindJSON(dst)
+	return httpx.WrapBindError(c.ctx.ShouldBindJSON(dst))
 }
 
 func (c *ginContext) BindQuery(dst any) error {
-	return queryBinding.Bind(c.ctx.Request, dst)
+	return httpx.WrapBindError(queryBinding.Bind(c.ctx.Request, dst))
 }
 
 func (c *ginContext) BindForm(dst any) error {
 	contentType := c.ctx.GetHeader("Content-Type")
 	if strings.HasPrefix(strings.ToLower(contentType), "multipart/") {
-		return c.ctx.ShouldBindWith(dst, binding.FormMultipart)
+		return httpx.WrapBindError(c.ctx.ShouldBindWith(dst, binding.FormMultipart))
 	}
-	return c.ctx.ShouldBindWith(dst, binding.Form)
+	return httpx.WrapBindError(c.ctx.ShouldBindWith(dst, binding.Form))
 }
 
 func (c *ginContext) BindURI(dst any) error {
-	return c.ctx.ShouldBindUri(dst)
+	return httpx.WrapBindError(c.ctx.ShouldBindUri(dst))
 }
 
 func (c *ginContext) BindHeader(dst any) error {
-	return c.ctx.ShouldBindHeader(dst)
+	return httpx.WrapBindError(c.ctx.ShouldBindHeader(dst))
 }
 
 // Responder (httpx.Responder)

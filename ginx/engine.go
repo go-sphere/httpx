@@ -37,9 +37,8 @@ func NewConfig(opts ...Option) *Config {
 	}
 	if conf.errHandler == nil {
 		conf.errHandler = func(ctx *gin.Context, err error) {
-			ctx.JSON(500, gin.H{
-				"error": err.Error(),
-			})
+			status, body := httpx.RenderError(err)
+			ctx.JSON(status, body)
 			ctx.Abort()
 		}
 	}
