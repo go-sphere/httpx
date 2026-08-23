@@ -1,4 +1,4 @@
-name: Verify
+name: Build
 
 permissions:
   contents: read
@@ -10,7 +10,7 @@ on:
     branches: ["master"]
 
 jobs:
-  verify:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
             echox/go.sum
             hertzx/go.sum
             conformance/go.sum
-      - name: Verify
+      - name: Check
         env:
           GOWORK: ${{ github.workspace }}/go.work
-        run: make verify
+        run: make check
