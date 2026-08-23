@@ -96,7 +96,7 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 func (e *Engine) Start() error {
 	e.running.Store(true)
 	defer e.running.Store(false)
-	return e.server.ListenAndServe()
+	return httpx.Start(e.server)
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
