@@ -10,7 +10,7 @@ This is a Go workspace (`go.work`) containing **six modules**, each with its own
 - `ginx/`, `fiberx/`, `echox/`, `hertzx/` — adapter modules that implement the root interfaces over Gin, Fiber v3, Echo v4, and Hertz respectively. Each is independently versioned.
 - `conformance/` — the single test suite. It uses `replace` directives to point at the local adapter modules and runs the same scenarios across all four adapters.
 
-`go.work` ties them together for local development; tags are published per-module as `ginx/vX.Y.Z`, `fiberx/vX.Y.Z`, etc. (see `make tag-all`).
+`go.work` overlays the six modules for local and GitHub Actions builds. Adapter `go.mod` files must **not** contain `replace` (that would ship in `ginx/vX.Y.Z` and break consumers). CI sets `GOWORK` to the repo-root `go.work`. Tags are published per-module as `ginx/vX.Y.Z`, `fiberx/vX.Y.Z`, etc. (see `make tag-all`).
 
 ## Common Commands
 

@@ -18,6 +18,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: |
+            go.work
+            go.work.sum
             go.sum
             ginx/go.sum
             fiberx/go.sum
@@ -25,4 +27,6 @@ jobs:
             hertzx/go.sum
             conformance/go.sum
       - name: Verify
+        env:
+          GOWORK: ${{ github.workspace }}/go.work
         run: make verify

@@ -4,6 +4,13 @@ TAG ?=
 LINT_DIRS := . ginx fiberx echox hertzx conformance
 TAG_ADAPTERS := ginx fiberx echox hertzx
 
+# Adapter go.mod files have no replace (so they can be tagged). Local and CI
+# builds overlay the sibling modules through go.work. Pin an absolute path so
+# `cd ginx && go test` in verify still uses the workspace.
+ifneq ($(wildcard $(CURDIR)/go.work),)
+export GOWORK := $(CURDIR)/go.work
+endif
+
 test:
 	go test ./conformance/... -v
 
