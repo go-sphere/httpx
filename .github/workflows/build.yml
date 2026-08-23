@@ -18,15 +18,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: |
-            go.work
-            go.work.sum
             go.sum
             ginx/go.sum
             fiberx/go.sum
             echox/go.sum
             hertzx/go.sum
             conformance/go.sum
+      - name: Create Go workspace
+        run: go work init . ./ginx ./fiberx ./echox ./hertzx ./conformance
       - name: Check
-        env:
-          GOWORK: ${{ github.workspace }}/go.work
         run: make check
