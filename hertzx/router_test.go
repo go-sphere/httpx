@@ -23,9 +23,10 @@ func newStaticServer(t *testing.T, files fs.FS) *server.Hertz {
 }
 
 type staticResp struct {
-	status      int
-	contentType string
-	body        []byte
+	status        int
+	contentType   string
+	contentLength int
+	body          []byte
 }
 
 func doStatic(t *testing.T, h *server.Hertz, method, target string) staticResp {
@@ -35,9 +36,10 @@ func doStatic(t *testing.T, h *server.Hertz, method, target string) staticResp {
 	hctx.Request.SetRequestURI("http://example.com" + target)
 	h.ServeHTTP(context.Background(), hctx)
 	return staticResp{
-		status:      hctx.Response.StatusCode(),
-		contentType: string(hctx.Response.Header.ContentType()),
-		body:        append([]byte(nil), hctx.Response.Body()...),
+		status:        hctx.Response.StatusCode(),
+		contentType:   string(hctx.Response.Header.ContentType()),
+		contentLength: hctx.Response.Header.ContentLength(),
+		body:          append([]byte(nil), hctx.Response.Body()...),
 	}
 }
 
@@ -139,6 +141,9 @@ func TestStaticHandler(t *testing.T) {
 		}
 		if r.contentType == "" {
 			t.Fatalf("HEAD content-type empty")
+		}
+		if r.contentLength != len("hello world") {
+			t.Fatalf("HEAD content-length = %d, want %d", r.contentLength, len("hello world"))
 		}
 	})
 

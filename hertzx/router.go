@@ -144,10 +144,12 @@ func (r *Router) toStaticHandler(files fs.FS) app.HandlerFunc {
 
 		rc.SetContentType(contentType)
 		rc.Status(http.StatusOK)
-		rc.Response.SetBodyStream(file, int(info.Size()))
 		if string(rc.Method()) == http.MethodHead {
-			rc.Response.ResetBody()
+			rc.Response.Header.SetContentLength(int(info.Size()))
+			_ = file.Close()
+			return
 		}
+		rc.Response.SetBodyStream(file, int(info.Size()))
 	}
 }
 

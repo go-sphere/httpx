@@ -34,9 +34,13 @@ func ListenAndAutoShutdown(ctx context.Context, server *http.Server, closeTimeou
 }
 
 // Start begins serving HTTP requests on the configured address.
+// It handles nil server gracefully and returns nil.
 // It ignores http.ErrServerClosed which is expected during graceful shutdown.
 // Returns any other error that occurs during server startup.
 func Start(server *http.Server) error {
+	if server == nil {
+		return nil
+	}
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

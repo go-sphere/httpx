@@ -26,7 +26,7 @@ func AdaptFiberMiddleware(middleware fiber.Handler) httpx.Middleware {
 	return func(ctx httpx.Context) error {
 		fc, ok := ctx.(*fiberContext)
 		if !ok {
-			return errors.New("AdaptGinMiddleware: fiber context type error")
+			return errors.New("AdaptFiberMiddleware: fiber context type error")
 		}
 		return middleware(fc.ctx)
 	}

@@ -382,7 +382,7 @@ func doHertzRequest(t *testing.T, h *server.Hertz, req *http.Request) responseSn
 func snapshotFromHTTPResponse(t *testing.T, resp *http.Response) responseSnapshot {
 	t.Helper()
 	defer func() {
-		_ = resp.Body.Close
+		_ = resp.Body.Close()
 	}()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
