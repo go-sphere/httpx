@@ -17,10 +17,8 @@ func TestAdversarialNilServerConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, goroutines*iterations*3)
 
-	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
-		go func(id int) {
-			defer wg.Done()
+	for range goroutines {
+		wg.Go(func() {
 			for i := 0; i < iterations; i++ {
 				// 1. Concurrent Start(nil)
 				if err := Start(nil); err != nil {
@@ -46,12 +44,12 @@ func TestAdversarialNilServerConcurrent(t *testing.T) {
 				}
 
 				// 4. Concurrent Close with nil context
-				if err := Close(nil, nil); err != nil {
+				if err := Close(nil, nil); err != nil { //nolint:staticcheck // Intentionally verifies the documented nil-context behavior.
 					errCh <- err
 					return
 				}
 			}
-		}(g)
+		})
 	}
 
 	wg.Wait()

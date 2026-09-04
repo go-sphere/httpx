@@ -91,7 +91,13 @@ func (c *fiberContext) Headers() map[string][]string {
 	out := make(map[string][]string, len(src))
 	for k, v := range src {
 		ck := textproto.CanonicalMIMEHeaderKey(k)
+		if ck == "Host" {
+			continue
+		}
 		out[ck] = append([]string(nil), v...)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

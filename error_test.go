@@ -68,7 +68,7 @@ func TestClassifyError(t *testing.T) {
 		t.Fatalf("forbidden: code=%d status=%d message=%q", code, status, message)
 	}
 
-	code, status, message = ClassifyError(UnauthorizedError(errors.New("token is expired")))
+	_, status, message = ClassifyError(UnauthorizedError(errors.New("token is expired")))
 	if status != http.StatusUnauthorized || message != http.StatusText(http.StatusUnauthorized) {
 		t.Fatalf("empty message: status=%d message=%q", status, message)
 	}

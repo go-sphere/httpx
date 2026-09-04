@@ -17,10 +17,14 @@ This is a Go workspace (`go.work`) containing **six modules**, each with its own
 All commands run from the repo root.
 
 ```bash
-make test          # go test ./conformance/... -v
+make deps-update   # update direct dependencies in all six modules
+make fmt           # format all modules
+make test          # test all modules through go.work
+make test-race     # test all modules with the race detector
 make bench         # framework benchmarks
 make bench-5x      # benchmarks with -count=5
-make lint          # for each module: go fix, fmt, vet, get, test, mod tidy, golangci-lint, nilaway
+make lint          # non-mutating format, vet, golangci-lint, and nilaway checks
+make check         # dependency checks, lint, and race-enabled tests
 make tag-all TAG=v0.0.4   # tag every adapter at once
 ```
 

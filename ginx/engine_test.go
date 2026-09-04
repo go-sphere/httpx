@@ -12,8 +12,15 @@ func TestStartReturnsNilAfterGracefulStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	listenerAddr := ln.Addr()
+	if listenerAddr == nil {
+		_ = ln.Close()
+		t.Fatal("listener returned a nil address")
+	}
+	addr := listenerAddr.String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	engine := New(WithServerAddr(addr))
 	errCh := make(chan error, 1)
@@ -27,7 +34,7 @@ func TestStartReturnsNilAfterGracefulStop(t *testing.T) {
 		t.Fatal("engine did not start")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	if err := engine.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
