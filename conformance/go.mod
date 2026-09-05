@@ -1,6 +1,6 @@
 module github.com/go-sphere/httpx/conformance
 
-go 1.26.0
+go 1.26.8
 
 replace (
 	github.com/go-sphere/httpx => ../
