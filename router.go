@@ -93,8 +93,22 @@ type Router interface {
 	OPTIONS(path string, h Handler)
 }
 
+// ErrEngineClosed is returned by Engine.Start after Stop has been called.
+// Engines are single-use: once stopped (even before ever starting), they
+// cannot serve again — construct a new Engine instead. This matches
+// net/http.Server semantics and prevents the silent "fake start" some
+// frameworks exhibit after shutdown.
+var ErrEngineClosed = errors.New("httpx: engine closed (engines are single-use; create a new one to serve again)")
+
 // Engine is the entrypoint: it can serve HTTP, apply global middleware,
 // and create groups, but cannot register routes directly.
+//
+// Lifecycle contract: Start blocks while serving and returns nil after a
+// graceful Stop. Engines are single-use — calling Start after Stop (in any
+// order, including Stop before the first Start) returns ErrEngineClosed.
+// IsRunning is best-effort: on net/http based adapters it becomes true only
+// after the listener is bound; on fiber/hertz it may become true slightly
+// before binding completes.
 type Engine interface {
 	MiddlewareScope
 	Group(prefix string, m ...Middleware) Router

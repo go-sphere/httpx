@@ -52,6 +52,8 @@ Binder validation is part of the contract: after a successful decode into a stru
 - `NativeContextProvider` → `httpx.AsNativeContext[T](ctx)` (escape hatch to the underlying `*gin.Context`, `fiber.Ctx`, etc.)
 - `StdHandlerMounter` → `httpx.MountStd(r, method, path, h)` mounts a plain `net/http` handler
 - `TestRequester` → `httpx.AsTestRequester(engine)` serves a request in-process for tests
+- `Flusher` → `httpx.AsFlusher(ctx)` flushes buffered response data mid-handler (ginx/echox/hertzx; fiberx cannot and does not implement it)
+- `Streamer` → `httpx.AsStreamer(ctx)` incremental streaming/SSE on all four adapters (on fiberx the callback runs after the handler returns)
 - `RouterFeatureProvider.SupportsRouterFeature(...)` → currently only `RouterFeatureNamedWildcard`. Adapters without named wildcards (echox, fiberx) normalize `/*filepath` internally at registration time and keep `Param("filepath")` working; `FixWildcardPathIfNeed`/`WildcardParamName` are the shared helpers behind this.
 
 ### Errors
@@ -68,4 +70,4 @@ When adding behavior, **change the root interface first, then implement it in al
 
 ### Engine lifecycle
 
-`Engine.Start()` blocks; `Stop(ctx)` triggers graceful shutdown; `IsRunning()` is backed by `atomic.Bool`. The root package also provides `ListenAndAutoShutdown` for context-driven shutdown of a plain `*http.Server`.
+`Engine.Start()` blocks; `Stop(ctx)` triggers graceful shutdown; `IsRunning()` is backed by `atomic.Bool`. Engines are **single-use**: Start after Stop (in either order) returns `httpx.ErrEngineClosed` on every adapter — construct a new Engine to serve again. ginx/echox bind the listener before setting the running flag. The root package also provides `ListenAndAutoShutdown` for context-driven shutdown of a plain `*http.Server`.

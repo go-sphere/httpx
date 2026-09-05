@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -317,4 +318,42 @@ func (c *echoContext) StatusCode() int {
 
 func (c *echoContext) NativeContext() any {
 	return c.ctx
+}
+
+// Flush implements httpx.Flusher: the first flush commits status and headers.
+func (c *echoContext) Flush() error {
+	resp := c.ctx.Response()
+	if !resp.Committed {
+		resp.WriteHeader(resp.Status)
+	}
+	// Go under echo.Response.Flush(), which panics when unsupported; the
+	// controller returns an error instead.
+	return http.NewResponseController(resp.Writer).Flush()
+}
+
+// Stream implements httpx.Streamer: each write inside fn is flushed to the
+// client immediately.
+func (c *echoContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+	resp := c.ctx.Response()
+	if contentType != "" {
+		resp.Header().Set(echo.HeaderContentType, contentType)
+	}
+	resp.WriteHeader(code)
+	return fn(echoFlushWriter{resp: resp, rc: http.NewResponseController(resp.Writer)})
+}
+
+type echoFlushWriter struct {
+	resp *echo.Response
+	rc   *http.ResponseController
+}
+
+func (fw echoFlushWriter) Write(p []byte) (int, error) {
+	n, err := fw.resp.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if err := fw.rc.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return n, err
+	}
+	return n, nil
 }

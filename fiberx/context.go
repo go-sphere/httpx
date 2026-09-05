@@ -1,6 +1,7 @@
 package fiberx
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -322,4 +323,36 @@ func (c *fiberContext) StatusCode() int {
 
 func (c *fiberContext) NativeContext() any {
 	return c.ctx
+}
+
+// Stream implements httpx.Streamer. Fiber's response model is buffered, so
+// fn runs after the handler returns: Stream returns nil immediately and fn's
+// error only terminates the stream. Each write inside fn is flushed to the
+// client immediately.
+//
+// fiberContext intentionally does not implement httpx.Flusher: fiber cannot
+// flush mid-handler; probe with httpx.AsFlusher and fall back, or use Stream.
+func (c *fiberContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+	if contentType != "" {
+		c.ctx.Set(fiber.HeaderContentType, contentType)
+	}
+	c.ctx.Status(code)
+	return c.ctx.SendStreamWriter(func(w *bufio.Writer) {
+		_ = fn(bufioFlushWriter{w: w})
+	})
+}
+
+type bufioFlushWriter struct {
+	w *bufio.Writer
+}
+
+func (fw bufioFlushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if err := fw.w.Flush(); err != nil {
+		return n, err
+	}
+	return n, nil
 }

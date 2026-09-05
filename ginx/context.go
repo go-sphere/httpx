@@ -334,3 +334,30 @@ func (c *ginContext) StatusCode() int {
 func (c *ginContext) NativeContext() any {
 	return c.ctx
 }
+
+// Flush implements httpx.Flusher: the first flush commits status and headers.
+func (c *ginContext) Flush() error {
+	c.ctx.Writer.Flush()
+	return nil
+}
+
+// Stream implements httpx.Streamer: each write inside fn is flushed to the
+// client immediately.
+func (c *ginContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+	if contentType != "" {
+		c.ctx.Header("Content-Type", contentType)
+	}
+	c.ctx.Status(code)
+	c.ctx.Writer.WriteHeaderNow()
+	return fn(ginFlushWriter{w: c.ctx.Writer})
+}
+
+type ginFlushWriter struct {
+	w gin.ResponseWriter
+}
+
+func (fw ginFlushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	fw.w.Flush()
+	return n, err
+}

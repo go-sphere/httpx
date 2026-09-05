@@ -135,6 +135,7 @@ type Engine struct {
 	listen     func(*fiber.App) error
 	errHandler httpx.ErrorHandler
 	running    atomic.Bool
+	closed     atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -164,12 +165,18 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 }
 
 func (e *Engine) Start() error {
+	if e.closed.Load() {
+		// fiber would happily restart after Shutdown; refuse for the uniform
+		// single-use Engine contract.
+		return httpx.ErrEngineClosed
+	}
 	e.running.Store(true)
 	defer e.running.Store(false)
 	return e.listen(e.engine)
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
+	e.closed.Store(true)
 	err := e.engine.ShutdownWithContext(ctx)
 	if err == nil {
 		e.running.Store(false)

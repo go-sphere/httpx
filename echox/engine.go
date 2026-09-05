@@ -3,6 +3,7 @@ package echox
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -143,6 +144,7 @@ type Engine struct {
 	server     *http.Server
 	errHandler httpx.ErrorHandler
 	running    atomic.Bool
+	closed     atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -173,12 +175,28 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 }
 
 func (e *Engine) Start() error {
+	if e.closed.Load() {
+		return httpx.ErrEngineClosed
+	}
+	addr := e.server.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+	// Bind first so IsRunning only reports true once the listener exists.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
 	e.running.Store(true)
 	defer e.running.Store(false)
-	return httpx.Start(e.server)
+	if err := e.server.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
+	e.closed.Store(true)
 	err := httpx.Close(ctx, e.server)
 	if err == nil {
 		e.running.Store(false)

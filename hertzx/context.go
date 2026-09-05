@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol/http1/resp"
 	"github.com/go-sphere/httpx"
 )
 
@@ -348,4 +349,54 @@ func (c *hertzContext) StatusCode() int {
 
 func (c *hertzContext) NativeContext() any {
 	return c.ctx
+}
+
+// Flush implements httpx.Flusher. Hertz buffers the response until the
+// handler returns, so the first flush hijacks the response with a chunked
+// body writer (transferring anything already buffered) and commits status
+// and headers. Without a live connection (in-process test dispatch) it is a
+// no-op and the response stays buffered.
+func (c *hertzContext) Flush() error {
+	if c.ctx.Response.GetHijackWriter() == nil {
+		w := c.ctx.GetWriter()
+		if w == nil {
+			return nil
+		}
+		body := bytes.Clone(c.ctx.Response.Body())
+		c.ctx.Response.ResetBody()
+		c.ctx.Response.HijackWriter(resp.NewChunkedBodyWriter(&c.ctx.Response, w))
+		if len(body) > 0 {
+			if _, err := c.ctx.Response.GetHijackWriter().Write(body); err != nil {
+				return err
+			}
+		}
+	}
+	return c.ctx.Flush()
+}
+
+// Stream implements httpx.Streamer: each write inside fn is flushed to the
+// client immediately.
+func (c *hertzContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+	if contentType != "" {
+		c.ctx.SetContentType(contentType)
+	}
+	c.ctx.Status(code)
+	if err := c.Flush(); err != nil {
+		return err
+	}
+	return fn(hertzFlushWriter{c: c})
+}
+
+type hertzFlushWriter struct {
+	c *hertzContext
+}
+
+func (fw hertzFlushWriter) Write(p []byte) (int, error) {
+	// AppendBody routes through the hijack writer when one is set; in
+	// buffered (test) mode it accumulates in the response body.
+	fw.c.ctx.Response.AppendBody(p)
+	if err := fw.c.Flush(); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

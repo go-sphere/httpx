@@ -123,6 +123,7 @@ type Engine struct {
 	errHandler ErrorHandler
 	clientIP   app.ClientIP
 	running    atomic.Bool
+	closed     atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -154,12 +155,16 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 }
 
 func (e *Engine) Start() error {
+	if e.closed.Load() {
+		return httpx.ErrEngineClosed
+	}
 	e.running.Store(true)
 	defer e.running.Store(false)
 	return e.engine.Run()
 }
 
 func (e *Engine) Stop(ctx context.Context) error {
+	e.closed.Store(true)
 	err := e.engine.Shutdown(ctx)
 	if err == nil {
 		e.running.Store(false)
