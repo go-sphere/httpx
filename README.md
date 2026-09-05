@@ -26,6 +26,26 @@ go test ./conformance/... -v
 go test ./conformance/... -cover
 ```
 
+## Server-Sent Events
+
+`httpx.ServerSentEvents` streams SSE responses on every supported framework,
+built on the optional `Streamer` capability:
+
+```go
+router.GET("/events", func(ctx httpx.Context) error {
+    return httpx.ServerSentEvents(ctx, func(w *httpx.SSEWriter) error {
+        if err := w.SendJSON("update", payload); err != nil {
+            return err // client gone; stop producing
+        }
+        return w.Send(&httpx.SSEEvent{ID: "42", Event: "done", Data: "bye"})
+    })
+})
+```
+
+Each event is flushed to the client as a single write. Lower-level primitives
+are also available: `httpx.AsStreamer` for raw incremental streaming and
+`httpx.AsFlusher` for mid-handler flushes (not supported by Fiber).
+
 ## Router Feature Detection
 
 `httpx` exposes optional router capability detection through the

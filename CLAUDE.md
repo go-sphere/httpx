@@ -53,7 +53,7 @@ Binder validation is part of the contract: after a successful decode into a stru
 - `StdHandlerMounter` → `httpx.MountStd(r, method, path, h)` mounts a plain `net/http` handler
 - `TestRequester` → `httpx.AsTestRequester(engine)` serves a request in-process for tests
 - `Flusher` → `httpx.AsFlusher(ctx)` flushes buffered response data mid-handler (ginx/echox/hertzx; fiberx cannot and does not implement it)
-- `Streamer` → `httpx.AsStreamer(ctx)` incremental streaming/SSE on all four adapters (on fiberx the callback runs after the handler returns)
+- `Streamer` → `httpx.AsStreamer(ctx)` incremental streaming/SSE on all four adapters (on fiberx the callback runs after the handler returns). `httpx.ServerSentEvents(ctx, fn)` is the SSE layer on top: it sets `Cache-Control: no-cache` / `X-Accel-Buffering: no`, commits a 200 `text/event-stream` response, and hands fn an `*httpx.SSEWriter` (`Send`/`SendData`/`SendJSON`/`Comment`) that encodes WHATWG event-stream framing in `sse.go` and flushes one event per write.
 - `RouterFeatureProvider.SupportsRouterFeature(...)` → currently only `RouterFeatureNamedWildcard`. Adapters without named wildcards (echox, fiberx) normalize `/*filepath` internally at registration time and keep `Param("filepath")` working; `FixWildcardPathIfNeed`/`WildcardParamName` are the shared helpers behind this.
 
 ### Errors
