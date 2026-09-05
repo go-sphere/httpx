@@ -223,6 +223,9 @@ func (c *ginContext) NoContent(code int) error {
 }
 
 func (c *ginContext) Bytes(code int, b []byte, contentType string) error {
+	if contentType == "" {
+		contentType = http.DetectContentType(b)
+	}
 	c.ctx.Data(code, contentType, b)
 	return nil
 }
@@ -275,7 +278,13 @@ func (c *ginContext) Set(key string, val any) {
 }
 
 func (c *ginContext) Get(key string) (any, bool) {
-	return c.ctx.Get(key)
+	// A stored nil is reported as absent so all adapters agree (echo/fiber
+	// cannot distinguish nil from missing).
+	val, ok := c.ctx.Get(key)
+	if !ok || val == nil {
+		return nil, false
+	}
+	return val, true
 }
 
 // Context (context.Context accessor + Next)

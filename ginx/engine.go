@@ -19,6 +19,8 @@ type Config struct {
 	server            *http.Server
 	errHandler        ErrorHandler
 	defaultMiddleware bool
+	trustedProxies    []string
+	setTrustedProxies bool
 }
 
 type Option func(*Config)
@@ -111,6 +113,20 @@ func WithDefaultMiddleware() Option {
 	}
 }
 
+// WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
+// X-Forwarded-For is honored only when the direct peer is inside the given
+// IPs/CIDRs, and an empty list ignores forwarding headers entirely (gin's
+// default trusts every peer). Invalid entries panic at construction time.
+func WithTrustedProxies(proxies ...string) Option {
+	return func(conf *Config) {
+		if _, err := httpx.ParseCIDRs(proxies); err != nil {
+			panic(err)
+		}
+		conf.trustedProxies = proxies
+		conf.setTrustedProxies = true
+	}
+}
+
 type Engine struct {
 	engine     *gin.Engine
 	server     *http.Server
@@ -123,6 +139,15 @@ func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	if conf.defaultMiddleware {
 		conf.engine.Use(gin.Logger(), gin.Recovery())
+	}
+	if conf.setTrustedProxies {
+		var proxies []string
+		if len(conf.trustedProxies) > 0 {
+			proxies = conf.trustedProxies
+		}
+		if err := conf.engine.SetTrustedProxies(proxies); err != nil {
+			panic(err)
+		}
 	}
 	conf.server.Handler = conf.engine
 	return &Engine{

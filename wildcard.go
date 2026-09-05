@@ -1,6 +1,33 @@
 package httpx
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
+
+// ValidateWildcardPath reports whether path uses wildcards in the only form
+// every adapter supports: at most one wildcard, starting its own path segment
+// ("/files/*name"), as the final segment. Other shapes ("/a/*x/b/*y",
+// "/foo*bar") panic at registration on gin/hertz but would silently register
+// a semantically different route on fiber; adapters call this to fail loudly
+// and identically at registration time.
+func ValidateWildcardPath(path string) error {
+	star := strings.IndexByte(path, '*')
+	if star == -1 {
+		return nil
+	}
+	if star == 0 || path[star-1] != '/' {
+		return fmt.Errorf("httpx: wildcard must start its own path segment in %q", path)
+	}
+	rest := path[star+1:]
+	if i := strings.IndexByte(rest, '/'); i != -1 {
+		return fmt.Errorf("httpx: wildcard must be the final path segment in %q", path)
+	}
+	if strings.IndexByte(rest, '*') != -1 {
+		return fmt.Errorf("httpx: only one wildcard is allowed in %q", path)
+	}
+	return nil
+}
 
 // FixWildcardPathIfNeed normalizes wildcard path syntax based on router capability.
 //

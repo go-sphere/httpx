@@ -178,23 +178,38 @@ func (c *hertzContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *hertzContext) BindJSON(dst any) error {
-	return httpx.WrapBindError(c.ctx.BindJSON(dst))
+	if err := c.ctx.BindJSON(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *hertzContext) BindQuery(dst any) error {
-	return httpx.WrapBindError(c.ctx.BindQuery(dst))
+	if err := c.ctx.BindQuery(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *hertzContext) BindForm(dst any) error {
-	return httpx.WrapBindError(c.ctx.BindForm(dst))
+	if err := c.ctx.BindForm(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *hertzContext) BindURI(dst any) error {
-	return httpx.WrapBindError(bindURIWithForm(dst, c.ctx))
+	if err := bindURIWithForm(dst, c.ctx); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *hertzContext) BindHeader(dst any) error {
-	return httpx.WrapBindError(c.ctx.BindHeader(dst))
+	if err := c.ctx.BindHeader(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 // Responder (httpx.Responder)
@@ -226,6 +241,9 @@ func (c *hertzContext) NoContent(code int) error {
 }
 
 func (c *hertzContext) Bytes(code int, b []byte, contentType string) error {
+	if contentType == "" {
+		contentType = http.DetectContentType(b)
+	}
 	c.ctx.Data(code, contentType, b)
 	return nil
 }
@@ -275,7 +293,13 @@ func (c *hertzContext) Set(key string, val any) {
 }
 
 func (c *hertzContext) Get(key string) (any, bool) {
-	return c.ctx.Get(key)
+	// A stored nil is reported as absent so all adapters agree (echo/fiber
+	// cannot distinguish nil from missing).
+	val, ok := c.ctx.Get(key)
+	if !ok || val == nil {
+		return nil, false
+	}
+	return val, true
 }
 
 // Context (context.Context accessor + Next)

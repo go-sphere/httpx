@@ -58,8 +58,13 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 
 // normalizeWildcardPath rewrites named wildcards (/*filepath) to fiber's
 // anonymous form (/*) and records the original name so Param("filepath")
-// still resolves.
+// still resolves. Unsupported wildcard shapes panic at registration,
+// matching gin/hertz native behavior (fiber would otherwise silently
+// register a semantically different route).
 func (r *Router) normalizeWildcardPath(path string) string {
+	if err := httpx.ValidateWildcardPath(path); err != nil {
+		panic(err)
+	}
 	orig := httpx.WildcardParamName(path)
 	if orig == "" || orig == "*" {
 		return path

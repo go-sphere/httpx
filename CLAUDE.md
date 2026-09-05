@@ -46,6 +46,8 @@ cd ginx && go test ./...
 
 `StateStore.Set/Get` is **not** propagated through `Context.Context()`. To pass values into downstream goroutines/RPC, middleware must call `SetContext(context.WithValue(...))`. Document this when touching state plumbing.
 
+Binder validation is part of the contract: after a successful decode into a struct, every adapter runs go-playground/validator rules declared with the `binding` tag (gin's convention); failures surface as 400 via `WrapBindError`. Each adapter also has `WithTrustedProxies(...)` for a uniform ClientIP trusted-proxy policy (empty list = ignore forwarding headers) and `AdaptStdMiddleware(func(http.Handler) http.Handler)` to mount plain net/http middleware (request mutation, writer wrapping, and short-circuiting all propagate). Wildcard registration is validated by `httpx.ValidateWildcardPath` — one named wildcard, final segment — and panics uniformly otherwise.
+
 `ResponseInfo` (StatusCode) is part of the `Context` interface; `httpx.AsResponseInfo` remains only for backward compatibility. Optional capabilities are exposed as separate interfaces probed via type assertion:
 - `NativeContextProvider` → `httpx.AsNativeContext[T](ctx)` (escape hatch to the underlying `*gin.Context`, `fiber.Ctx`, etc.)
 - `StdHandlerMounter` → `httpx.MountStd(r, method, path, h)` mounts a plain `net/http` handler

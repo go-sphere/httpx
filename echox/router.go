@@ -52,8 +52,12 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 
 // normalizeWildcardPath rewrites named wildcards (/*filepath) to echo's
 // anonymous form (/*) and records the original name so Param("filepath")
-// still resolves.
+// still resolves. Unsupported wildcard shapes panic at registration,
+// matching gin/hertz native behavior.
 func (r *Router) normalizeWildcardPath(path string) string {
+	if err := httpx.ValidateWildcardPath(path); err != nil {
+		panic(err)
+	}
 	orig := httpx.WildcardParamName(path)
 	if orig == "" || orig == "*" {
 		return path

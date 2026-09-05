@@ -47,17 +47,27 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
-	method = strings.ToUpper(method)
-	r.group.Handle(method, path, r.toHertzHandler(h))
+	mustValidWildcard(path)
+	r.group.Handle(strings.ToUpper(method), path, r.toHertzHandler(h))
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
 func (r *Router) HandleStd(method, path string, h http.Handler) {
+	mustValidWildcard(path)
 	r.group.Handle(strings.ToUpper(method), path, toStdHandler(h))
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
+	mustValidWildcard(path)
 	r.group.Any(path, r.toHertzHandler(h))
+}
+
+// mustValidWildcard fails registration loudly and uniformly across adapters
+// for wildcard shapes the shared contract does not support.
+func mustValidWildcard(path string) {
+	if err := httpx.ValidateWildcardPath(path); err != nil {
+		panic(err)
+	}
 }
 
 func (r *Router) Static(prefix, root string) {
@@ -95,37 +105,37 @@ func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 
 // GET registers a new GET route for a path with matching handler.
 func (r *Router) GET(path string, h httpx.Handler) {
-	r.group.GET(path, r.toHertzHandler(h))
+	r.Handle("GET", path, h)
 }
 
 // POST registers a new POST route for a path with matching handler.
 func (r *Router) POST(path string, h httpx.Handler) {
-	r.group.POST(path, r.toHertzHandler(h))
+	r.Handle("POST", path, h)
 }
 
 // PUT registers a new PUT route for a path with matching handler.
 func (r *Router) PUT(path string, h httpx.Handler) {
-	r.group.PUT(path, r.toHertzHandler(h))
+	r.Handle("PUT", path, h)
 }
 
 // DELETE registers a new DELETE route for a path with matching handler.
 func (r *Router) DELETE(path string, h httpx.Handler) {
-	r.group.DELETE(path, r.toHertzHandler(h))
+	r.Handle("DELETE", path, h)
 }
 
 // PATCH registers a new PATCH route for a path with matching handler.
 func (r *Router) PATCH(path string, h httpx.Handler) {
-	r.group.PATCH(path, r.toHertzHandler(h))
+	r.Handle("PATCH", path, h)
 }
 
 // HEAD registers a new HEAD route for a path with matching handler.
 func (r *Router) HEAD(path string, h httpx.Handler) {
-	r.group.HEAD(path, r.toHertzHandler(h))
+	r.Handle("HEAD", path, h)
 }
 
 // OPTIONS registers a new OPTIONS route for a path with matching handler.
 func (r *Router) OPTIONS(path string, h httpx.Handler) {
-	r.group.OPTIONS(path, r.toHertzHandler(h))
+	r.Handle("OPTIONS", path, h)
 }
 
 func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {

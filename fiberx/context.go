@@ -40,7 +40,10 @@ func (c *fiberContext) Method() string {
 }
 
 func (c *fiberContext) Path() string {
-	return strings.Clone(c.ctx.Path())
+	// fiber's Path() keeps percent-encoding; fasthttp's URI().Path() returns
+	// the decoded path, matching the other adapters. string() copies out of
+	// the pooled buffer.
+	return string(c.ctx.Request().URI().Path())
 }
 
 func (c *fiberContext) FullPath() string {
@@ -189,23 +192,38 @@ func (c *fiberContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *fiberContext) BindJSON(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().JSON(dst))
+	if err := c.ctx.Bind().JSON(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *fiberContext) BindQuery(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().Query(dst))
+	if err := c.ctx.Bind().Query(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *fiberContext) BindForm(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().Form(dst))
+	if err := c.ctx.Bind().Form(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *fiberContext) BindURI(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().URI(dst))
+	if err := c.ctx.Bind().URI(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *fiberContext) BindHeader(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().Header(dst))
+	if err := c.ctx.Bind().Header(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 // Responder (httpx.Responder)
@@ -229,9 +247,10 @@ func (c *fiberContext) NoContent(code int) error {
 }
 
 func (c *fiberContext) Bytes(code int, b []byte, contentType string) error {
-	if contentType != "" {
-		c.ctx.Set(fiber.HeaderContentType, contentType)
+	if contentType == "" {
+		contentType = http.DetectContentType(b)
 	}
+	c.ctx.Set(fiber.HeaderContentType, contentType)
 	return c.ctx.Status(code).Send(b)
 }
 

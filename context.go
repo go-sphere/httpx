@@ -20,9 +20,20 @@ import (
 // across supported HTTP frameworks.
 type RequestInfo interface {
 	Method() string
-	Path() string     // Always returns a request path
+	Path() string     // Always returns the decoded request path
 	FullPath() string // Returns a route pattern when available, empty otherwise
-	ClientIP() string // Best-effort client IP detection
+
+	// ClientIP returns the best-effort client IP.
+	//
+	// SECURITY: which forwarding headers (X-Forwarded-For, X-Real-IP) are
+	// trusted differs per framework by default — gin and hertz trust every
+	// peer, fiber trusts none. For a uniform, spoofing-resistant policy use
+	// the adapter's WithTrustedProxies option: with it configured,
+	// X-Forwarded-For is honored only when the direct peer is inside the
+	// given CIDR list, and an empty list ignores forwarding headers
+	// entirely. Multi-hop X-Forwarded-For resolution order remains
+	// framework-dependent; behind a single proxy layer all adapters agree.
+	ClientIP() string
 
 	Param(key string) string
 	Params() map[string]string // nil if no params
@@ -78,6 +89,11 @@ type FormAccess interface {
 	//
 	// Calling this method may trigger form parsing.
 	// If the key does not exist, an empty string is returned.
+	//
+	// When the same key appears in both the URL query and the form body,
+	// which value wins is framework-dependent (gin/echo prefer the body,
+	// fiber/hertz prefer the query). Do not rely on the precedence; read
+	// Query and the form explicitly when both may be present.
 	FormValue(key string) string
 
 	// MultipartForm returns the parsed multipart form.
@@ -123,6 +139,12 @@ type Request interface {
 // into the provided destination structure. Decoding behavior is
 // based on struct tags and follows framework-independent conventions.
 //
+// Validation is part of the contract: after a successful decode into a
+// struct (or pointer to struct), implementations run go-playground/validator
+// rules declared with the `binding` struct tag (gin's convention, e.g.
+// `binding:"required"`). Validation failures are reported as HTTP 400
+// errors via WrapBindError on every adapter.
+//
 // Binder methods MAY consume the request body or trigger parsing
 // of request data. Implementations SHOULD ensure that decoding can
 // coexist safely with BodyAccess and FormAccess when possible.
@@ -130,6 +152,9 @@ type Binder interface {
 	// BindJSON decodes the JSON request body into dst.
 	//
 	// Decoding is performed based on `json` struct tags.
+	// Handling of trailing data after the first JSON value is
+	// framework-dependent (streaming decoders ignore it, whole-body
+	// decoders reject it); do not rely on either behavior.
 	//
 	// Calling this method may consume the request body.
 	// Implementations should make best-effort to allow the body
@@ -211,7 +236,8 @@ type Responder interface {
 	NoContent(code int) error
 
 	// Bytes writes raw bytes to the response with the provided status code
-	// and Content-Type.
+	// and Content-Type. An empty contentType is replaced by
+	// http.DetectContentType sniffing, matching net/http behavior.
 	//
 	// Calling this method commits the response.
 	// Returns nil on success, error on failure (e.g., response already committed).
@@ -300,11 +326,14 @@ type StateStore interface {
 	// NOT propagated through context.Context.
 	//
 	// Setting a value with an existing key replaces the previous value.
+	// Storing a nil value is indistinguishable from absence: Get reports
+	// ok=false for it on every adapter.
 	Set(key string, val any)
 
 	// Get retrieves the value associated with the given key.
 	//
-	// The returned boolean indicates whether the key was present.
+	// The returned boolean indicates whether the key was present with a
+	// non-nil value; a stored nil is reported as absent.
 	// Only values set via Set on the same httpx.Context instance
 	// are visible; values stored in context.Context are not accessible here.
 	Get(key string) (any, bool)

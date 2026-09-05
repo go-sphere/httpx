@@ -15,9 +15,10 @@ import (
 var _ httpx.Engine = (*Engine)(nil)
 
 type Config struct {
-	engine     *echo.Echo
-	server     *http.Server
-	errHandler httpx.ErrorHandler
+	engine      *echo.Echo
+	server      *http.Server
+	errHandler  httpx.ErrorHandler
+	ipExtractor echo.IPExtractor
 }
 
 type Option func(*Config)
@@ -109,6 +110,34 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	}
 }
 
+// WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
+// X-Forwarded-For is honored only when the direct peer is inside the given
+// IPs/CIDRs, and an empty list ignores forwarding headers entirely (echo's
+// default trusts every peer). Invalid entries panic at construction time.
+func WithTrustedProxies(proxies ...string) Option {
+	return func(conf *Config) {
+		cidrs, err := httpx.ParseCIDRs(proxies)
+		if err != nil {
+			panic(err)
+		}
+		if len(cidrs) == 0 {
+			conf.ipExtractor = echo.ExtractIPDirect()
+			return
+		}
+		options := []echo.TrustOption{
+			// Trust exactly the configured list, not echo's implicit
+			// loopback/link-local/private defaults.
+			echo.TrustLoopback(false),
+			echo.TrustLinkLocal(false),
+			echo.TrustPrivateNet(false),
+		}
+		for _, cidr := range cidrs {
+			options = append(options, echo.TrustIPRange(cidr))
+		}
+		conf.ipExtractor = echo.ExtractIPFromXFFHeader(options...)
+	}
+}
+
 type Engine struct {
 	engine     *echo.Echo
 	server     *http.Server
@@ -118,6 +147,9 @@ type Engine struct {
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
+	if conf.ipExtractor != nil {
+		conf.engine.IPExtractor = conf.ipExtractor
+	}
 	conf.server.Handler = conf.engine
 	engine := &Engine{
 		engine:     conf.engine,

@@ -14,9 +14,11 @@ import (
 var _ httpx.Engine = (*Engine)(nil)
 
 type Config struct {
-	engine     *fiber.App
-	listen     func(*fiber.App) error
-	errHandler httpx.ErrorHandler
+	engine            *fiber.App
+	listen            func(*fiber.App) error
+	errHandler        httpx.ErrorHandler
+	trustedProxies    []string
+	setTrustedProxies bool
 }
 
 type Option func(*Config)
@@ -27,11 +29,21 @@ func NewConfig(opts ...Option) *Config {
 		opt(&conf)
 	}
 	if conf.engine == nil {
-		conf.engine = fiber.New(
-			fiber.Config{
-				ErrorHandler: DefaultErrorHandler,
-			},
-		)
+		fiberConf := fiber.Config{
+			ErrorHandler: DefaultErrorHandler,
+		}
+		if conf.setTrustedProxies && len(conf.trustedProxies) > 0 {
+			fiberConf.ProxyHeader = fiber.HeaderXForwardedFor
+			fiberConf.TrustProxy = true
+			fiberConf.TrustProxyConfig = fiber.TrustProxyConfig{
+				Proxies: conf.trustedProxies,
+			}
+		}
+		conf.engine = fiber.New(fiberConf)
+	} else if conf.setTrustedProxies {
+		// fiber.Config is immutable after fiber.New; silently ignoring a
+		// security option would be worse than failing loudly.
+		panic("fiberx: WithTrustedProxies requires the engine to be constructed by fiberx; configure TrustProxy/TrustProxyConfig on your own fiber.Config instead")
 	}
 	if conf.listen == nil {
 		conf.listen = func(app *fiber.App) error {
@@ -98,6 +110,23 @@ func WithAddr(addr string) Option {
 func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
 		conf.errHandler = errHandler
+	}
+}
+
+// WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
+// X-Forwarded-For is honored only when the direct peer is inside the given
+// IPs/CIDRs, and an empty list ignores forwarding headers entirely (which is
+// already fiber's default). It only takes effect when the engine is
+// constructed by this adapter; combined with WithEngine it panics, because
+// fiber.Config cannot be changed after fiber.New. Invalid entries panic at
+// construction time.
+func WithTrustedProxies(proxies ...string) Option {
+	return func(conf *Config) {
+		if _, err := httpx.ParseCIDRs(proxies); err != nil {
+			panic(err)
+		}
+		conf.trustedProxies = proxies
+		conf.setTrustedProxies = true
 	}
 }
 

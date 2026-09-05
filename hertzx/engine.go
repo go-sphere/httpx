@@ -23,6 +23,7 @@ type Config struct {
 	addr              string
 	errHandler        ErrorHandler
 	defaultMiddleware bool
+	clientIP          app.ClientIP
 }
 
 type Option func(*Config)
@@ -99,9 +100,28 @@ func WithDefaultMiddleware() Option {
 	}
 }
 
+// WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
+// X-Forwarded-For / X-Real-IP are honored only when the direct peer is
+// inside the given IPs/CIDRs, and an empty list ignores forwarding headers
+// entirely (hertz's default trusts every peer). Invalid entries panic at
+// construction time.
+func WithTrustedProxies(proxies ...string) Option {
+	return func(conf *Config) {
+		cidrs, err := httpx.ParseCIDRs(proxies)
+		if err != nil {
+			panic(err)
+		}
+		conf.clientIP = app.ClientIPWithOption(app.ClientIPOptions{
+			RemoteIPHeaders: []string{"X-Forwarded-For", "X-Real-IP"},
+			TrustedCIDRs:    cidrs,
+		})
+	}
+}
+
 type Engine struct {
 	engine     *server.Hertz
 	errHandler ErrorHandler
+	clientIP   app.ClientIP
 	running    atomic.Bool
 }
 
@@ -110,9 +130,13 @@ func New(opts ...Option) httpx.Engine {
 	if conf.defaultMiddleware {
 		conf.engine.Use(recovery.Recovery())
 	}
+	if conf.clientIP != nil {
+		conf.engine.SetClientIPFunc(conf.clientIP)
+	}
 	engine := &Engine{
 		engine:     conf.engine,
 		errHandler: conf.errHandler,
+		clientIP:   conf.clientIP,
 	}
 	engine.running.Store(false)
 	return engine
@@ -160,6 +184,10 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	hctx := e.engine.NewContext()
+	if e.clientIP != nil {
+		// Pooled contexts get this in allocateContext; NewContext does not.
+		hctx.SetClientIPFunc(e.clientIP)
+	}
 	hctx.Request.Header.SetMethod(req.Method)
 	hctx.Request.SetRequestURI(urlStr)
 	if req.Body != nil {

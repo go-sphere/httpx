@@ -22,6 +22,17 @@ type MiddlewareScope interface {
 }
 
 // Registrar registers handlers on a router scope.
+//
+// Method names are case-insensitive: adapters upper-case them before
+// registration. The portable method set is the nine standard HTTP methods
+// (GET, HEAD, POST, PUT, PATCH, DELETE, CONNECT, OPTIONS, TRACE); passing a
+// non-standard method (e.g. PROPFIND) is framework-dependent and may panic
+// at registration time. Which methods Any matches beyond the standard set is
+// also framework-dependent.
+//
+// Wildcard paths must satisfy ValidateWildcardPath (a single named wildcard
+// as the final path segment); adapters panic at registration for other
+// shapes, matching gin/hertz native behavior.
 type Registrar interface {
 	Handle(method, path string, h Handler)
 	Any(path string, h Handler)

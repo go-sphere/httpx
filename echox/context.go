@@ -179,23 +179,38 @@ func (c *echoContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *echoContext) BindJSON(dst any) error {
-	return httpx.WrapBindError(json.NewDecoder(c.ctx.Request().Body).Decode(dst))
+	if err := json.NewDecoder(c.ctx.Request().Body).Decode(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *echoContext) BindQuery(dst any) error {
-	return httpx.WrapBindError(c.binder.BindQueryParams(c.ctx, dst))
+	if err := c.binder.BindQueryParams(c.ctx, dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *echoContext) BindForm(dst any) error {
-	return httpx.WrapBindError(bindForm(dst, c.ctx))
+	if err := bindForm(dst, c.ctx); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *echoContext) BindURI(dst any) error {
-	return httpx.WrapBindError(bindURIWithForm(dst, c.ctx))
+	if err := bindURIWithForm(dst, c.ctx); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *echoContext) BindHeader(dst any) error {
-	return httpx.WrapBindError(c.binder.BindHeaders(c.ctx, dst))
+	if err := c.binder.BindHeaders(c.ctx, dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	return httpx.WrapBindError(validateStruct(dst))
 }
 
 // Responder (httpx.Responder)
@@ -209,6 +224,10 @@ func (c *echoContext) JSON(code int, v any) error {
 }
 
 func (c *echoContext) Text(code int, s string) error {
+	// Pre-set the header with the lowercase charset used by the other
+	// adapters (echo's default is "charset=UTF-8"); echo only sets the
+	// content type when it is still empty.
+	c.ctx.Response().Header().Set(echo.HeaderContentType, "text/plain; charset=utf-8")
 	return c.ctx.String(code, s)
 }
 
