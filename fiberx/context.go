@@ -130,11 +130,19 @@ func (c *fiberContext) Headers() map[string][]string {
 	}
 	out := make(map[string][]string, len(src))
 	for k, v := range src {
-		ck := textproto.CanonicalMIMEHeaderKey(k)
+		// GetReqHeaders builds keys and values with unsafe strings aliased to
+		// pooled fasthttp buffers (default Immutable=false); clone the key
+		// before canonicalizing (CanonicalMIMEHeaderKey returns already
+		// canonical input as-is) and clone every value.
+		ck := textproto.CanonicalMIMEHeaderKey(strings.Clone(k))
 		if ck == "Host" {
 			continue
 		}
-		out[ck] = append([]string(nil), v...)
+		values := make([]string, len(v))
+		for i, value := range v {
+			values[i] = strings.Clone(value)
+		}
+		out[ck] = values
 	}
 	if len(out) == 0 {
 		return nil

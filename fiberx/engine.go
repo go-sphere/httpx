@@ -35,6 +35,9 @@ func NewConfig(opts ...Option) *Config {
 		if conf.setTrustedProxies && len(conf.trustedProxies) > 0 {
 			fiberConf.ProxyHeader = fiber.HeaderXForwardedFor
 			fiberConf.TrustProxy = true
+			// Without IP validation fiber returns the raw joined header value
+			// instead of walking the chain right-to-left past trusted hops.
+			fiberConf.EnableIPValidation = true
 			fiberConf.TrustProxyConfig = fiber.TrustProxyConfig{
 				Proxies: conf.trustedProxies,
 			}

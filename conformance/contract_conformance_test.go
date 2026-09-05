@@ -79,12 +79,17 @@ func TestTrustedProxiesConformance(t *testing.T) {
 	cases := []struct {
 		name    string
 		proxies []string
+		xff     string
 		wantIP  string
 	}{
 		// Empty list: forwarding headers are ignored; the spoofed XFF must not win.
-		{name: "SpoofIgnored", proxies: nil, wantIP: "127.0.0.1"},
+		{name: "SpoofIgnored", proxies: nil, xff: "203.0.113.9", wantIP: "127.0.0.1"},
 		// Loopback peer is trusted: the forwarded client IP is used.
-		{name: "TrustedPeerHonored", proxies: []string{"127.0.0.1"}, wantIP: "203.0.113.9"},
+		{name: "TrustedPeerHonored", proxies: []string{"127.0.0.1"}, xff: "203.0.113.9", wantIP: "203.0.113.9"},
+		// Multi-hop chain: trusted hops are skipped right-to-left and the raw
+		// joined header must never leak through (fiber requires
+		// EnableIPValidation for this).
+		{name: "MultiHopTrustedTailSkipped", proxies: []string{"127.0.0.1"}, xff: "203.0.113.9, 127.0.0.1", wantIP: "203.0.113.9"},
 	}
 	for _, framework := range conformanceFrameworks {
 		for _, tc := range cases {
@@ -101,7 +106,7 @@ func TestTrustedProxiesConformance(t *testing.T) {
 				if err != nil {
 					t.Fatalf("build request: %v", err)
 				}
-				req.Header.Set("X-Forwarded-For", "203.0.113.9")
+				req.Header.Set("X-Forwarded-For", tc.xff)
 				client := &http.Client{Timeout: 2 * time.Second}
 				resp, err := client.Do(req)
 				if err != nil {
