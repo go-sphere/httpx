@@ -12,8 +12,8 @@ github.com/go-playground/universal-translator v0.18.1 h1:Bcnm0ZwsGyWbCzImXv+pAJn
 github.com/go-playground/universal-translator v0.18.1/go.mod h1:xekY+UJKNuX9WP91TpwSH2VMlDf28Uj24BCp08ZFTUY=
 github.com/go-playground/validator/v10 v10.30.4 h1:9Rcod2ZPO6mOEG6b4GqyoHE/H6//Ze0RuhOo1hT1x0w=
 github.com/go-playground/validator/v10 v10.30.4/go.mod h1:numpT+RPLE91R9oYWMY/R9zRgJBewr3IXHko4OISPpk=
-github.com/go-sphere/httpx v0.0.3 h1:7VdllTXIUb46CvtN9JAaKiyJ5NaOWptyMYePaqj8gb8=
-github.com/go-sphere/httpx v0.0.3/go.mod h1:Vtyau99EFGlImJN/frGdbI8pfR39MojnWMyHXdCCw8U=
+github.com/go-sphere/httpx v0.0.4 h1:mKYhslvujcAFkJo2kvLf1+ukCn1dznGqe3+h6T+v+P4=
+github.com/go-sphere/httpx v0.0.4/go.mod h1:Ax1OSjws2m1bP44KFObMzPrroThH+a/8N6ACU5a2rYg=
 github.com/labstack/echo/v4 v4.15.4 h1:DL45vVYa+BWE+XuW+zZNd9H0YEdZ80UAWJGcTVW4EVs=
 github.com/labstack/echo/v4 v4.15.4/go.mod h1:CuMetKIRwsuO/qlAgMq+KTAalwGoB/h4tC+yPdrTj1g=
 github.com/labstack/gommon v0.5.0 h1:6VSQ2NOzsnEJ5W6+84E0RbcaDDmgB6NIAzWCczTEe6c=

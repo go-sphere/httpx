@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	github.com/go-playground/form/v4 v4.3.0
 	github.com/go-playground/validator/v10 v10.30.4
-	github.com/go-sphere/httpx v0.0.3
+	github.com/go-sphere/httpx v0.0.4
 	github.com/labstack/echo/v4 v4.15.4
 )
 

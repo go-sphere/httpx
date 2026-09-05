@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/go-playground/validator/v10 v10.30.4
-	github.com/go-sphere/httpx v0.0.3
+	github.com/go-sphere/httpx v0.0.4
 	github.com/gofiber/fiber/v3 v3.5.0
 )
 
