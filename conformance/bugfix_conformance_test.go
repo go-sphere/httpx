@@ -264,3 +264,29 @@ func TestStaticPrefixBoundaryConformance(t *testing.T) {
 		})
 	}
 }
+
+// TestRootCatchAllMatchesRootConformance pins that a root-level catch-all
+// ("/*filepath") also matches the bare "/" on every adapter. Downstream
+// mounts (e.g. a std http.ServeMux serving a whole site) rely on this so
+// they do not have to register "/" separately — which gin's router would
+// reject as a conflicting route.
+func TestRootCatchAllMatchesRootConformance(t *testing.T) {
+	for _, name := range conformanceFrameworks {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, name)
+			h.Router.Handle("GET", "/*filepath", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "hit:"+ctx.Path())
+			})
+
+			for _, reqPath := range []string{"/", "/a/b.txt"} {
+				got := h.Do(t, httptest.NewRequest(http.MethodGet, "http://example.com"+reqPath, nil))
+				if got.Status != http.StatusOK {
+					t.Fatalf("%s GET %s status = %d, want 200; body=%q", name, reqPath, got.Status, got.Body)
+				}
+				if got.Body != "hit:"+reqPath {
+					t.Fatalf("%s GET %s body = %q, want %q", name, reqPath, got.Body, "hit:"+reqPath)
+				}
+			}
+		})
+	}
+}

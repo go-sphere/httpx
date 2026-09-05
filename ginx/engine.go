@@ -206,10 +206,23 @@ func (e *Engine) IsRunning() bool {
 	return e.running.Load()
 }
 
+// closeNotifyRecorder augments httptest.ResponseRecorder with the legacy
+// http.CloseNotifier interface. gin's responseWriter forwards CloseNotify to
+// the underlying writer unconditionally, so handlers that probe it (e.g.
+// httputil.ReverseProxy when the request context has no Done channel) would
+// panic on a bare recorder. The channel never fires: in-process dispatch has
+// no connection that could drop.
+type closeNotifyRecorder struct {
+	*httptest.ResponseRecorder
+	done chan bool
+}
+
+func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return r.done }
+
 // Do serves req in-process through the gin engine and returns the buffered
 // response. It implements httpx.TestRequester.
 func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	rr := httptest.NewRecorder()
-	e.engine.ServeHTTP(rr, req)
+	e.engine.ServeHTTP(&closeNotifyRecorder{ResponseRecorder: rr, done: make(chan bool)}, req)
 	return rr.Result(), nil
 }
