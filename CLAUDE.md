@@ -46,14 +46,17 @@ cd ginx && go test ./...
 
 `StateStore.Set/Get` is **not** propagated through `Context.Context()`. To pass values into downstream goroutines/RPC, middleware must call `SetContext(context.WithValue(...))`. Document this when touching state plumbing.
 
-Optional capabilities are exposed as separate interfaces probed via type assertion:
-- `ResponseInfo` → `httpx.AsResponseInfo(ctx)`
+`ResponseInfo` (StatusCode) is part of the `Context` interface; `httpx.AsResponseInfo` remains only for backward compatibility. Optional capabilities are exposed as separate interfaces probed via type assertion:
 - `NativeContextProvider` → `httpx.AsNativeContext[T](ctx)` (escape hatch to the underlying `*gin.Context`, `fiber.Ctx`, etc.)
-- `RouterFeatureProvider.SupportsRouterFeature(...)` → currently only `RouterFeatureNamedWildcard`. Use `FixWildcardPathIfNeed` to handle adapters that lack named wildcards (rewrites `/*filepath` → `/*` and returns `"*"` as the param key).
+- `StdHandlerMounter` → `httpx.MountStd(r, method, path, h)` mounts a plain `net/http` handler
+- `TestRequester` → `httpx.AsTestRequester(engine)` serves a request in-process for tests
+- `RouterFeatureProvider.SupportsRouterFeature(...)` → currently only `RouterFeatureNamedWildcard`. Adapters without named wildcards (echox, fiberx) normalize `/*filepath` internally at registration time and keep `Param("filepath")` working; `FixWildcardPathIfNeed`/`WildcardParamName` are the shared helpers behind this.
 
 ### Errors
 
 `httpx.Error` composes `StatusError + CodeError + MessageError`. The concrete type is unexported on purpose — return the `Error` interface from constructors. `ParseError(err)` extracts those fields. Adapter default error handlers use `RenderError` / `ClassifyError` (status + `{success, code, message}`, no raw `err.Error()`). `NewXxxError(msg)` puts `msg` in `GetMessage()`; `XxxError(err)` without extra arguments does not. Bind failures should go through `WrapBindError`.
+
+`httpx.ErrorHandler` (`func(Context, error)`) is the framework-neutral error handler. Every adapter accepts it — `ginx.WithHTTPXErrorHandler`, `hertzx.WithHTTPXErrorHandler`, `echox.WithErrorHandler`, `fiberx.WithErrorHandler` — and invokes it with a real adapter-backed `httpx.Context`. Each adapter also exports its native default (`ginx.DefaultErrorHandler`, `fiberx.DefaultErrorHandler`, `echox.DefaultHTTPErrorHandler`, `hertzx.DefaultErrorHandler`); the echox/fiberx defaults understand `*echo.HTTPError`/`*fiber.Error` so framework 404s keep their status. A committed response is never overwritten by an error body on any adapter.
 
 ### Adapter pattern
 

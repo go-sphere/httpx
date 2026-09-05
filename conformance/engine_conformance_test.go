@@ -202,14 +202,16 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 		}
 		return harnessBundle{harness: h}
 	case "fiberx":
+		// Default mode uses the adapter's exported default handler so the
+		// suite exercises the real default behavior instead of an inline copy.
+		errorHandler := fiberx.DefaultErrorHandler
+		if opts.errorMode == harnessErrorTeapot {
+			errorHandler = func(ctx fiber.Ctx, err error) error {
+				return ctx.Status(http.StatusTeapot).JSON(fiber.Map{"error": err.Error()})
+			}
+		}
 		f := fiber.New(fiber.Config{
-			ErrorHandler: func(ctx fiber.Ctx, err error) error {
-				if opts.errorMode == harnessErrorTeapot {
-					return ctx.Status(http.StatusTeapot).JSON(fiber.Map{"error": err.Error()})
-				}
-				status, body := httpx.RenderError(err)
-				return ctx.Status(status).JSON(body)
-			},
+			ErrorHandler: errorHandler,
 		})
 
 		var engine httpx.Engine
@@ -247,14 +249,17 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 		return harnessBundle{harness: h, baseURL: baseURL, client: client}
 	case "echox":
 		e := echo.New()
-		e.HTTPErrorHandler = func(err error, c echo.Context) {
-			if opts.errorMode == harnessErrorTeapot {
+		if opts.errorMode == harnessErrorTeapot {
+			e.HTTPErrorHandler = func(err error, c echo.Context) {
+				if c.Response().Committed {
+					return
+				}
 				_ = c.JSON(http.StatusTeapot, echo.Map{"error": err.Error()})
-				return
 			}
-			status, body := httpx.RenderError(err)
-			_ = c.JSON(status, body)
 		}
+		// In default mode the engine keeps echo's default handler, which
+		// echox.New replaces with the adapter default — the suite therefore
+		// exercises the real default behavior instead of an inline copy.
 
 		addr := ginLikeAddrForMode(tb, opts.mode)
 		engine := echox.New(echox.WithEngine(e), echox.WithServerAddr(addr))

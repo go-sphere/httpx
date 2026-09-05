@@ -3,6 +3,7 @@ package ginx
 import (
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
@@ -40,7 +41,12 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
-	r.group.Handle(method, path, r.toGinHandler(h))
+	r.group.Handle(strings.ToUpper(method), path, r.toGinHandler(h))
+}
+
+// HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
+func (r *Router) HandleStd(method, path string, h http.Handler) {
+	r.group.Handle(strings.ToUpper(method), path, gin.WrapH(h))
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
@@ -95,7 +101,12 @@ func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 		ctx := newGinContext(gc)
 		if err := h(ctx); err != nil {
 			_ = gc.Error(err)
-			r.errHandler(gc, err)
+			// Skip the error handler when the response is already committed
+			// (or the chain aborted) so a partial response is not corrupted
+			// by a second body.
+			if !gc.IsAborted() && !gc.Writer.Written() {
+				r.errHandler(gc, err)
+			}
 			if !gc.IsAborted() {
 				gc.Abort()
 			}

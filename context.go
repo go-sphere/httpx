@@ -163,9 +163,11 @@ type Binder interface {
 //
 // Methods on Responder mutate the outgoing response and return errors
 // to indicate success or failure of response operations.
-// Once a response body is written, the response is considered committed,
-// and further attempts to modify status code or headers may return errors,
-// depending on the underlying framework.
+// Once a response body is written, the response is considered committed.
+// Committed-response detection is framework-dependent: implementations
+// SHOULD leave a committed response untouched and MAY either return an
+// error or silently no-op when a body-writing method is called again.
+// Callers must not rely on a second write being reported as an error.
 //
 // Implementations should ensure consistent behavior across frameworks
 // where possible.
@@ -173,6 +175,8 @@ type Responder interface {
 	// Status sets the HTTP status code for the response.
 	//
 	// Calling this method does not write the response body.
+	// Calling it after the response has been committed has no effect
+	// and is not reported as an error.
 	Status(code int)
 
 	// SetHeader sets a response header.
@@ -217,6 +221,14 @@ type Responder interface {
 	//
 	// The size parameter specifies the total number of bytes to be written.
 	// A size of -1 indicates that the size is unknown.
+	// Note: size is an int, so on 32-bit platforms it is limited to 2GiB.
+	//
+	// Reader lifecycle: implementations either consume r synchronously
+	// before returning (net/http based adapters) or hand it to the
+	// framework and consume it after the handler returns (fasthttp/hertz
+	// based adapters). If r implements io.Closer it will be closed, but
+	// possibly only after the handler has returned. Callers must not
+	// reuse or close r themselves after calling this method.
 	//
 	// Calling this method commits the response.
 	// Returns nil on success, error on failure (e.g., IO error, response already committed).
@@ -233,6 +245,10 @@ type Responder interface {
 	// Redirect sends a redirect response to the client with the provided
 	// status code and target location.
 	//
+	// The code must be a valid redirect status (300-308).
+	// Implementations return an error for other codes without writing
+	// the response.
+	//
 	// Calling this method commits the response.
 	// Returns nil on success, error on failure (e.g., invalid status code, response already committed).
 	Redirect(code int, location string) error
@@ -240,8 +256,9 @@ type Responder interface {
 
 // ResponseInfo exposes a read-only response state.
 //
-// This optional capability can be used by middleware and handlers that need
-// to inspect the response after downstream handlers have run.
+// It is part of the Context contract and can be used by middleware and
+// handlers that need to inspect the response after downstream handlers
+// have run.
 //
 // Implementations should provide best-effort behavior across frameworks.
 type ResponseInfo interface {
@@ -323,11 +340,23 @@ type Context interface {
 	// StateStore provides request-scoped key-value storage.
 	StateStore
 
+	// ResponseInfo exposes read-only response state (e.g. the current
+	// status code) after downstream handlers have run. All official
+	// adapters implement it natively.
+	ResponseInfo
+
 	// Context returns the standard Go context.Context for the current request.
 	//
-	// The returned context is derived from the underlying framework context
-	// and respects request cancellation and deadlines. It is safe to pass
-	// this value to downstream business logic, database calls, or RPC clients.
+	// The returned context is derived from the underlying framework context.
+	// It is safe to pass this value to downstream business logic, database
+	// calls, or RPC clients.
+	//
+	// Cancellation is best-effort: on net/http based adapters (gin, echo)
+	// the context respects request cancellation and deadlines; on
+	// fasthttp/hertz based adapters the context may be connection-scoped
+	// or context.Background() and may not be canceled when the client
+	// disconnects. Do not rely on Done() firing per-request across all
+	// frameworks.
 	//
 	// Values stored via StateStore.Set are NOT visible through the returned
 	// context.Context. Use SetContext with context.WithValue to propagate
@@ -344,7 +373,14 @@ type Context interface {
 	// cancellation and deadline propagation.
 	SetContext(ctx context.Context)
 
-	// Next executes downstream handlers in the chain.
+	// Next executes the remaining downstream handlers in the chain.
+	//
+	// Next is intended to be called from middleware. All adapters run the
+	// entire remaining chain on the first call. Calling Next from a leaf
+	// handler (not middleware) is framework-dependent and should be
+	// avoided: it is a silent no-op on echo, while fiber continues route
+	// matching and may execute a different route or the 404 handler.
+	// A second call after the chain has completed returns nil.
 	//
 	// It returns nil if no error occurred downstream.
 	// If one or more errors occurred downstream, it returns a non-nil error.
@@ -357,9 +393,19 @@ type Context interface {
 }
 
 // AsResponseInfo returns response inspection capability when supported.
+//
+// Deprecated: ResponseInfo is now part of the Context interface; use ctx
+// directly. Kept for backward compatibility with existing callers.
 func AsResponseInfo(ctx Context) (ResponseInfo, bool) {
-	ri, ok := ctx.(ResponseInfo)
-	return ri, ok
+	return ctx, true
+}
+
+// ValidRedirectCode reports whether code is acceptable for Responder.Redirect:
+// any redirect status in the 300-308 range. Adapters share this check so an
+// invalid code is reported as an error instead of panicking (gin) or being
+// silently rewritten to 302 (hertz).
+func ValidRedirectCode(code int) bool {
+	return code >= http.StatusMultipleChoices && code <= http.StatusPermanentRedirect
 }
 
 // AsNativeContext returns the underlying native context when supported.

@@ -1,13 +1,13 @@
 package hertzx
 
 import (
+	"bytes"
 	"context"
 	"io/fs"
-	"mime"
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -51,19 +51,46 @@ func (r *Router) Handle(method, path string, h httpx.Handler) {
 	r.group.Handle(method, path, r.toHertzHandler(h))
 }
 
+// HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
+func (r *Router) HandleStd(method, path string, h http.Handler) {
+	r.group.Handle(strings.ToUpper(method), path, toStdHandler(h))
+}
+
 func (r *Router) Any(path string, h httpx.Handler) {
 	r.group.Any(path, r.toHertzHandler(h))
 }
 
 func (r *Router) Static(prefix, root string) {
-	r.StaticFS(prefix, osDirFS(root))
+	r.StaticFS(prefix, os.DirFS(root))
 }
 
-func (r *Router) StaticFS(prefix string, fs fs.FS) {
+// StaticFS serves files through net/http's FileServer so Range requests,
+// If-Modified-Since (304), and content sniffing behave like the gin/echo
+// adapters instead of a hand-rolled sendfile loop. Directories (and the bare
+// prefix) return 404 instead of a listing, matching the echo/fiber adapters.
+func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 	urlPattern := path.Join(prefix, "/*filepath")
-	handler := r.toStaticHandler(fs)
-	r.group.GET(urlPattern, handler)
-	r.group.HEAD(urlPattern, handler)
+	strip := path.Join(r.group.BasePath(), prefix)
+	handler := http.Handler(http.FileServer(http.FS(fsys)))
+	if strip != "" && strip != "/" {
+		handler = http.StripPrefix(strip, handler)
+	}
+	fileHandler := toStdHandler(handler)
+	hertzHandler := func(ctx context.Context, rc *app.RequestContext) {
+		name := strings.TrimPrefix(rc.Param("filepath"), "/")
+		rel := strings.TrimPrefix(path.Clean("/"+name), "/")
+		if rel == "" || rel == "." {
+			rc.Status(http.StatusNotFound)
+			return
+		}
+		if info, err := fs.Stat(fsys, rel); err != nil || info.IsDir() {
+			rc.Status(http.StatusNotFound)
+			return
+		}
+		fileHandler(ctx, rc)
+	}
+	r.group.GET(urlPattern, hertzHandler)
+	r.group.HEAD(urlPattern, hertzHandler)
 }
 
 // GET registers a new GET route for a path with matching handler.
@@ -106,7 +133,12 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 		hc := newHertzContext(ctx, rc)
 		if err := h(hc); err != nil {
 			_ = rc.Error(err)
-			r.errHandler(ctx, rc, err)
+			// Skip the error handler when the response is already committed
+			// (or the chain aborted) so a partial response is not corrupted
+			// by a second body.
+			if !rc.IsAborted() && !hertzResponseCommitted(rc) {
+				r.errHandler(ctx, rc, err)
+			}
 			if !rc.IsAborted() {
 				rc.Abort()
 			}
@@ -114,45 +146,84 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 	}
 }
 
-func (r *Router) toStaticHandler(files fs.FS) app.HandlerFunc {
+// hertzResponseCommitted reports whether the handler already produced a body.
+func hertzResponseCommitted(rc *app.RequestContext) bool {
+	return len(rc.Response.Body()) > 0
+}
+
+// toStdHandler bridges a net/http handler into hertz's buffered response,
+// so it works both over the network and with in-process test dispatch.
+func toStdHandler(h http.Handler) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
-		name := strings.TrimPrefix(rc.Param("filepath"), "/")
-		if name == "" || name == "." {
-			rc.Status(http.StatusNotFound)
-			return
-		}
-
-		rel := strings.TrimPrefix(path.Clean("/"+name), "/")
-
-		file, err := files.Open(rel)
+		req, err := compatRequest(ctx, rc)
 		if err != nil {
-			rc.Status(http.StatusNotFound)
+			rc.AbortWithStatus(http.StatusInternalServerError)
 			return
 		}
-
-		info, err := file.Stat()
-		if err != nil || info.IsDir() {
-			_ = file.Close()
-			rc.Status(http.StatusNotFound)
-			return
+		w := &stdResponseWriter{rc: rc}
+		h.ServeHTTP(w, req)
+		if !w.wroteHeader {
+			w.WriteHeader(http.StatusOK)
 		}
-
-		contentType := mime.TypeByExtension(filepath.Ext(rel))
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-
-		rc.SetContentType(contentType)
-		rc.Status(http.StatusOK)
-		if string(rc.Method()) == http.MethodHead {
-			rc.Response.Header.SetContentLength(int(info.Size()))
-			_ = file.Close()
-			return
-		}
-		rc.Response.SetBodyStream(file, int(info.Size()))
 	}
 }
 
-func osDirFS(root string) fs.FS {
-	return os.DirFS(root)
+// compatRequest builds a net/http request view of the hertz request.
+func compatRequest(ctx context.Context, rc *app.RequestContext) (*http.Request, error) {
+	body := rc.Request.Body()
+	req, err := http.NewRequestWithContext(ctx, string(rc.Request.Method()), rc.Request.URI().String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	rc.Request.Header.VisitAll(func(k, v []byte) {
+		key := string(k)
+		if strings.EqualFold(key, "Host") {
+			req.Host = string(v)
+			return
+		}
+		req.Header.Add(key, string(v))
+	})
+	return req, nil
+}
+
+type stdResponseWriter struct {
+	rc          *app.RequestContext
+	header      http.Header
+	wroteHeader bool
+}
+
+func (w *stdResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *stdResponseWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	for key, values := range w.header {
+		if strings.EqualFold(key, "Content-Length") {
+			if len(values) > 0 {
+				if n, err := strconv.Atoi(values[0]); err == nil {
+					w.rc.Response.Header.SetContentLength(n)
+				}
+			}
+			continue
+		}
+		for _, value := range values {
+			w.rc.Response.Header.Add(key, value)
+		}
+	}
+	w.rc.Response.SetStatusCode(code)
+}
+
+func (w *stdResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	w.rc.Response.AppendBody(b)
+	return len(b), nil
 }

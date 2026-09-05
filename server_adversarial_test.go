@@ -43,8 +43,11 @@ func TestAdversarialNilServerConcurrent(t *testing.T) {
 					return
 				}
 
-				// 4. Concurrent Close with nil context
-				if err := Close(nil, nil); err != nil { //nolint:staticcheck // Intentionally verifies the documented nil-context behavior.
+				// 4. Concurrent Close with nil context. The nil server short-circuits
+				// before the context is used, so the nil context is never dereferenced.
+				// Note: Close(nil, srv) with a live server and active connections would
+				// panic inside net/http's Shutdown polling; only the nil-server path is safe.
+				if err := Close(nil, nil); err != nil { //nolint:staticcheck // Intentionally verifies the nil-server short-circuit.
 					errCh <- err
 					return
 				}

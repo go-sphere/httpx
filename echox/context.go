@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -49,7 +50,14 @@ func (c *echoContext) ClientIP() string {
 }
 
 func (c *echoContext) Param(key string) string {
-	return c.ctx.Param(key)
+	v := c.ctx.Param(key)
+	if v == "" && key != "*" {
+		// Named wildcard rewritten to "*" at registration time.
+		if orig, ok := wildcardNames.Load(c.ctx.Path()); ok && orig == key {
+			return c.ctx.Param("*")
+		}
+	}
+	return v
 }
 
 func (c *echoContext) Params() map[string]string {
@@ -64,6 +72,13 @@ func (c *echoContext) Params() map[string]string {
 			out[name] = values[i]
 		} else {
 			out[name] = ""
+		}
+	}
+	if v, exists := out["*"]; exists {
+		if orig, ok := wildcardNames.Load(c.ctx.Path()); ok {
+			if name, isStr := orig.(string); isStr {
+				out[name] = v
+			}
 		}
 	}
 	return out
@@ -228,6 +243,9 @@ func (c *echoContext) File(path string) error {
 }
 
 func (c *echoContext) Redirect(code int, location string) error {
+	if !httpx.ValidRedirectCode(code) {
+		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
+	}
 	return c.ctx.Redirect(code, location)
 }
 

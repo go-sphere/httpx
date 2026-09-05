@@ -14,5 +14,13 @@ func (QueryBinding) Name() string {
 
 func (QueryBinding) Bind(req *http.Request, obj any) error {
 	values := req.URL.Query()
-	return binding.MapFormWithTag(obj, values, "query")
+	if err := binding.MapFormWithTag(obj, values, "query"); err != nil {
+		return err
+	}
+	// Run struct validation so `binding:"required"` works for query fields,
+	// matching gin's built-in bindings.
+	if binding.Validator == nil {
+		return nil
+	}
+	return binding.Validator.ValidateStruct(obj)
 }

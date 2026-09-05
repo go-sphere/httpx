@@ -203,6 +203,7 @@ func httpStatusError(status int32) error {
 // ParseError extracts error information from various error types.
 // It recognizes StatusError, CodeError, and MessageError interfaces and falls back
 // to defaults for unknown error types.
+// code is 0 unless err implements CodeError, matching ClassifyError.
 func ParseError(err error) (code int32, status int32, message string) {
 	var he Error
 	if errors.As(err, &he) {
@@ -217,8 +218,6 @@ func ParseError(err error) (code int32, status int32, message string) {
 	var ce CodeError
 	if errors.As(err, &ce) {
 		code = ce.GetCode()
-	} else {
-		code = status
 	}
 	var me MessageError
 	if errors.As(err, &me) {

@@ -437,11 +437,9 @@ func TestOptionalContextCapabilitiesConformance(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				info, ok := httpx.AsResponseInfo(ctx)
-				if !ok {
-					return errors.New("response info not supported")
-				}
-				if info.StatusCode() != http.StatusCreated {
+				// ResponseInfo is part of the Context contract (B6): every
+				// adapter must report the status set by downstream handlers.
+				if ctx.StatusCode() != http.StatusCreated {
 					return errors.New("unexpected status code")
 				}
 				return nil

@@ -1,8 +1,11 @@
 package ginx
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -54,7 +57,7 @@ func (c *ginContext) ClientIP() string {
 }
 
 func (c *ginContext) Param(key string) string {
-	return c.ctx.Param(key)
+	return c.normalizeParam(key, c.ctx.Param(key))
 }
 
 func (c *ginContext) Params() map[string]string {
@@ -63,9 +66,18 @@ func (c *ginContext) Params() map[string]string {
 	}
 	m := make(map[string]string, len(c.ctx.Params))
 	for _, p := range c.ctx.Params {
-		m[p.Key] = p.Value
+		m[p.Key] = c.normalizeParam(p.Key, p.Value)
 	}
 	return m
+}
+
+// normalizeParam strips the leading "/" that gin includes in wildcard values,
+// so /files/*filepath yields "a/b" for /files/a/b on every adapter.
+func (c *ginContext) normalizeParam(key, value string) string {
+	if strings.HasPrefix(value, "/") && strings.Contains(c.ctx.FullPath(), "*"+key) {
+		return strings.TrimPrefix(value, "/")
+	}
+	return value
 }
 
 func (c *ginContext) Query(key string) string {
@@ -106,11 +118,13 @@ func (c *ginContext) Headers() map[string][]string {
 }
 
 func (c *ginContext) Cookie(name string) (string, error) {
-	value, err := c.ctx.Cookie(name)
+	// Read the raw cookie value (no query-unescaping) so Cookie and Cookies
+	// agree with each other and with the other adapters.
+	cookie, err := c.ctx.Request.Cookie(name)
 	if err != nil {
 		return "", http.ErrNoCookie
 	}
-	return value, nil
+	return cookie.Value, nil
 }
 
 func (c *ginContext) Cookies() map[string]string {
@@ -130,10 +144,8 @@ func (c *ginContext) FormValue(key string) string {
 }
 
 func (c *ginContext) MultipartForm() (*multipart.Form, error) {
-	if err := c.ctx.Request.ParseMultipartForm(32 << 20); err != nil {
-		return nil, err
-	}
-	return c.ctx.Request.MultipartForm, nil
+	// Delegate to gin so the engine's configured MaxMultipartMemory is honored.
+	return c.ctx.MultipartForm()
 }
 
 func (c *ginContext) FormFile(name string) (*multipart.FileHeader, error) {
@@ -141,7 +153,13 @@ func (c *ginContext) FormFile(name string) (*multipart.FileHeader, error) {
 }
 
 func (c *ginContext) BodyRaw() ([]byte, error) {
-	return c.ctx.GetRawData()
+	body, err := c.ctx.GetRawData()
+	if err != nil {
+		return nil, err
+	}
+	// Restore the body so subsequent Bind*/BodyReader calls still work.
+	c.ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 func (c *ginContext) BodyReader() io.ReadCloser {
@@ -184,7 +202,13 @@ func (c *ginContext) Status(code int) {
 }
 
 func (c *ginContext) JSON(code int, v any) error {
-	c.ctx.JSON(code, v)
+	// Marshal directly so an encoding failure is returned as an error
+	// instead of being buried in gin's c.Errors.
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	c.ctx.Data(code, "application/json; charset=utf-8", b)
 	return nil
 }
 
@@ -227,6 +251,9 @@ func (c *ginContext) File(path string) error {
 }
 
 func (c *ginContext) Redirect(code int, location string) error {
+	if !httpx.ValidRedirectCode(code) {
+		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
+	}
 	c.ctx.Redirect(code, location)
 	return nil
 }

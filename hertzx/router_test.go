@@ -5,6 +5,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -121,13 +122,14 @@ func TestStaticHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown extension falls back to octet-stream", func(t *testing.T) {
+	t.Run("unknown extension is content-sniffed like net/http", func(t *testing.T) {
 		r := doStatic(t, h, http.MethodGet, "/assets/unknown.weirdxyz")
 		if r.status != http.StatusOK {
 			t.Fatalf("status = %d, want 200", r.status)
 		}
-		if r.contentType != "application/octet-stream" {
-			t.Fatalf("content-type = %q, want application/octet-stream", r.contentType)
+		// http.FileServer sniffs the content ("blob" is text), matching gin/echo.
+		if !strings.HasPrefix(r.contentType, "text/plain") {
+			t.Fatalf("content-type = %q, want text/plain (sniffed)", r.contentType)
 		}
 	})
 

@@ -129,6 +129,9 @@ func assertCookieEqual(t *testing.T, framework string, want, got *http.Cookie) {
 	if want.SameSite != got.SameSite {
 		t.Fatalf("%s cookie %q samesite mismatch: want %v, got %v", framework, want.Name, want.SameSite, got.SameSite)
 	}
+	if !want.Expires.Equal(got.Expires) {
+		t.Fatalf("%s cookie %q expires mismatch: want %v, got %v", framework, want.Name, want.Expires, got.Expires)
+	}
 }
 
 func isJSON(contentType string) bool {

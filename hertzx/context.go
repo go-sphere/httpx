@@ -3,14 +3,16 @@ package hertzx
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/go-sphere/httpx"
 )
 
@@ -27,6 +29,12 @@ func newHertzContext(ctx context.Context, rc *app.RequestContext) *hertzContext 
 		ctx:     rc,
 		baseCtx: ctx,
 	}
+}
+
+// FromHertz wraps a hertz request context as httpx.Context. Use it from a
+// hertz ErrorHandler to write through httpx helpers.
+func FromHertz(ctx context.Context, rc *app.RequestContext) httpx.Context {
+	return newHertzContext(ctx, rc)
 }
 
 // Request (httpx.Request)
@@ -48,7 +56,7 @@ func (c *hertzContext) ClientIP() string {
 }
 
 func (c *hertzContext) Param(key string) string {
-	return c.ctx.Param(key)
+	return c.normalizeParam(key, c.ctx.Param(key))
 }
 
 func (c *hertzContext) Params() map[string]string {
@@ -57,9 +65,18 @@ func (c *hertzContext) Params() map[string]string {
 	}
 	out := make(map[string]string, len(c.ctx.Params))
 	for _, p := range c.ctx.Params {
-		out[p.Key] = p.Value
+		out[p.Key] = c.normalizeParam(p.Key, p.Value)
 	}
 	return out
+}
+
+// normalizeParam strips the leading "/" that hertz includes in wildcard
+// values, so /files/*filepath yields "a/b" for /files/a/b on every adapter.
+func (c *hertzContext) normalizeParam(key, value string) string {
+	if strings.HasPrefix(value, "/") && strings.Contains(c.ctx.FullPath(), "*"+key) {
+		return strings.TrimPrefix(value, "/")
+	}
+	return value
 }
 
 func (c *hertzContext) Query(key string) string {
@@ -95,8 +112,16 @@ func (c *hertzContext) Headers() map[string][]string {
 	out := make(map[string][]string, header.Len())
 	header.VisitAll(func(k, v []byte) {
 		key := textproto.CanonicalMIMEHeaderKey(string(k))
+		if key == "Host" {
+			// net/http moves Host out of the header map, so gin/echo never
+			// expose it here; filter it for cross-adapter consistency.
+			return
+		}
 		out[key] = append(out[key], string(v))
 	})
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 
@@ -179,7 +204,13 @@ func (c *hertzContext) Status(code int) {
 }
 
 func (c *hertzContext) JSON(code int, v any) error {
-	c.ctx.JSON(code, v)
+	// Marshal directly so an encoding failure is returned as an error
+	// instead of panicking inside hertz's render.
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	c.ctx.Data(code, "application/json; charset=utf-8", b)
 	return nil
 }
 
@@ -214,6 +245,9 @@ func (c *hertzContext) File(path string) error {
 }
 
 func (c *hertzContext) Redirect(code int, location string) error {
+	if !httpx.ValidRedirectCode(code) {
+		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
+	}
 	c.ctx.Redirect(code, []byte(location))
 	return nil
 }
@@ -223,17 +257,14 @@ func (c *hertzContext) SetHeader(key, value string) {
 }
 
 func (c *hertzContext) SetCookie(cookie *http.Cookie) {
-	if cookie != nil {
-		c.ctx.SetCookie(
-			cookie.Name,
-			cookie.Value,
-			cookie.MaxAge,
-			cookie.Path,
-			cookie.Domain,
-			mapSameSite(cookie.SameSite),
-			cookie.Secure,
-			cookie.HttpOnly,
-		)
+	if cookie == nil {
+		return
+	}
+	// Serialize via net/http for full fidelity (Expires, Partitioned, no
+	// value re-encoding), matching the other adapters. Note that Add appends,
+	// so setting the same cookie name twice emits two Set-Cookie headers.
+	if v := cookie.String(); v != "" {
+		c.ctx.Response.Header.Add("Set-Cookie", v)
 	}
 }
 
@@ -293,19 +324,4 @@ func (c *hertzContext) StatusCode() int {
 
 func (c *hertzContext) NativeContext() any {
 	return c.ctx
-}
-
-func mapSameSite(mode http.SameSite) protocol.CookieSameSite {
-	switch mode {
-	case http.SameSiteLaxMode:
-		return protocol.CookieSameSiteLaxMode
-	case http.SameSiteStrictMode:
-		return protocol.CookieSameSiteStrictMode
-	case http.SameSiteNoneMode:
-		return protocol.CookieSameSiteNoneMode
-	default:
-		// http.SameSiteDefaultMode and the zero value both fall here so that
-		// the SameSite attribute is omitted, matching net/http cookie.String().
-		return protocol.CookieSameSiteDisabled
-	}
 }

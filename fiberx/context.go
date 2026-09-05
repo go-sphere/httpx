@@ -3,14 +3,23 @@ package fiberx
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strings"
+	"sync"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 )
+
+// stateMu guards StateStore access. Fiber's Locals is backed by fasthttp's
+// unsynchronized userValues, unlike the other adapters which lock internally;
+// the shared mutex keeps cross-adapter behavior consistent for middleware
+// that reads state from short-lived goroutines.
+var stateMu sync.RWMutex
 
 var _ httpx.Context = (*fiberContext)(nil)
 
@@ -31,7 +40,7 @@ func (c *fiberContext) Method() string {
 }
 
 func (c *fiberContext) Path() string {
-	return c.ctx.Path()
+	return strings.Clone(c.ctx.Path())
 }
 
 func (c *fiberContext) FullPath() string {
@@ -43,7 +52,18 @@ func (c *fiberContext) ClientIP() string {
 }
 
 func (c *fiberContext) Param(key string) string {
-	return c.ctx.Params(key)
+	// Values are cloned because fiber (with the default Immutable=false)
+	// returns strings aliased to pooled fasthttp buffers.
+	v := strings.Clone(c.ctx.Params(key))
+	if v == "" && key != "*" {
+		// Named wildcard rewritten to "*" at registration time.
+		if route := c.ctx.Route(); route != nil {
+			if orig, ok := wildcardNames.Load(route.Path); ok && orig == key {
+				return strings.Clone(c.ctx.Params("*"))
+			}
+		}
+	}
+	return v
 }
 
 func (c *fiberContext) Params() map[string]string {
@@ -51,15 +71,31 @@ func (c *fiberContext) Params() map[string]string {
 	if route == nil || len(route.Params) == 0 {
 		return nil
 	}
+	origName := ""
+	if orig, ok := wildcardNames.Load(route.Path); ok {
+		origName, _ = orig.(string)
+	}
 	params := make(map[string]string, len(route.Params))
 	for _, name := range route.Params {
-		params[name] = c.ctx.Params(name)
+		value := strings.Clone(c.ctx.Params(name))
+		// Fiber aliases "*" to "*1" internally; expose the canonical "*" key.
+		key := name
+		switch key {
+		case "*1":
+			key = "*"
+		case "+1":
+			key = "+"
+		}
+		params[key] = value
+		if key == "*" && origName != "" {
+			params[origName] = value
+		}
 	}
 	return params
 }
 
 func (c *fiberContext) Query(key string) string {
-	return c.ctx.Query(key)
+	return strings.Clone(c.ctx.Query(key))
 }
 
 func (c *fiberContext) Queries() map[string][]string {
@@ -80,7 +116,7 @@ func (c *fiberContext) RawQuery() string {
 }
 
 func (c *fiberContext) Header(key string) string {
-	return c.ctx.Get(key)
+	return strings.Clone(c.ctx.Get(key))
 }
 
 func (c *fiberContext) Headers() map[string][]string {
@@ -122,7 +158,7 @@ func (c *fiberContext) Cookies() map[string]string {
 }
 
 func (c *fiberContext) FormValue(key string) string {
-	return c.ctx.FormValue(key)
+	return strings.Clone(c.ctx.FormValue(key))
 }
 
 func (c *fiberContext) MultipartForm() (*multipart.Form, error) {
@@ -134,7 +170,9 @@ func (c *fiberContext) FormFile(name string) (*multipart.FileHeader, error) {
 }
 
 func (c *fiberContext) BodyRaw() ([]byte, error) {
-	return c.ctx.BodyRaw(), nil
+	// Copy out of fasthttp's pooled buffer so the bytes stay valid after the
+	// request completes.
+	return bytes.Clone(c.ctx.BodyRaw()), nil
 }
 
 func (c *fiberContext) BodyReader() io.ReadCloser {
@@ -209,11 +247,10 @@ func (c *fiberContext) File(path string) error {
 }
 
 func (c *fiberContext) Redirect(code int, location string) error {
-	redirect := c.ctx.Redirect()
-	if code > 0 {
-		redirect.Status(code)
+	if !httpx.ValidRedirectCode(code) {
+		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
 	}
-	return redirect.To(location)
+	return c.ctx.Redirect().Status(code).To(location)
 }
 
 func (c *fiberContext) SetHeader(key, value string) {
@@ -231,10 +268,14 @@ func (c *fiberContext) SetCookie(cookie *http.Cookie) {
 // StateStore (httpx.StateStore)
 
 func (c *fiberContext) Set(key string, val any) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	c.ctx.Locals(key, val)
 }
 
 func (c *fiberContext) Get(key string) (any, bool) {
+	stateMu.RLock()
+	defer stateMu.RUnlock()
 	val := c.ctx.Locals(key)
 	if val == nil {
 		return nil, false

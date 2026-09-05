@@ -28,10 +28,11 @@ go test ./conformance/... -cover
 
 ## Router Feature Detection
 
-`httpx` exposes optional router capability detection through helper functions.
+`httpx` exposes optional router capability detection through the
+`RouterFeatureProvider` interface implemented by every `Router`.
 
 ```go
-supports := httpx.SupportsNamedWildcard(router)
+supports := router.SupportsRouterFeature(httpx.RouterFeatureNamedWildcard)
 ```
 
 Currently supported router feature keys:

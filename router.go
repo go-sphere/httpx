@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 )
 
 type H map[string]any
@@ -26,6 +27,25 @@ type Registrar interface {
 	Any(path string, h Handler)
 	Static(prefix, root string)
 	StaticFS(prefix string, fs fs.FS)
+}
+
+// StdHandlerMounter is an optional Registrar capability for mounting plain
+// net/http handlers (e.g. httputil.ReverseProxy, pprof, http.ServeMux) on a
+// route without leaving the httpx abstraction.
+type StdHandlerMounter interface {
+	// HandleStd registers h for the given method and path. The path uses the
+	// same syntax as Registrar.Handle for the underlying adapter.
+	HandleStd(method, path string, h http.Handler)
+}
+
+// MountStd mounts h on r when the Registrar supports StdHandlerMounter and
+// reports whether the handler was mounted.
+func MountStd(r Registrar, method, path string, h http.Handler) bool {
+	if m, ok := r.(StdHandlerMounter); ok {
+		m.HandleStd(method, path, h)
+		return true
+	}
+	return false
 }
 
 // RouterFeature identifies an optional router capability.
@@ -73,6 +93,20 @@ type Engine interface {
 	Start() error
 	Stop(ctx context.Context) error
 	IsRunning() bool // Server status check
+}
+
+// TestRequester is an optional Engine capability that serves a request
+// in-process without opening a network listener, for use in tests.
+type TestRequester interface {
+	// Do dispatches req through the engine's router and returns the
+	// response. The response body is fully buffered.
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// AsTestRequester returns the in-process test capability when supported.
+func AsTestRequester(e Engine) (TestRequester, bool) {
+	tr, ok := e.(TestRequester)
+	return tr, ok
 }
 
 // WithJson wraps a handler with a JSON success envelope.

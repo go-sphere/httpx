@@ -26,6 +26,14 @@ func FixWildcardPathIfNeed(r RouterFeatureProvider, path string) (fixedPath stri
 	return toAnonymousWildcardPath(path), "*"
 }
 
+// WildcardParamName returns the name of the first wildcard parameter in path,
+// "*" for an anonymous wildcard, or "" when path contains no wildcard.
+// Adapters use it to remember the original name when rewriting named
+// wildcards for routers that only support the anonymous form.
+func WildcardParamName(path string) string {
+	return wildcardParamName(path)
+}
+
 func toAnonymousWildcardPath(path string) string {
 	if path == "" {
 		return path

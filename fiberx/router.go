@@ -2,20 +2,29 @@ package fiberx
 
 import (
 	"io/fs"
+	"net/http"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/gofiber/fiber/v3/middleware/static"
 )
 
 var _ httpx.Router = (*Router)(nil)
 
+// wildcardNames maps a registered route pattern (with the anonymous "*"
+// wildcard) to the original named wildcard parameter, so Param(name) keeps
+// working after FixWildcardPathIfNeed rewrote the path.
+var wildcardNames sync.Map // route pattern -> original param name
+
 type Router struct {
 	basePath    string
 	group       fiber.Router
 	middlewares []httpx.Middleware
+	errHandler  httpx.ErrorHandler
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
@@ -43,18 +52,39 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 		basePath:    joinPaths(r.basePath, prefix),
 		group:       r.group.Group(prefix),
 		middlewares: cloneMiddlewares(r.middlewares, m...),
+		errHandler:  r.errHandler,
 	}
+}
+
+// normalizeWildcardPath rewrites named wildcards (/*filepath) to fiber's
+// anonymous form (/*) and records the original name so Param("filepath")
+// still resolves.
+func (r *Router) normalizeWildcardPath(path string) string {
+	orig := httpx.WildcardParamName(path)
+	if orig == "" || orig == "*" {
+		return path
+	}
+	fixed, _ := httpx.FixWildcardPathIfNeed(r, path)
+	wildcardNames.Store(joinPaths(r.basePath, fixed), orig)
+	return fixed
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	methods := []string{strings.ToUpper(method)}
 	handler, handlers := splitHandlers(r.adaptHandler(h))
-	r.group.Add(methods, path, handler, handlers...)
+	r.group.Add(methods, r.normalizeWildcardPath(path), handler, handlers...)
+}
+
+// HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
+func (r *Router) HandleStd(method, path string, h http.Handler) {
+	methods := []string{strings.ToUpper(method)}
+	handler, handlers := splitHandlers(r.combineHandlers(adaptor.HTTPHandler(h)))
+	r.group.Add(methods, r.normalizeWildcardPath(path), handler, handlers...)
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
 	handler, handlers := splitHandlers(r.adaptHandler(h))
-	r.group.All(path, handler, handlers...)
+	r.group.All(r.normalizeWildcardPath(path), handler, handlers...)
 }
 
 func (r *Router) Static(prefix, root string) {
@@ -103,7 +133,7 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 func (r *Router) combineHandlers(h fiber.Handler) []any {
 	mid := make([]any, 0, len(r.middlewares)+1)
 	for _, m := range r.middlewares {
-		mid = append(mid, adaptMiddleware(m))
+		mid = append(mid, adaptMiddleware(m, r.errHandler))
 	}
 	mid = append(mid, h)
 	return mid
@@ -112,9 +142,28 @@ func (r *Router) combineHandlers(h fiber.Handler) []any {
 func (r *Router) adaptHandler(h httpx.Handler) []any {
 	return r.combineHandlers(func(ctx fiber.Ctx) error {
 		fc := newFiberContext(ctx)
-		// Return error directly to fiber's error handling system
-		return h(fc)
+		return handleFiberError(fc, h(fc), r.errHandler)
 	})
+}
+
+// handleFiberError routes a handler/middleware error either through the
+// configured httpx.ErrorHandler (with a real httpx.Context) or back to
+// fiber's error handling. A committed response is never overwritten.
+func handleFiberError(fc *fiberContext, err error, errHandler httpx.ErrorHandler) error {
+	if err == nil {
+		return nil
+	}
+	if len(fc.ctx.Response().Body()) > 0 {
+		// The handler already wrote a body; replacing it with an error body
+		// would corrupt the response. Match the committed-response behavior
+		// of the other adapters and leave it untouched.
+		return nil
+	}
+	if errHandler != nil {
+		errHandler(fc, err)
+		return nil
+	}
+	return err
 }
 
 func splitHandlers(handlers []any) (any, []any) {

@@ -122,25 +122,16 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 								return
 							}
 						case 4:
-							// HEAD static file
-							// Note: Echo v4's native StaticFS only registers GET, returning 405 (rendered as 500).
-							// ginx, fiberx, and hertzx serve HEAD directly with status 200 and empty body.
+							// HEAD static file: every adapter must serve HEAD with 200 and an empty body.
 							req := httptest.NewRequest(http.MethodHead, "http://example.com/static/sample.txt", nil)
 							resp := h.Do(t, req)
-							if name == "echox" {
-								if resp.Status != http.StatusInternalServerError && resp.Status != http.StatusMethodNotAllowed {
-									errCh <- fmt.Errorf("echox static HEAD expected 405/500, got %d", resp.Status)
-									return
-								}
-							} else {
-								if resp.Status != http.StatusOK {
-									errCh <- fmt.Errorf("%s worker %d static HEAD status: got %d", name, workerID, resp.Status)
-									return
-								}
-								if len(resp.Body) != 0 {
-									errCh <- fmt.Errorf("%s worker %d static HEAD must have empty body, got %q", name, workerID, resp.Body)
-									return
-								}
+							if resp.Status != http.StatusOK {
+								errCh <- fmt.Errorf("%s worker %d static HEAD status: got %d", name, workerID, resp.Status)
+								return
+							}
+							if len(resp.Body) != 0 {
+								errCh <- fmt.Errorf("%s worker %d static HEAD must have empty body, got %q", name, workerID, resp.Body)
+								return
 							}
 						}
 					}
@@ -172,18 +163,32 @@ func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
 			h := newHarness(t, name)
 			h.Router.StaticFS("/files", os.DirFS(tmpDir))
 
-			// Echo v4 native StaticFS only registers GET. For echox, we verify zero FD leaks on GET and HEAD.
 			method := http.MethodHead
 			expectedStatus := http.StatusOK
-			if name == "echox" {
-				expectedStatus = http.StatusInternalServerError // Echo returns 405, rendered as 500
-			}
 
-			// Warm up handler
-			warmupReq := httptest.NewRequest(method, "http://example.com/files/leak_check.txt", nil)
-			resp := h.Do(t, warmupReq)
-			if resp.Status != expectedStatus {
-				t.Fatalf("%s warmup status: got %d, want %d", name, resp.Status, expectedStatus)
+			// Warm up the handler at the same concurrency as the measurement so
+			// lazily-initialized runtime FDs (fasthttp workers, pollers) are
+			// created before the baseline count.
+			var warmWg sync.WaitGroup
+			warmupFailures := make(chan int, 50*5)
+			warmWg.Add(50)
+			for w := 0; w < 50; w++ {
+				go func() {
+					defer warmWg.Done()
+					for i := 0; i < 5; i++ {
+						warmupReq := httptest.NewRequest(method, "http://example.com/files/leak_check.txt", nil)
+						resp := h.Do(t, warmupReq)
+						if resp.Status != expectedStatus {
+							warmupFailures <- resp.Status
+							return
+						}
+					}
+				}()
+			}
+			warmWg.Wait()
+			close(warmupFailures)
+			for status := range warmupFailures {
+				t.Fatalf("%s warmup status: got %d, want %d", name, status, expectedStatus)
 			}
 
 			runtime.GC()
@@ -223,17 +228,21 @@ func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
 				t.Fatalf("error during HEAD stress: %v", err)
 			}
 
-			runtime.GC()
-			time.Sleep(50 * time.Millisecond)
-			finalFDs := countOpenFDs(t)
-
-			diff := finalFDs - initialFDs
-			t.Logf("[%s] Open FDs before: %d, after 500 HEAD requests: %d (diff: %d)", name, initialFDs, finalFDs, diff)
-
 			// If file descriptors were leaked on each request, diff would be ~500.
-			// Allow at most 5 for transient runtime noise (e.g., fasthttp internal workers/timers).
+			// Allow at most 5 for transient runtime noise (e.g., fasthttp internal
+			// workers/timers), re-counting a few times to let transient FDs settle.
+			var diff int
+			for attempt := 0; attempt < 5; attempt++ {
+				runtime.GC()
+				time.Sleep(50 * time.Millisecond)
+				diff = countOpenFDs(t) - initialFDs
+				if diff <= 5 {
+					break
+				}
+			}
+			t.Logf("[%s] Open FDs before: %d, diff after 500 HEAD requests: %d", name, initialFDs, diff)
 			if diff > 5 {
-				t.Fatalf("%s leaked file descriptors! Initial: %d, Final: %d (leaked %d FDs)", name, initialFDs, finalFDs, diff)
+				t.Fatalf("%s leaked file descriptors! Initial: %d (leaked %d FDs)", name, initialFDs, diff)
 			}
 		})
 	}
