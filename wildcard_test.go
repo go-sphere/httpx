@@ -104,9 +104,9 @@ func TestWildcardParamName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := wildcardParamName(tt.in)
+			got := WildcardParamName(tt.in)
 			if got != tt.want {
-				t.Fatalf("wildcardParamName(%q) = %q, want %q", tt.in, got, tt.want)
+				t.Fatalf("WildcardParamName(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
