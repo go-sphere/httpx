@@ -26,10 +26,33 @@ go test ./conformance/... -v
 go test ./conformance/... -cover
 ```
 
-## Server-Sent Events
+## Streaming and Server-Sent Events
 
-`httpx.ServerSentEvents` streams SSE responses on every supported framework,
-built on the optional `Streamer` capability:
+Every official adapter implements the optional `Streamer` context capability.
+Use `AsStreamer` when you need raw incremental output such as NDJSON:
+
+```go
+router.GET("/chunks", func(ctx httpx.Context) error {
+    streamer, ok := httpx.AsStreamer(ctx)
+    if !ok {
+        return httpx.ErrStreamerNotSupported
+    }
+    return streamer.Stream(http.StatusOK, "application/x-ndjson", func(w io.Writer) error {
+        for _, chunk := range chunks {
+            if _, err := fmt.Fprintf(w, "%s\n", chunk); err != nil {
+                return err // client gone; stop producing
+            }
+        }
+        return nil
+    })
+})
+```
+
+Each write made by the stream callback is flushed to the client. Once streaming
+starts, the response status and headers are committed, so callback errors are
+for termination and cleanup; they cannot become a different HTTP response.
+
+`ServerSentEvents` is the framework-neutral SSE layer over `Streamer`:
 
 ```go
 router.GET("/events", func(ctx httpx.Context) error {
@@ -42,9 +65,23 @@ router.GET("/events", func(ctx httpx.Context) error {
 })
 ```
 
-Each event is flushed to the client as a single write. Lower-level primitives
-are also available: `httpx.AsStreamer` for raw incremental streaming and
-`httpx.AsFlusher` for mid-handler flushes (not supported by Fiber).
+`SSEWriter` supports `Send`, `SendData`, `SendJSON`, and `Comment`. Each event
+is encoded and flushed as one unit. `ServerSentEvents` sets
+`Content-Type: text/event-stream`, `Cache-Control: no-cache`, and
+`X-Accel-Buffering: no`; stop producing as soon as a send fails or the request
+context is canceled.
+
+Streaming capability matrix:
+
+| Capability | Gin | Echo | Hertz | Fiber |
+| --- | --- | --- | --- | --- |
+| `Streamer` / `ServerSentEvents` | Yes | Yes | Yes | Yes |
+| `Flusher` / `AsFlusher` | Yes | Yes | Yes | No |
+
+Fiber uses its deferred stream-writer API, so the stream callback runs after
+the handler returns and `Stream` returns `nil` immediately. In-process requests
+through `httpx.TestRequester` buffer stream writes into the final response body;
+use a real HTTP connection when testing incremental delivery or disconnects.
 
 ## Router Feature Detection
 
