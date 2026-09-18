@@ -5,13 +5,17 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 )
 
-var _ httpx.Engine = (*Engine)(nil)
+var (
+	_ httpx.Engine           = (*Engine)(nil)
+	_ httpx.InterceptorScope = (*Engine)(nil)
+)
 
 type Config struct {
 	engine            *fiber.App
@@ -31,6 +35,13 @@ func NewConfig(opts ...Option) *Config {
 	if conf.engine == nil {
 		fiberConf := fiber.Config{
 			ErrorHandler: DefaultErrorHandler,
+			// Fiber keeps the raw path by default, so route parameters would
+			// come back percent-encoded where gin, echo and hertz decode them.
+			// An engine supplied through WithEngine keeps its own setting —
+			// fiber.Config is immutable after fiber.New — so the context
+			// decodes route parameters itself when this is off (see
+			// fiberContext.paramValue and BindURI).
+			UnescapePath: true,
 		}
 		if conf.setTrustedProxies && len(conf.trustedProxies) > 0 {
 			fiberConf.ProxyHeader = fiber.HeaderXForwardedFor
@@ -43,10 +54,20 @@ func NewConfig(opts ...Option) *Config {
 			}
 		}
 		conf.engine = fiber.New(fiberConf)
-	} else if conf.setTrustedProxies {
-		// fiber.Config is immutable after fiber.New; silently ignoring a
-		// security option would be worse than failing loudly.
-		panic("fiberx: WithTrustedProxies requires the engine to be constructed by fiberx; configure TrustProxy/TrustProxyConfig on your own fiber.Config instead")
+	} else {
+		if conf.setTrustedProxies {
+			// fiber.Config is immutable after fiber.New; silently ignoring a
+			// security option would be worse than failing loudly.
+			panic("fiberx: WithTrustedProxies requires the engine to be constructed by fiberx; configure TrustProxy/TrustProxyConfig on your own fiber.Config instead")
+		}
+	}
+	if conf.errHandler == nil {
+		// Render handler and middleware errors in the adapter rather than
+		// letting them unwind into fiber.Config.ErrorHandler: that field can
+		// only be set when this adapter builds the app, so an engine passed
+		// through WithEngine would otherwise answer with fiber's plain-text
+		// default — leaking err.Error() and reporting every status as 500.
+		conf.errHandler = defaultHTTPXErrorHandler
 	}
 	if conf.listen == nil {
 		conf.listen = func(app *fiber.App) error {
@@ -56,14 +77,24 @@ func NewConfig(opts ...Option) *Config {
 	return &conf
 }
 
+// defaultHTTPXErrorHandler is DefaultErrorHandler on the framework-neutral
+// side: same status and body, reached with an httpx.Context.
+func defaultHTTPXErrorHandler(ctx httpx.Context, err error) {
+	status, body := httpx.RenderError(normalizeFiberError(err))
+	_ = ctx.JSON(status, body)
+}
+
 // DefaultErrorHandler renders errors with the standard httpx error body. It
 // understands *fiber.Error (framework 404/405/... errors) so their status
 // codes are preserved instead of being reported as 500.
 //
-// fiber.Config is immutable after fiber.New, so when providing your own
-// engine via WithEngine, set this (or an equivalent) as fiber.Config's
-// ErrorHandler to keep the default httpx error shape, or use
-// WithErrorHandler to intercept handler errors before they reach fiber.
+// Errors from httpx handlers and middleware no longer reach it: the adapter
+// renders them itself (see defaultHTTPXErrorHandler), because fiber.Config is
+// immutable after fiber.New and an engine supplied through WithEngine would
+// otherwise answer with fiber's plain-text default. This handler is what the
+// adapter-built engine installs for the errors fiber raises on its own —
+// unmatched routes, a rejected method, an oversized body. Set it as your
+// fiber.Config's ErrorHandler to get the same shape for those on your own app.
 func DefaultErrorHandler(ctx fiber.Ctx, err error) error {
 	status, body := httpx.RenderError(normalizeFiberError(err))
 	return ctx.Status(status).JSON(body)
@@ -137,8 +168,11 @@ type Engine struct {
 	engine     *fiber.App
 	listen     func(*fiber.App) error
 	errHandler httpx.ErrorHandler
-	running    atomic.Bool
-	closed     atomic.Bool
+	// interceptors are inherited by every group created from this engine; see
+	// Router.UseInterceptor.
+	interceptors []httpx.Interceptor
+	running      atomic.Bool
+	closed       atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -156,6 +190,15 @@ func (e *Engine) Use(middlewares ...httpx.Middleware) {
 	for _, middleware := range middlewares {
 		e.engine.Use(adaptMiddleware(middleware, e.errHandler))
 	}
+}
+
+// UseInterceptor registers composed middleware on the engine, implementing
+// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
+func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
+	if len(m) == 0 {
+		return
+	}
+	e.interceptors = append(slices.Clone(e.interceptors), m...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {

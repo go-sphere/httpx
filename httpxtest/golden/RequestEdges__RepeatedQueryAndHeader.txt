@@ -1,0 +1,19 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "headerFirst": "one",
+  "headers": [
+    "one",
+    "two"
+  ],
+  "queries": [
+    "a",
+    "b"
+  ],
+  "queryFirst": "a",
+  "single": [
+    "x"
+  ]
+}

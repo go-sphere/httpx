@@ -1,0 +1,12 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "order": [
+    "global-before",
+    "group-before",
+    "route-before",
+    "handler"
+  ]
+}

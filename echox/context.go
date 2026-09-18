@@ -77,8 +77,13 @@ func (c *echoContext) Params() map[string]string {
 	}
 	if v, exists := out["*"]; exists {
 		if orig, ok := wildcardNames.Load(c.ctx.Path()); ok {
-			if name, isStr := orig.(string); isStr {
+			if name, isStr := orig.(string); isStr && name != "" {
 				out[name] = v
+				// "*" is this adapter's normalization artifact: the route was
+				// registered as /*name, so Params must read the same as on an
+				// adapter with native named wildcards. An anonymous /* route
+				// has no entry here and keeps its "*" key.
+				delete(out, "*")
 			}
 		}
 	}

@@ -170,3 +170,4 @@ coverage.txt
 *.swp
 *~
 /code_review
+.ocr-result.json

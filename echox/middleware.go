@@ -14,9 +14,13 @@ func adaptMiddleware(middleware httpx.Middleware, errHandler httpx.ErrorHandler)
 			ctx.next = next
 			err := middleware(ctx)
 			if err != nil && errHandler != nil {
-				if !ec.Response().Committed {
-					errHandler(ctx, err)
+				if ec.Response().Committed {
+					// Nothing may write to a committed response, but the
+					// error still belongs on echo's error path so logging
+					// middleware sees it instead of it vanishing here.
+					return err
 				}
+				errHandler(ctx, err)
 				return nil
 			}
 			return err

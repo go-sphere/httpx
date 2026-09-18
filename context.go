@@ -26,8 +26,8 @@ type RequestInfo interface {
 	// ClientIP returns the best-effort client IP.
 	//
 	// SECURITY: which forwarding headers (X-Forwarded-For, X-Real-IP) are
-	// trusted differs per framework by default — gin and hertz trust every
-	// peer, fiber trusts none. For a uniform, spoofing-resistant policy use
+	// trusted differs per framework by default — gin, echo and hertz trust
+	// every peer, fiber trusts none. For a uniform, spoofing-resistant policy use
 	// the adapter's WithTrustedProxies option: with it configured,
 	// X-Forwarded-For is honored only when the direct peer is inside the
 	// given CIDR list, and an empty list ignores forwarding headers
@@ -62,6 +62,15 @@ type BodyAccess interface {
 	//
 	// Calling this method may consume the underlying request body.
 	// Implementations should make best-effort to allow subsequent reads.
+	//
+	// The returned slice belongs to the caller: it stays valid and unchanged
+	// after the handler returns, so it can be retained, sent to another
+	// goroutine or cached. Implementations on frameworks that keep the body in
+	// a pooled buffer (fasthttp-based ones) therefore copy it, which costs one
+	// allocation the size of the body. Handlers that only need the bytes during
+	// the request — and large uploads in particular — should prefer
+	// BodyReader, or reach for the native context to read the framework's own
+	// buffer without a copy.
 	BodyRaw() ([]byte, error)
 
 	// BodyReader returns a reader for the request body.

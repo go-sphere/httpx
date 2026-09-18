@@ -375,9 +375,18 @@ func doHertzRequest(t *testing.T, h *server.Hertz, req *http.Request) responseSn
 
 	hdr := make(http.Header)
 	hctx.Response.Header.VisitAll(func(k, v []byte) {
+		if textproto.CanonicalMIMEHeaderKey(string(k)) == "Set-Cookie" {
+			// Collected below: VisitAll yields only one Set-Cookie line.
+			return
+		}
 		hdr.Add(textproto.CanonicalMIMEHeaderKey(string(k)), string(v))
 	})
 	for _, setCookie := range hctx.Response.Header.GetAll("Set-Cookie") {
+		// Hertz returns a single empty string for an absent key, which would
+		// otherwise become a bogus "Set-Cookie:" line in the snapshot.
+		if setCookie == "" {
+			continue
+		}
 		hdr.Add("Set-Cookie", setCookie)
 	}
 

@@ -1,19 +1,24 @@
 package fiberx
 
 import (
+	"errors"
 	"io/fs"
 	"net/http"
+	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
-	"github.com/gofiber/fiber/v3/middleware/static"
 )
 
-var _ httpx.Router = (*Router)(nil)
+var (
+	_ httpx.Router           = (*Router)(nil)
+	_ httpx.InterceptorScope = (*Router)(nil)
+)
 
 // wildcardNames maps a registered route pattern (with the anonymous "*"
 // wildcard) to the original named wildcard parameter, so Param(name) keeps
@@ -21,10 +26,29 @@ var _ httpx.Router = (*Router)(nil)
 var wildcardNames sync.Map // route pattern -> original param name
 
 type Router struct {
-	basePath    string
-	group       fiber.Router
-	middlewares []httpx.Middleware
-	errHandler  httpx.ErrorHandler
+	basePath     string
+	group        fiber.Router
+	middlewares  []httpx.Middleware
+	errHandler   httpx.ErrorHandler
+	interceptors []httpx.Interceptor
+}
+
+// UseInterceptor registers composed middleware, implementing
+// httpx.InterceptorScope.
+//
+// The chain is composed into every route registered afterwards, so it needs no
+// native handler slot and no per-request object. The ordering rule that follows
+// from that: interceptors always run inside the middleware registered with Use
+// on this scope and its parents, whatever order the registration calls were
+// made in. Among themselves, interceptors run in registration order, parent
+// scopes first.
+func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
+	if len(m) == 0 {
+		return
+	}
+	// A fresh slice keeps routes registered earlier bound to the chain they
+	// were registered with.
+	r.interceptors = append(slices.Clone(r.interceptors), m...)
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
@@ -49,10 +73,11 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		basePath:    joinPaths(r.basePath, prefix),
-		group:       r.group.Group(prefix),
-		middlewares: cloneMiddlewares(r.middlewares, m...),
-		errHandler:  r.errHandler,
+		basePath:     joinPaths(r.basePath, prefix),
+		group:        r.group.Group(prefix),
+		middlewares:  cloneMiddlewares(r.middlewares, m...),
+		errHandler:   r.errHandler,
+		interceptors: r.interceptors,
 	}
 }
 
@@ -81,10 +106,9 @@ func (r *Router) Handle(method, path string, h httpx.Handler) {
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
+// It goes through Handle so interceptors registered on this scope also wrap it.
 func (r *Router) HandleStd(method, path string, h http.Handler) {
-	methods := []string{strings.ToUpper(method)}
-	handler, handlers := splitHandlers(r.combineHandlers(adaptor.HTTPHandler(h)))
-	r.group.Add(methods, r.normalizeWildcardPath(path), handler, handlers...)
+	r.Handle(method, path, stdLeaf(h))
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
@@ -93,11 +117,29 @@ func (r *Router) Any(path string, h httpx.Handler) {
 }
 
 func (r *Router) Static(prefix, root string) {
-	r.group.Use(append([]any{prefix}, r.combineHandlers(static.New(root))...)...)
+	r.StaticFS(prefix, os.DirFS(root))
 }
 
-func (r *Router) StaticFS(prefix string, fs fs.FS) {
-	r.group.Use(append([]any{prefix}, r.combineHandlers(static.New("", static.Config{FS: fs}))...)...)
+// StaticFS serves fsys through httpx.StaticFileHandler and registers it as an
+// ordinary route, so interceptors on this scope wrap static requests too.
+func (r *Router) StaticFS(prefix string, fsys fs.FS) {
+	pattern := httpx.StaticRoutePattern(prefix)
+	leaf := stdLeaf(httpx.StaticFileHandler(joinPaths(r.basePath, prefix), fsys))
+	r.Handle(http.MethodGet, pattern, leaf)
+	r.Handle(http.MethodHead, pattern, leaf)
+}
+
+// stdLeaf serves a plain net/http handler through fiber's context, so a std
+// handler can sit at the end of a composed interceptor chain.
+func stdLeaf(h http.Handler) httpx.Handler {
+	native := adaptor.HTTPHandler(h)
+	return func(ctx httpx.Context) error {
+		fc, ok := httpx.AsNativeContext[fiber.Ctx](ctx)
+		if !ok {
+			return errors.New("fiberx: fiber context type error")
+		}
+		return native(fc)
+	}
 }
 
 // GET registers a new GET route for a path with matching handler.
@@ -145,30 +187,73 @@ func (r *Router) combineHandlers(h fiber.Handler) []any {
 }
 
 func (r *Router) adaptHandler(h httpx.Handler) []any {
+	// Composed once per route, never per request.
+	h = httpx.ComposeInterceptors(h, r.interceptors)
 	return r.combineHandlers(func(ctx fiber.Ctx) error {
 		fc := newFiberContext(ctx)
-		return handleFiberError(fc, h(fc), r.errHandler)
+		return handleFiberError(ctx, fc, h(fc), r.errHandler)
 	})
 }
 
 // handleFiberError routes a handler/middleware error either through the
 // configured httpx.ErrorHandler (with a real httpx.Context) or back to
 // fiber's error handling. A committed response is never overwritten.
-func handleFiberError(fc *fiberContext, err error, errHandler httpx.ErrorHandler) error {
+func handleFiberError(native fiber.Ctx, fc httpx.Context, err error, errHandler httpx.ErrorHandler) error {
 	if err == nil {
 		return nil
 	}
-	if len(fc.ctx.Response().Body()) > 0 {
-		// The handler already wrote a body; replacing it with an error body
-		// would corrupt the response. Match the committed-response behavior
-		// of the other adapters and leave it untouched.
+	if responseDecided(native) {
+		// The handler already decided the response; replacing it with an
+		// error body would corrupt it. Match the committed-response behavior
+		// of the other adapters and leave it untouched — but keep the error
+		// reachable instead of dropping it, which is what the other three do
+		// (gin/hertz put it on the native error list, echo returns it to its
+		// own error path). Returning it to fiber is not an option here: fiber's
+		// ErrorHandler would render it over the committed body.
+		native.Locals(handledErrorKey{}, err)
 		return nil
 	}
 	if errHandler != nil {
 		errHandler(fc, err)
+		// Rendered, but still recorded: gin and hertz keep a handled error on
+		// the native error list, so an outer layer's Next sees it. Without
+		// this, rendering at the failing layer would hide the failure from
+		// logging middleware registered above it.
+		native.Locals(handledErrorKey{}, err)
 		return nil
 	}
 	return err
+}
+
+// handledErrorKey names the Locals slot holding an error that could not be
+// rendered because the response was already decided. An unexported struct type
+// cannot collide with an application's own Locals keys.
+type handledErrorKey struct{}
+
+// committedError returns the error a decided response prevented from being
+// rendered, if any. Context.Next surfaces it so an outer layer still sees the
+// failure it would have seen on the other three adapters.
+func handledError(native fiber.Ctx) error {
+	err, _ := native.Locals(handledErrorKey{}).(error)
+	return err
+}
+
+// responseDecided reports whether the handler already produced a response.
+//
+// A bodyless response is decided without writing any bytes, so "has a body"
+// cannot detect it: 204/304/1xx carry no body by definition, and a redirect
+// carries only a Location. A bare Status(code) is deliberately *not* counted —
+// it records a code without producing a response, and swallowing an error
+// behind it would turn a failure into a silent 2xx.
+func responseDecided(native fiber.Ctx) bool {
+	if len(native.Response().Body()) > 0 {
+		return true
+	}
+	status := native.Response().StatusCode()
+	if status == http.StatusNoContent || status == http.StatusNotModified || status < http.StatusOK {
+		return true
+	}
+	return httpx.ValidRedirectCode(status) && len(native.Response().Header.Peek("Location")) > 0
 }
 
 func splitHandlers(handlers []any) (any, []any) {

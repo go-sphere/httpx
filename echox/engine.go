@@ -7,13 +7,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
 )
 
-var _ httpx.Engine = (*Engine)(nil)
+var (
+	_ httpx.Engine           = (*Engine)(nil)
+	_ httpx.InterceptorScope = (*Engine)(nil)
+)
 
 type Config struct {
 	engine      *echo.Echo
@@ -143,8 +147,11 @@ type Engine struct {
 	engine     *echo.Echo
 	server     *http.Server
 	errHandler httpx.ErrorHandler
-	running    atomic.Bool
-	closed     atomic.Bool
+	// interceptors are inherited by every group created from this engine; see
+	// Router.UseInterceptor.
+	interceptors []httpx.Interceptor
+	running      atomic.Bool
+	closed       atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -166,11 +173,21 @@ func (e *Engine) Use(middleware ...httpx.Middleware) {
 	e.engine.Use(adaptMiddlewares(middleware, e.errHandler)...)
 }
 
+// UseInterceptor registers composed middleware on the engine, implementing
+// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
+func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
+	if len(m) == 0 {
+		return
+	}
+	e.interceptors = append(slices.Clone(e.interceptors), m...)
+}
+
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:      e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
-		basePath:   joinPaths("/", prefix),
-		errHandler: e.errHandler,
+		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
+		basePath:     joinPaths("/", prefix),
+		errHandler:   e.errHandler,
+		interceptors: e.interceptors,
 	}
 }
 

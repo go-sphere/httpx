@@ -1,0 +1,12 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "order": [
+    "wrapped-mw-pre",
+    "i-pre",
+    "wrapped-i-pre",
+    "handler"
+  ]
+}

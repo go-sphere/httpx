@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -89,70 +88,8 @@ func TestEngineSingleUseConformance(t *testing.T) {
 // TestFlusherCapabilityConformance covers C6: gin/echo/hertz expose Flusher,
 // fiber (buffered model) does not, and an early Flush must not corrupt the
 // final in-process response.
-func TestFlusherCapabilityConformance(t *testing.T) {
-	wantFlusher := map[string]bool{"ginx": true, "echox": true, "hertzx": true, "fiberx": false}
-	for _, name := range conformanceFrameworks {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, name)
-			h.Router.GET("/flush/cap", func(ctx httpx.Context) error {
-				fl, ok := httpx.AsFlusher(ctx)
-				if ok != wantFlusher[name] {
-					return httpx.NewInternalServerError("unexpected Flusher capability")
-				}
-				if ok {
-					ctx.SetHeader("Content-Type", "text/plain; charset=utf-8")
-					ctx.Status(http.StatusOK)
-					if err := fl.Flush(); err != nil {
-						return err
-					}
-				}
-				return ctx.Text(http.StatusOK, "after-flush")
-			})
-
-			got := h.Do(t, httptest.NewRequest(http.MethodGet, "http://example.com/flush/cap", nil))
-			if got.Status != http.StatusOK {
-				t.Fatalf("%s status = %d; body=%q", name, got.Status, got.Body)
-			}
-			if got.Body != "after-flush" {
-				t.Fatalf("%s body = %q, want %q", name, got.Body, "after-flush")
-			}
-		})
-	}
-}
-
-// TestStreamBufferedConformance covers C6: Stream must produce the same final
-// response on every adapter under in-process dispatch.
-func TestStreamBufferedConformance(t *testing.T) {
-	for _, name := range conformanceFrameworks {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, name)
-			h.Router.GET("/stream/buffered", func(ctx httpx.Context) error {
-				s, ok := httpx.AsStreamer(ctx)
-				if !ok {
-					return httpx.NewInternalServerError("Streamer not supported")
-				}
-				return s.Stream(http.StatusOK, "text/event-stream", func(w io.Writer) error {
-					if _, err := io.WriteString(w, "data: one\n\n"); err != nil {
-						return err
-					}
-					_, err := io.WriteString(w, "data: two\n\n")
-					return err
-				})
-			})
-
-			got := h.Do(t, httptest.NewRequest(http.MethodGet, "http://example.com/stream/buffered", nil))
-			if got.Status != http.StatusOK {
-				t.Fatalf("%s status = %d; body=%q", name, got.Status, got.Body)
-			}
-			if got.Body != "data: one\n\ndata: two\n\n" {
-				t.Fatalf("%s body = %q", name, got.Body)
-			}
-			if ct := got.Headers.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
-				t.Fatalf("%s content-type = %q, want text/event-stream", name, ct)
-			}
-		})
-	}
-}
+// Flusher capability and buffered streaming moved to the shared suite
+// (httpxtest); what remains needs a real connection.
 
 // TestStreamIncrementalDeliveryConformance covers C6 end to end: over a real
 // connection, data written before the handler (or stream callback) finishes

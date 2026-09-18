@@ -1,0 +1,4 @@
+status: 302
+content-type: n/a
+location: /to
+body: ignored

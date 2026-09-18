@@ -3,7 +3,6 @@ package hertzx
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/app/server/render"
 	"github.com/cloudwego/hertz/pkg/protocol/http1/resp"
 	"github.com/go-sphere/httpx"
 )
@@ -162,7 +162,15 @@ func (c *hertzContext) FormFile(name string) (*multipart.FileHeader, error) {
 }
 
 func (c *hertzContext) BodyRaw() ([]byte, error) {
-	return c.ctx.Request.BodyE()
+	body, err := c.ctx.Request.BodyE()
+	if err != nil {
+		return nil, err
+	}
+	// Copy out of hertz's pooled request buffer so the bytes stay valid after
+	// the request completes, which is what the BodyAccess contract promises.
+	// Handlers that only read the body during the request can avoid the copy
+	// with BodyReader or the native context.
+	return bytes.Clone(body), nil
 }
 
 func (c *hertzContext) BodyReader() io.ReadCloser {
@@ -220,13 +228,18 @@ func (c *hertzContext) Status(code int) {
 }
 
 func (c *hertzContext) JSON(code int, v any) error {
-	// Marshal directly so an encoding failure is returned as an error
-	// instead of panicking inside hertz's render.
-	b, err := json.Marshal(v)
-	if err != nil {
+	// Use Hertz's configured marshaler (including ResetJSONMarshal), while
+	// returning encoding failures instead of letting RequestContext.JSON panic.
+	r := render.JSONRender{Data: v}
+	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+		c.ctx.Status(code)
+		r.WriteContentType(&c.ctx.Response)
+		return nil
+	}
+	if err := r.Render(&c.ctx.Response); err != nil {
 		return err
 	}
-	c.ctx.Data(code, "application/json; charset=utf-8", b)
+	c.ctx.Status(code)
 	return nil
 }
 
@@ -381,6 +394,10 @@ func (c *hertzContext) Stream(code int, contentType string, fn func(w io.Writer)
 		c.ctx.SetContentType(contentType)
 	}
 	c.ctx.Status(code)
+	// The response is committed from here on: the status and content type are
+	// decided and, over a real connection, already flushed. Recording it keeps
+	// an error returned by fn from being rendered over the stream.
+	c.ctx.Set(streamCommittedKey, true)
 	if err := c.Flush(); err != nil {
 		return err
 	}

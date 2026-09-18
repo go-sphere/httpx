@@ -1,0 +1,10 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "ctxVal": "ctx-value",
+  "storeOk": true,
+  "storeThroughContext": false,
+  "storeVal": "store-value"
+}

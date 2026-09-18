@@ -13,18 +13,52 @@ A unified HTTP framework abstraction layer for Go that provides a consistent int
 
 ## Testing
 
-The project provides a single conformance test suite under `conformance/`.
-It uses `ginx` as the baseline behavior and checks that other adapters
-(`fiberx`, `echox`, `hertzx`) match it.
+The shared conformance suite lives in `httpxtest`. An adapter is certified on
+its own — against a recorded contract rather than against another adapter — by
+declaring its capabilities and an engine factory:
 
-Run tests:
-```bash
-# Run conformance tests
-go test ./conformance/... -v
-
-# Run with coverage
-go test ./conformance/... -cover
+```go
+func TestConformance(t *testing.T) {
+    httpxtest.Run(t, httpxtest.Suite{
+        Name: "ginx",
+        Caps: httpxtest.Caps{NamedWildcard: true, Flusher: true},
+        NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
+            return ginx.New(ginx.WithEngine(gin.New()))
+        },
+    })
+}
 ```
+
+A third-party adapter can import `httpxtest` and certify itself against the
+same contract as the official four: registration and routing, chain control
+flow (including mixing `Middleware`, `Interceptor` and the framework's own
+middleware), request bodies and binders, forms and uploads, and the edges —
+repeated query/header keys, unknown-length bodies, encoded paths, large
+bodies. Every capability an adapter declares in `Caps` is also checked against
+what it actually does. The four official suites are wired in
+`conformance/httpxtest_suite_test.go` for now and move into each adapter's own
+module once the root module is released with `httpxtest` in it (an adapter
+cannot import a package that its declared `httpx` version does not contain, and
+adapter `go.mod` files must stay free of `replace`). Response shape is pinned by the golden
+contracts in `httpxtest/golden/`, which every adapter compares against; see
+that directory's README for the format. Rewrite them with `make golden`, which
+records from each adapter and then verifies that all of them still agree.
+
+```bash
+make test          # every module, including each adapter's conformance run
+make golden        # rewrite and verify the shared response contracts
+go test ./conformance -run TestHTTPXTestSuite/ginx -v
+
+# The same scenario table, measured per adapter through its own dispatcher.
+go test ./conformance -run '^$' -bench '^BenchmarkHTTPXTestSuite$/ginx' -benchmem
+```
+
+`conformance/` remains for what genuinely needs all four frameworks in one
+process: the cross-framework benchmark tables and the cases that reach for
+each framework's native middleware. Adapter-specific behavior is tested in the
+adapter's own module (for example `ginx/middleware_test.go` for how ginx
+registers middleware on gin, and `ginx/interceptor_test.go` for composed
+chains).
 
 ## Streaming and Server-Sent Events
 
@@ -82,6 +116,73 @@ Fiber uses its deferred stream-writer API, so the stream callback runs after
 the handler returns and `Stream` returns `nil` immediately. In-process requests
 through `httpx.TestRequester` buffer stream writes into the final response body;
 use a real HTTP connection when testing incremental delivery or disconnects.
+
+## Middleware
+
+`Router.Use` and `Router.Group` take `httpx.Middleware` (`func(httpx.Context) error`).
+A middleware continues the chain with `ctx.Next()` and stops it by returning
+without calling `Next` — either after writing a response, or by returning an
+error for the adapter's error handler to render.
+
+Each middleware is registered as one native handler, so it interleaves with
+native middleware in registration order and `Next` behaves exactly as the
+framework's own does. That costs one wrapper allocation and two calls per layer
+per request; `Interceptor` below is the cheap path for chains where that
+matters.
+
+Native middleware needs no special handling — it occupies its own handler slot
+like every other layer — but `UseNative` skips the adapter entirely:
+
+```go
+// Preferred: no adapter in between, and the position is explicit.
+router.(*ginx.Router).UseNative(gin.Recovery())
+
+// Equivalent behavior, one adapter layer more.
+router.Use(ginx.AdaptGinMiddleware(gin.Recovery()))
+```
+
+`AdaptStdMiddleware` (`func(http.Handler) http.Handler`) drives the chain
+through `ctx.Next()` and works the same way.
+
+### Interceptors (experimental)
+
+`httpx.Interceptor` is an additive second form that takes the rest of the
+chain instead of driving it through `ctx.Next()`:
+
+```go
+func RequestID(next httpx.Handler) httpx.Handler {
+    return func(ctx httpx.Context) error {
+        ctx.SetContext(withRequestID(ctx.Context()))
+        return next(ctx)
+    }
+}
+
+httpx.UseInterceptor(router, RequestID)   // reports whether the scope composed them
+```
+
+Because the chain is composed into each route at registration, it needs no
+per-request object: one call per layer, zero allocations, and no depth at
+which cost stops growing linearly. `ginx` composes natively; the other
+adapters fall back to adapting each layer, which behaves identically and costs
+what `Use` costs. `httpx.AsMiddleware` and `httpx.AsInterceptor` convert
+between the two forms (the second costs one allocation per request, since
+`ctx.Next()` needs somewhere to point).
+
+Three things to know about:
+
+- Interceptors always run inside anything registered with `Use`/`UseNative` on
+  the same scope, regardless of call order.
+- They are composed into **registered routes**, which includes `Static`,
+  `StaticFS` and `HandleStd` — an interceptor wraps a static mount and can
+  block it — but not unmatched paths. An engine-wide concern that must also
+  cover 404s (access log, panic recovery) belongs on `Use`.
+- An error from an inner layer is rendered at the route rather than at the
+  layer that produced it, so a layer that logs the outcome should use the error
+  returned by `next`, not only `Context.StatusCode`.
+
+On a bare chain the form is worth 2x versus `Middleware` (see the benchmarks);
+over real middleware it is worth a few percent, because the middlewares' own
+work dominates.
 
 ## Router Feature Detection
 

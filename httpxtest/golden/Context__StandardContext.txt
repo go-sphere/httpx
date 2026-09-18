@@ -1,0 +1,10 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "doneNotNil": false,
+  "errIsNil": true,
+  "hasDeadline": false,
+  "value": "trace-1"
+}

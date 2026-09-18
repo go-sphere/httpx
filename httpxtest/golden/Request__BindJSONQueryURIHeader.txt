@@ -1,0 +1,11 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "active": true,
+  "age": 11,
+  "id": "7",
+  "name": "tom",
+  "token": "token-1"
+}

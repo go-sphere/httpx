@@ -6,13 +6,17 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
 )
 
-var _ httpx.Engine = (*Engine)(nil)
+var (
+	_ httpx.Engine           = (*Engine)(nil)
+	_ httpx.InterceptorScope = (*Engine)(nil)
+)
 
 type ErrorHandler func(ctx *gin.Context, err error)
 
@@ -133,8 +137,11 @@ type Engine struct {
 	engine     *gin.Engine
 	server     *http.Server
 	errHandler ErrorHandler
-	running    atomic.Bool
-	closed     atomic.Bool
+	// interceptors are inherited by every group created from this engine; see
+	// Router.UseInterceptor.
+	interceptors []httpx.Interceptor
+	running      atomic.Bool
+	closed       atomic.Bool
 }
 
 // New constructs a gin-backed Engine using core options.
@@ -164,10 +171,26 @@ func (e *Engine) Use(middleware ...httpx.Middleware) {
 	e.engine.Use(adaptMiddlewares(middleware, e.errHandler)...)
 }
 
+// UseInterceptor registers composed middleware on the engine, implementing
+// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
+func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
+	if len(m) == 0 {
+		return
+	}
+	e.interceptors = append(slices.Clone(e.interceptors), m...)
+}
+
+// UseNative registers native gin middleware on the engine. See
+// Router.UseNative for why it is preferred over AdaptGinMiddleware.
+func (e *Engine) UseNative(handlers ...gin.HandlerFunc) {
+	e.engine.Use(handlers...)
+}
+
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:      e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
-		errHandler: e.errHandler,
+		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
+		errHandler:   e.errHandler,
+		interceptors: e.interceptors,
 	}
 }
 

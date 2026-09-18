@@ -1,0 +1,10 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "age": 12,
+  "formValue": "bob",
+  "id": "8",
+  "name": "bob"
+}

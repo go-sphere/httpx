@@ -3,10 +3,12 @@ package hertzx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io/fs"
 	"net/http"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,11 +17,33 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-var _ httpx.Router = (*Router)(nil)
+var (
+	_ httpx.Router           = (*Router)(nil)
+	_ httpx.InterceptorScope = (*Router)(nil)
+)
 
 type Router struct {
-	group      *route.RouterGroup
-	errHandler ErrorHandler
+	group        *route.RouterGroup
+	errHandler   ErrorHandler
+	interceptors []httpx.Interceptor
+}
+
+// UseInterceptor registers composed middleware, implementing
+// httpx.InterceptorScope.
+//
+// The chain is composed into every route registered afterwards, so it needs no
+// native handler slot and no per-request object. The ordering rule that follows
+// from that: interceptors always run inside the middleware registered with Use
+// on this scope and its parents, whatever order the registration calls were
+// made in. Among themselves, interceptors run in registration order, parent
+// scopes first.
+func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
+	if len(m) == 0 {
+		return
+	}
+	// A fresh slice keeps routes registered earlier bound to the chain they
+	// were registered with.
+	r.interceptors = append(slices.Clone(r.interceptors), m...)
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
@@ -41,8 +65,9 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:      r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),
-		errHandler: r.errHandler,
+		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),
+		errHandler:   r.errHandler,
+		interceptors: r.interceptors,
 	}
 }
 
@@ -52,9 +77,9 @@ func (r *Router) Handle(method, path string, h httpx.Handler) {
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
+// It goes through Handle so interceptors registered on this scope also wrap it.
 func (r *Router) HandleStd(method, path string, h http.Handler) {
-	mustValidWildcard(path)
-	r.group.Handle(strings.ToUpper(method), path, toStdHandler(h))
+	r.Handle(method, path, stdLeaf(h))
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
@@ -74,33 +99,26 @@ func (r *Router) Static(prefix, root string) {
 	r.StaticFS(prefix, os.DirFS(root))
 }
 
-// StaticFS serves files through net/http's FileServer so Range requests,
-// If-Modified-Since (304), and content sniffing behave like the gin/echo
-// adapters instead of a hand-rolled sendfile loop. Directories (and the bare
-// prefix) return 404 instead of a listing, matching the echo/fiber adapters.
+// StaticFS serves fsys through httpx.StaticFileHandler and registers it as an
+// ordinary route, so interceptors on this scope wrap static requests too.
 func (r *Router) StaticFS(prefix string, fsys fs.FS) {
-	urlPattern := path.Join(prefix, "/*filepath")
-	strip := path.Join(r.group.BasePath(), prefix)
-	handler := http.Handler(http.FileServer(http.FS(fsys)))
-	if strip != "" && strip != "/" {
-		handler = http.StripPrefix(strip, handler)
-	}
-	fileHandler := toStdHandler(handler)
-	hertzHandler := func(ctx context.Context, rc *app.RequestContext) {
-		name := strings.TrimPrefix(rc.Param("filepath"), "/")
-		rel := strings.TrimPrefix(path.Clean("/"+name), "/")
-		if rel == "" || rel == "." {
-			rc.Status(http.StatusNotFound)
-			return
+	pattern := httpx.StaticRoutePattern(prefix)
+	leaf := stdLeaf(httpx.StaticFileHandler(path.Join(r.group.BasePath(), prefix), fsys))
+	r.Handle(http.MethodGet, pattern, leaf)
+	r.Handle(http.MethodHead, pattern, leaf)
+}
+
+// stdLeaf serves a plain net/http handler through hertz's request context, so a
+// std handler can sit at the end of a composed interceptor chain.
+func stdLeaf(h http.Handler) httpx.Handler {
+	return func(ctx httpx.Context) error {
+		rc, ok := httpx.AsNativeContext[*app.RequestContext](ctx)
+		if !ok {
+			return errors.New("hertzx: hertz context type error")
 		}
-		if info, err := fs.Stat(fsys, rel); err != nil || info.IsDir() {
-			rc.Status(http.StatusNotFound)
-			return
-		}
-		fileHandler(ctx, rc)
+		toStdHandler(h)(ctx.Context(), rc)
+		return nil
 	}
-	r.group.GET(urlPattern, hertzHandler)
-	r.group.HEAD(urlPattern, hertzHandler)
 }
 
 // GET registers a new GET route for a path with matching handler.
@@ -139,6 +157,8 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 }
 
 func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
+	// Composed once per route, never per request.
+	h = httpx.ComposeInterceptors(h, r.interceptors)
 	return func(ctx context.Context, rc *app.RequestContext) {
 		hc := newHertzContext(ctx, rc)
 		if err := h(hc); err != nil {
@@ -156,10 +176,42 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 	}
 }
 
-// hertzResponseCommitted reports whether the handler already produced a body.
+// hertzResponseCommitted reports whether the handler already produced output.
+// A hijacked writer — installed by the Streamer/SSE path — takes over header
+// and body writing, so Response.Body() stays empty while bytes have in fact
+// already reached the client; checking only the buffer would let the error
+// handler append a second body to a streaming response.
 func hertzResponseCommitted(rc *app.RequestContext) bool {
-	return len(rc.Response.Body()) > 0
+	if rc.Response.GetHijackWriter() != nil || len(rc.Response.Body()) > 0 {
+		return true
+	}
+	// A bodyless response is decided without writing any bytes, so "has a body"
+	// cannot detect it: 204/304/1xx carry no body by definition, and a redirect
+	// carries only a Location. A bare Status(code) is deliberately *not* counted —
+	// it records a code without producing a response, and swallowing an error
+	// behind it would turn a failure into a silent 2xx.
+	status := rc.Response.StatusCode()
+	if status == http.StatusNoContent || status == http.StatusNotModified || status < http.StatusOK {
+		return true
+	}
+	if httpx.ValidRedirectCode(status) && len(rc.Response.Header.Peek("Location")) > 0 {
+		return true
+	}
+	// A stream commits a 200 before the callback runs. Over a real connection
+	// that installs a hijack writer, but in buffered dispatch nothing is
+	// observable, so Stream records it explicitly.
+	committed, ok := rc.Get(streamCommittedKey)
+	if !ok {
+		return false
+	}
+	flag, _ := committed.(bool)
+	return flag
 }
+
+// streamCommittedKey marks a request whose response was committed by Stream.
+// Set on the streaming path only, so the ordinary paths keep their allocation
+// profile.
+const streamCommittedKey = "httpx.hertzx.streamCommitted"
 
 // toStdHandler bridges a net/http handler into hertz's buffered response,
 // so it works both over the network and with in-process test dispatch.
@@ -193,6 +245,10 @@ func compatRequest(ctx context.Context, rc *app.RequestContext) (*http.Request, 
 		}
 		req.Header.Add(key, string(v))
 	})
+	// The peer address is not part of the hertz header set, so std handlers
+	// reading r.RemoteAddr (ReverseProxy-style X-Forwarded-For, IP filters)
+	// would otherwise always see an empty value on this adapter.
+	req.RemoteAddr = rc.RemoteAddr().String()
 	return req, nil
 }
 

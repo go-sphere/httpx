@@ -1,0 +1,11 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "order": [
+    "a-pre",
+    "b-pre",
+    "handler"
+  ]
+}

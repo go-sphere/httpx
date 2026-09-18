@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
+	"slices"
 	"sync/atomic"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -14,7 +15,10 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-var _ httpx.Engine = (*Engine)(nil)
+var (
+	_ httpx.Engine           = (*Engine)(nil)
+	_ httpx.InterceptorScope = (*Engine)(nil)
+)
 
 type ErrorHandler func(ctx context.Context, rc *app.RequestContext, err error)
 
@@ -121,9 +125,12 @@ func WithTrustedProxies(proxies ...string) Option {
 type Engine struct {
 	engine     *server.Hertz
 	errHandler ErrorHandler
-	clientIP   app.ClientIP
-	running    atomic.Bool
-	closed     atomic.Bool
+	// interceptors are inherited by every group created from this engine; see
+	// Router.UseInterceptor.
+	interceptors []httpx.Interceptor
+	clientIP     app.ClientIP
+	running      atomic.Bool
+	closed       atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -145,6 +152,15 @@ func New(opts ...Option) httpx.Engine {
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
 	e.engine.Use(adaptMiddlewares(middleware, e.errHandler)...)
+}
+
+// UseInterceptor registers composed middleware on the engine, implementing
+// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
+func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
+	if len(m) == 0 {
+		return
+	}
+	e.interceptors = append(slices.Clone(e.interceptors), m...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
@@ -221,6 +237,12 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 		header.Add(key, string(v))
 	})
 	for _, setCookie := range hctx.Response.Header.GetAll("Set-Cookie") {
+		// Hertz returns a single empty string when the response sets no
+		// cookie, which would otherwise surface as a malformed "Set-Cookie:"
+		// header that no client ever receives over the wire.
+		if setCookie == "" {
+			continue
+		}
 		header.Add("Set-Cookie", setCookie)
 	}
 

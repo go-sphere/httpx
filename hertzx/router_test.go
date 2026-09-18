@@ -3,14 +3,64 @@ package hertzx
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/test/mock"
+	"github.com/go-sphere/httpx"
 )
+
+func TestStreamErrorDoesNotRenderSecondResponse(t *testing.T) {
+	h := server.New(server.WithDisablePrintRoute(true))
+	engine := New(WithEngine(h), WithHTTPXErrorHandler(func(ctx httpx.Context, err error) {
+		t.Error("error handler ran after stream was committed")
+	}))
+	engine.Group("").GET("/", func(ctx httpx.Context) error {
+		streamer, _ := httpx.AsStreamer(ctx)
+		return streamer.Stream(http.StatusOK, "text/event-stream", func(w io.Writer) error {
+			if _, err := io.WriteString(w, "data: one\n\n"); err != nil {
+				return err
+			}
+			return errors.New("late stream failure")
+		})
+	})
+	rc := h.NewContext()
+	rc.SetConn(mock.NewConn(""))
+	rc.Request.SetRequestURI("http://example.com/")
+	h.ServeHTTP(t.Context(), rc)
+}
+
+type peerConn struct{ *mock.Conn }
+
+func (peerConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1234}
+}
+
+func TestStdHandlerReceivesRemoteAddr(t *testing.T) {
+	h := server.New(server.WithDisablePrintRoute(true))
+	engine := New(WithEngine(h))
+	conn := peerConn{mock.NewConn("")}
+	var got string
+	if !httpx.MountStd(engine.Group(""), http.MethodGet, "/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.RemoteAddr
+	})) {
+		t.Fatal("MountStd unsupported")
+	}
+	rc := h.NewContext()
+	rc.SetConn(conn)
+	rc.Request.SetRequestURI("http://example.com/")
+	h.ServeHTTP(t.Context(), rc)
+	if got != conn.RemoteAddr().String() {
+		t.Fatalf("RemoteAddr = %q, want %q", got, conn.RemoteAddr())
+	}
+}
 
 func newStaticServer(t *testing.T, files fs.FS) *server.Hertz {
 	t.Helper()

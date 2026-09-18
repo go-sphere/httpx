@@ -1,0 +1,8 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "body": "chunked-body",
+  "length": 12
+}

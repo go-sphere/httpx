@@ -1,0 +1,10 @@
+status: 200
+content-type: text/event-stream
+body: text
+---
+data: event-0
+
+data: event-1
+
+data: event-2
+

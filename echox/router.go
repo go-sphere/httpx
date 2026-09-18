@@ -1,10 +1,12 @@
 package echox
 
 import (
+	"errors"
 	"io/fs"
 	"net/http"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 
@@ -12,7 +14,10 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-var _ httpx.Router = (*Router)(nil)
+var (
+	_ httpx.Router           = (*Router)(nil)
+	_ httpx.InterceptorScope = (*Router)(nil)
+)
 
 // wildcardNames maps a registered route pattern (with the anonymous "*"
 // wildcard) to the original named wildcard parameter, so Param(name) keeps
@@ -20,9 +25,28 @@ var _ httpx.Router = (*Router)(nil)
 var wildcardNames sync.Map // route pattern -> original param name
 
 type Router struct {
-	group      *echo.Group
-	basePath   string
-	errHandler httpx.ErrorHandler
+	group        *echo.Group
+	basePath     string
+	errHandler   httpx.ErrorHandler
+	interceptors []httpx.Interceptor
+}
+
+// UseInterceptor registers composed middleware, implementing
+// httpx.InterceptorScope.
+//
+// The chain is composed into every route registered afterwards, so it needs no
+// native handler slot and no per-request object. The ordering rule that follows
+// from that: interceptors always run inside the middleware registered with Use
+// on this scope and its parents, whatever order the registration calls were
+// made in. Among themselves, interceptors run in registration order, parent
+// scopes first.
+func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
+	if len(m) == 0 {
+		return
+	}
+	// A fresh slice keeps routes registered earlier bound to the chain they
+	// were registered with.
+	r.interceptors = append(slices.Clone(r.interceptors), m...)
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
@@ -44,9 +68,10 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:      r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),
-		basePath:   joinPaths(r.basePath, prefix),
-		errHandler: r.errHandler,
+		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),
+		basePath:     joinPaths(r.basePath, prefix),
+		errHandler:   r.errHandler,
+		interceptors: r.interceptors,
 	}
 }
 
@@ -72,8 +97,9 @@ func (r *Router) Handle(method, path string, h httpx.Handler) {
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
+// It goes through Handle so interceptors registered on this scope also wrap it.
 func (r *Router) HandleStd(method, path string, h http.Handler) {
-	r.group.Add(strings.ToUpper(method), r.normalizeWildcardPath(path), echo.WrapHandler(h))
+	r.Handle(method, path, stdLeaf(h))
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
@@ -84,14 +110,29 @@ func (r *Router) Static(prefix, root string) {
 	r.StaticFS(prefix, os.DirFS(root))
 }
 
+// StaticFS serves filesystem through httpx.StaticFileHandler and registers it
+// as an ordinary route, so interceptors on this scope wrap static requests
+// too. The named-wildcard pattern (rather than echo's native prefix+"*")
+// keeps adjacent URLs like /assetshello.txt from matching and keeps HEAD from
+// returning 405.
 func (r *Router) StaticFS(prefix string, filesystem fs.FS) {
-	// Register GET and HEAD on "<prefix>/*" (with a path separator) instead of
-	// echo's native prefix+"*" route, which over-matches adjacent URLs
-	// (/assetshello.txt) and rejects HEAD with 405.
-	pattern := joinPaths(prefix, "/*")
-	handler := echo.StaticDirectoryHandler(filesystem, false)
-	r.group.GET(pattern, handler)
-	r.group.HEAD(pattern, handler)
+	pattern := httpx.StaticRoutePattern(prefix)
+	leaf := stdLeaf(httpx.StaticFileHandler(joinPaths(r.basePath, prefix), filesystem))
+	r.Handle(http.MethodGet, pattern, leaf)
+	r.Handle(http.MethodHead, pattern, leaf)
+}
+
+// stdLeaf serves a plain net/http handler through echo's response and request,
+// so a std handler can sit at the end of a composed interceptor chain.
+func stdLeaf(h http.Handler) httpx.Handler {
+	return func(ctx httpx.Context) error {
+		ec, ok := httpx.AsNativeContext[echo.Context](ctx)
+		if !ok {
+			return errors.New("echox: echo context type error")
+		}
+		h.ServeHTTP(ec.Response(), ec.Request())
+		return nil
+	}
 }
 
 // GET registers a new GET route for a path with matching handler.
@@ -130,14 +171,20 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 }
 
 func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
+	// Composed once per route, never per request.
+	h = httpx.ComposeInterceptors(h, r.interceptors)
 	return func(ec echo.Context) error {
 		ctx := newEchoContext(ec)
 		err := h(ctx)
 		if err != nil {
 			if r.errHandler != nil {
-				if !ec.Response().Committed {
-					r.errHandler(ctx, err)
+				if ec.Response().Committed {
+					// Nothing may write to a committed response, but the
+					// error still belongs on echo's error path so logging
+					// middleware sees it instead of it vanishing here.
+					return err
 				}
+				r.errHandler(ctx, err)
 				return nil
 			}
 			return err

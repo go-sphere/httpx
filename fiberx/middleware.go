@@ -10,7 +10,7 @@ import (
 func adaptMiddleware(middleware httpx.Middleware, errHandler httpx.ErrorHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		fc := newFiberContext(ctx)
-		return handleFiberError(fc, middleware(fc), errHandler)
+		return handleFiberError(ctx, fc, middleware(fc), errHandler)
 	}
 }
 

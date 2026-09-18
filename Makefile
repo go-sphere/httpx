@@ -2,6 +2,13 @@ GO ?= go
 GOLANGCI_LINT ?= golangci-lint
 NILAWAY ?= nilaway
 
+# Sampling for the three statistical benchmark targets. 12 is the smallest
+# count that kept every row under +/-15% on the reference machine; 6 produced
+# occasional rows above +/-50%, which benchstat cannot tell from a real change.
+# Override for a quick look (BENCH_COUNT=4) or to match a report (18).
+BENCH_COUNT ?= 12
+BENCH_TIME ?= 200ms
+
 GO_MOD_DIRS := . ginx fiberx echox hertzx conformance
 TAG_ADAPTERS := ginx fiberx echox hertzx
 DIRECT_DEPS_TEMPLATE := {{if and (not .Main) (not .Indirect) (not .Replace)}}{{.Path}}{{end}}
@@ -14,7 +21,7 @@ export GOWORK := $(CURDIR)/go.work
 endif
 
 .PHONY: deps-update tidy fmt test test-race lint lint-all check verify api-compat
-.PHONY: bench bench-5x tag tag-all tag-delete help
+.PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network golden tag tag-all tag-delete help
 
 deps-update:
 	@set -eu; \
@@ -47,6 +54,18 @@ test:
 		echo "==> testing $$dir"; \
 		( cd "$$dir" && $(GO) test ./... ); \
 	done
+
+# Rewrites the shared response contracts from the adapters, then verifies that
+# every adapter still matches what was written: a change only one adapter
+# agrees with fails the second pass instead of being frozen into the contract.
+golden:
+	@set -eu; \
+	for adapter in $(TAG_ADAPTERS); do \
+		echo "==> recording contracts from $$adapter"; \
+		HTTPX_UPDATE_GOLDEN=1 $(GO) test ./conformance -run "TestHTTPXTestSuite/$$adapter" -count=1; \
+	done; \
+	echo "==> verifying every adapter against the recorded contracts"; \
+	$(GO) test ./conformance -run TestHTTPXTestSuite -count=1
 
 test-race:
 	@set -eu; \
@@ -89,6 +108,27 @@ bench:
 bench-5x:
 	$(GO) test -run '^$$' -bench BenchmarkFramework -benchmem -count=5 ./conformance/...
 
+# Native versus httpx, without sockets/client allocations. Compare saved runs
+# with golang.org/x/perf/cmd/benchstat; benchmarks/README.md documents the setup.
+bench-adapter:
+	$(GO) test -run '^$$' -bench '^BenchmarkAdapter$$' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -cpu=4 ./conformance
+
+# The shared scenario table (httpxtest) per adapter, driven through each
+# framework's own dispatcher via Suite.Dispatch. Same sampling as bench-adapter
+# (BENCH_COUNT/BENCH_TIME) so the two are comparable.
+bench-suite:
+	$(GO) test -run '^$$' -bench '^BenchmarkHTTPXTestSuite$$' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -cpu=4 ./conformance
+
+# The shared scenario table again, but each scenario paired with a hand-written
+# implementation on the raw framework (no httpx at all), so the delta is the
+# price of the abstraction on identical behavior.
+bench-native:
+	$(GO) test -run '^$$' -bench '^BenchmarkNativeVsHTTPX$$' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -cpu=4 ./conformance
+
+# Requires Vegeta on PATH or in ~/go/bin. No load-test dependencies enter go.mod.
+bench-network:
+	python3 benchmarks/network.py
+
 tag:
 	@test -n "$(TAG)" || { echo "TAG is required: make tag TAG=v0.0.1"; exit 1; }
 	git tag -s $(TAG) -m "$(TAG)"
@@ -120,7 +160,13 @@ help:
 	  '  check                       run dependency, lint, and race checks' \
 	  '  verify                      run check plus API compatibility validation' \
 	  '  api-compat                  compare public APIs with the baseline tag' \
+	  '  golden                      rewrite and verify the shared response contracts' \
 	  '  bench | bench-5x            run conformance benchmarks' \
+	  '  bench-adapter               compare native and httpx allocations/latency' \
+	  '  bench-suite                 measure the shared scenario table per adapter' \
+	  '  bench-native                pair each scenario against a no-httpx implementation' \
+	  '  (bench-adapter/suite/native take BENCH_COUNT=$(BENCH_COUNT) BENCH_TIME=$(BENCH_TIME))' \
+	  '  bench-network               run fixed-rate Vegeta network comparison' \
 	  '  tag TAG=v0.0.1              create and push the root tag' \
 	  '  tag-all TAG=v0.0.1          create and push adapter tags' \
 	  '  tag-delete TAG=v0.0.1       delete local and remote tags'

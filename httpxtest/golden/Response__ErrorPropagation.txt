@@ -1,0 +1,9 @@
+status: 500
+content-type: application/json
+body: json
+---
+{
+  "code": 0,
+  "message": "Internal Server Error",
+  "success": false
+}

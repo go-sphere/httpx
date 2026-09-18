@@ -1,0 +1,8 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "param": "中文",
+  "path": "/edges/decode/中文"
+}

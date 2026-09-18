@@ -1,0 +1,24 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "fullPath": "/request/info/:id",
+  "header": "custom-value",
+  "method": "GET",
+  "param": "42",
+  "params": {
+    "id": "42"
+  },
+  "path": "/request/info/42",
+  "queries": {
+    "a": [
+      "1"
+    ],
+    "b": [
+      "2"
+    ]
+  },
+  "query": "1",
+  "rawQuery": "a=1\u0026b=2"
+}
