@@ -181,6 +181,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Recycled without a defer: a context whose handler panicked is left to
 	// the garbage collector rather than handed to the next request, and the
 	// happy path saves the defer.
+	ctx.recycle()
 	e.pool.Put(ctx)
 }
 

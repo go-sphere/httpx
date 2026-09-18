@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -38,8 +39,14 @@ func validateStruct(obj any) error {
 			// valid target with a 400.
 			return validateStruct(v.Elem().Interface())
 		}
+		if !needsValidation(v.Type().Elem()) {
+			return nil
+		}
 		return structValidator.Struct(obj)
 	case reflect.Struct:
+		if !needsValidation(v.Type()) {
+			return nil
+		}
 		return structValidator.Struct(obj)
 	case reflect.Slice, reflect.Array:
 		var errs []error
@@ -63,4 +70,48 @@ func validateStruct(obj any) error {
 	default:
 		return nil
 	}
+}
+
+// validationNeeded caches, per struct type, whether any `binding` tag is
+// reachable from it. Most DTOs a handler binds carry none, and for those the
+// validator's full reflective walk (and its allocation) would find nothing.
+var validationNeeded sync.Map // reflect.Type → bool
+
+func needsValidation(t reflect.Type) bool {
+	if cached, ok := validationNeeded.Load(t); ok {
+		return cached.(bool)
+	}
+	need := hasBindingTag(t, map[reflect.Type]bool{})
+	validationNeeded.Store(t, need)
+	return need
+}
+
+// hasBindingTag walks t through pointers, slices, arrays and maps into every
+// struct it can reach. It reports a tag on any field, exported or not, and on
+// any nested type regardless of whether the validator would dive into it —
+// a superset, so "no tag anywhere" is exactly the case where the validator
+// has nothing to check.
+func hasBindingTag(t reflect.Type, seen map[reflect.Type]bool) bool {
+	for {
+		switch t.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+			t = t.Elem()
+			continue
+		}
+		break
+	}
+	if t.Kind() != reflect.Struct || seen[t] {
+		return false
+	}
+	seen[t] = true
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if tag := f.Tag.Get("binding"); tag != "" && tag != "-" {
+			return true
+		}
+		if hasBindingTag(f.Type, seen) {
+			return true
+		}
+	}
+	return false
 }

@@ -128,6 +128,11 @@ func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 // the very objects the server handed us.
 func stdLeaf(h http.Handler) httpx.Handler {
 	return func(ctx httpx.Context) error {
+		if c, ok := ctx.(*stdContext); ok {
+			h.ServeHTTP(&c.rw, c.req)
+			return nil
+		}
+		// A wrapped context still reaches the writer through the native hook.
 		native, ok := httpx.AsNativeContext[*Native](ctx)
 		if !ok {
 			return errors.New("stdx: native context type error")

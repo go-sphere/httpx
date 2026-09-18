@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"strconv"
 
 	"github.com/go-sphere/httpx"
 )
@@ -41,7 +42,26 @@ type stdContext struct {
 	leaf  httpx.Handler
 	index int
 
+	// keys survives across requests: it is cleared, not dropped, when the
+	// context is recycled, so a request that stores state does not allocate
+	// the map again.
 	keys map[string]any
+
+	// enc is bound to &c.rw for the pool's lifetime; JSON reuses it so a
+	// response never copies the encoded bytes out of the encoder's buffer.
+	enc *json.Encoder
+
+	// query caches URL.Query(); queryRaw is the RawQuery it was parsed from.
+	// The cache is only ever read, so it needs no reset: a later request (or
+	// a request swapped through Native) with a different query string misses
+	// on queryRaw, and one with an equal query string is served an equal map.
+	query    url.Values
+	queryRaw string
+
+	// uriValues is the url.Values handed to the uri decoder, reused across
+	// requests; uriBuf backs its single-element slices.
+	uriValues url.Values
+	uriBuf    [8][1]string
 }
 
 // reset prepares a pooled context for one request. engine and native are set
@@ -55,7 +75,22 @@ func (c *stdContext) reset(w http.ResponseWriter, req *http.Request) {
 	c.chain = nil
 	c.leaf = nil
 	c.index = 0
-	c.keys = nil
+}
+
+// maxRetainedKeys bounds the state map a recycled context keeps: a request
+// that stored an unusual number of keys should not pin that map for every
+// request that follows.
+const maxRetainedKeys = 64
+
+// recycle releases per-request state before the context returns to the pool.
+func (c *stdContext) recycle() {
+	switch n := len(c.keys); {
+	case n == 0:
+	case n > maxRetainedKeys:
+		c.keys = nil
+	default:
+		clear(c.keys)
+	}
 }
 
 // Native is what AsNativeContext yields on this adapter: the plain net/http
@@ -69,7 +104,11 @@ type Native struct {
 func (n *Native) Request() *http.Request                       { return n.c.req }
 func (n *Native) SetRequest(req *http.Request)                 { n.c.req = req }
 func (n *Native) ResponseWriter() http.ResponseWriter          { return &n.c.rw }
-func (n *Native) SetWriter(w http.ResponseWriter)              { n.c.rw.ResponseWriter = w }
+func (n *Native) SetWriter(w http.ResponseWriter) {
+	n.c.rw.ResponseWriter = w
+	// A wrapping writer may own a different header map.
+	n.c.rw.header = nil
+}
 func (n *Native) Engine() *Engine                              { return n.c.engine }
 func (n *Native) Written() bool                                { return n.c.rw.written }
 func (n *Native) MarkWritten(status int)                       { n.c.rw.markWritten(status) }
@@ -117,12 +156,26 @@ func (c *stdContext) Params() map[string]string {
 	return out
 }
 
+// queryValues parses the query string once per request. A request without a
+// query string yields nil, which every reader below handles.
+func (c *stdContext) queryValues() url.Values {
+	raw := c.req.URL.RawQuery
+	if raw == "" {
+		return nil
+	}
+	if c.query == nil || c.queryRaw != raw {
+		c.query = c.req.URL.Query()
+		c.queryRaw = raw
+	}
+	return c.query
+}
+
 func (c *stdContext) Query(key string) string {
-	return c.req.URL.Query().Get(key)
+	return c.queryValues().Get(key)
 }
 
 func (c *stdContext) Queries() map[string][]string {
-	queries := c.req.URL.Query()
+	queries := c.queryValues()
 	if len(queries) == 0 {
 		return nil
 	}
@@ -198,7 +251,7 @@ func (c *stdContext) BodyRaw() ([]byte, error) {
 	if c.req.Body == nil {
 		return nil, nil
 	}
-	body, err := io.ReadAll(c.req.Body)
+	body, err := readBody(c.req.Body, c.req.ContentLength)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +260,36 @@ func (c *stdContext) BodyRaw() ([]byte, error) {
 	// returned slice is a fresh copy the caller owns (BodyAccess contract).
 	c.req.Body = io.NopCloser(bytes.NewReader(body))
 	return body, nil
+}
+
+// maxBodyPrealloc caps what readBody allocates on the strength of
+// Content-Length alone: a client may declare far more than it sends.
+const maxBodyPrealloc = 4 << 20
+
+// readBody reads r to EOF. With a trustworthy size it allocates once, where
+// io.ReadAll would grow through a dozen buffers and copy the body twice.
+func readBody(r io.Reader, size int64) ([]byte, error) {
+	if size < 0 || size > maxBodyPrealloc {
+		return io.ReadAll(r)
+	}
+	// One byte of slack lets the final Read report EOF without regrowing.
+	buf := make([]byte, 0, size+1)
+	for {
+		if len(buf) == cap(buf) {
+			// More than declared: net/http truncates at Content-Length, but a
+			// Body installed by middleware need not.
+			rest, err := io.ReadAll(r)
+			return append(buf, rest...), err
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if err == io.EOF {
+			return buf, nil
+		}
+		if err != nil {
+			return buf, err
+		}
+	}
 }
 
 func (c *stdContext) BodyReader() io.ReadCloser {
@@ -222,14 +305,24 @@ func (c *stdContext) BindJSON(dst any) error {
 	if c.req.Body == nil {
 		return httpx.WrapBindError(io.EOF)
 	}
-	if err := json.NewDecoder(c.req.Body).Decode(dst); err != nil {
+	// The body is read whole and unmarshaled in place: a json.Decoder costs
+	// three allocations before it has read a byte.
+	body, err := readBody(c.req.Body, c.req.ContentLength)
+	if err != nil {
+		return httpx.WrapBindError(err)
+	}
+	if len(body) == 0 {
+		// What a Decoder reports for an empty body.
+		return httpx.WrapBindError(io.EOF)
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
 		return httpx.WrapBindError(err)
 	}
 	return httpx.WrapBindError(validateStruct(dst))
 }
 
 func (c *stdContext) BindQuery(dst any) error {
-	if err := queryDecoder.Decode(dst, c.req.URL.Query()); err != nil {
+	if err := queryDecoder.Decode(dst, c.queryValues()); err != nil {
 		return httpx.WrapBindError(err)
 	}
 	return httpx.WrapBindError(validateStruct(dst))
@@ -256,13 +349,25 @@ func (c *stdContext) BindForm(dst any) error {
 
 func (c *stdContext) BindURI(dst any) error {
 	if c.route != nil && len(c.route.params) > 0 {
-		values := make(url.Values, len(c.route.params))
+		values := c.uriValues
+		if values == nil {
+			values = make(url.Values, len(c.uriBuf))
+			c.uriValues = values
+		}
 		for i, name := range c.route.params {
-			if i < len(c.values) {
-				values.Set(name, c.values[i])
+			if i >= len(c.values) {
+				break
+			}
+			if i < len(c.uriBuf) {
+				c.uriBuf[i][0] = c.values[i]
+				values[name] = c.uriBuf[i][:]
+			} else {
+				values[name] = []string{c.values[i]}
 			}
 		}
-		if err := uriDecoder.Decode(dst, values); err != nil {
+		err := uriDecoder.Decode(dst, values)
+		clear(values)
+		if err != nil {
 			return httpx.WrapBindError(err)
 		}
 	}
@@ -285,22 +390,59 @@ func (c *stdContext) Status(code int) {
 	c.rw.status = code
 }
 
+// Content-Type values are stored as ready-made slices: assigning one into the
+// header map is what gin does too, and it is the difference between zero and
+// one allocation per response. append on a full slice always reallocates, so
+// a later Header.Add cannot write into the shared value.
+var (
+	jsonContentType = []string{"application/json; charset=utf-8"}
+	textContentType = []string{"text/plain; charset=utf-8"}
+)
+
 func (c *stdContext) JSON(code int, v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	c.rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.rw.WriteHeader(code)
 	if bodyless(code) {
+		c.rw.Header()["Content-Type"] = jsonContentType
+		c.rw.WriteHeader(code)
 		return nil
 	}
-	_, err = c.rw.Write(b)
-	return err
+	if !c.rw.written {
+		c.rw.status = code
+	}
+	if c.enc == nil {
+		c.enc = json.NewEncoder((*jsonBodyWriter)(&c.rw))
+	}
+	// Encode marshals fully before its single Write, so a value that cannot
+	// be encoded leaves the response untouched — exactly as Marshal did.
+	if err := c.enc.Encode(v); err != nil {
+		// A failed Write is sticky on the encoder; drop it so the recycled
+		// context is not poisoned for the next request.
+		c.enc = nil
+		return err
+	}
+	return nil
+}
+
+// jsonBodyWriter is the sink the pooled encoder writes to. It sets the
+// content type on the way through, and drops the '\n' json.Encoder appends
+// after every value: compact JSON never contains a raw newline, so the last
+// byte of a chunk being one means it is the terminator.
+type jsonBodyWriter responseWriter
+
+func (w *jsonBodyWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if n > 0 && p[n-1] == '\n' {
+		p = p[:n-1]
+	}
+	rw := (*responseWriter)(w)
+	rw.Header()["Content-Type"] = jsonContentType
+	if _, err := rw.Write(p); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (c *stdContext) Text(code int, s string) error {
-	c.rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	c.rw.Header()["Content-Type"] = textContentType
 	c.rw.WriteHeader(code)
 	if bodyless(code) {
 		return nil
@@ -335,7 +477,7 @@ func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, s
 		c.rw.Header().Set("Content-Type", contentType)
 	}
 	if size >= 0 {
-		c.rw.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+		c.rw.Header().Set("Content-Length", strconv.Itoa(size))
 	}
 	c.rw.WriteHeader(code)
 	_, err := io.Copy(&c.rw, r)
@@ -369,7 +511,7 @@ func (c *stdContext) SetCookie(cookie *http.Cookie) {
 
 func (c *stdContext) Set(key string, val any) {
 	if c.keys == nil {
-		c.keys = make(map[string]any, 4)
+		c.keys = make(map[string]any, 8)
 	}
 	c.keys[key] = val
 }
@@ -449,8 +591,24 @@ func (w flushWriter) Write(p []byte) (int, error) {
 // an error from being rendered over it, and what StatusCode reports.
 type responseWriter struct {
 	http.ResponseWriter
+	// header caches the underlying writer's map until the response is
+	// committed. Before that point the real Header() has no side effect, so
+	// the cache is exact; after it, net/http snapshots the map on access so
+	// later changes are not sent, and the call goes through again to keep
+	// that. http.ServeFile alone reads or writes the header a dozen times.
+	header  http.Header
 	status  int
 	written bool
+}
+
+func (w *responseWriter) Header() http.Header {
+	if w.written {
+		return w.ResponseWriter.Header()
+	}
+	if w.header == nil {
+		w.header = w.ResponseWriter.Header()
+	}
+	return w.header
 }
 
 func (w *responseWriter) WriteHeader(code int) {
