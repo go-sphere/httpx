@@ -101,9 +101,9 @@ type Native struct {
 	c *stdContext
 }
 
-func (n *Native) Request() *http.Request                       { return n.c.req }
-func (n *Native) SetRequest(req *http.Request)                 { n.c.req = req }
-func (n *Native) ResponseWriter() http.ResponseWriter          { return &n.c.rw }
+func (n *Native) Request() *http.Request              { return n.c.req }
+func (n *Native) SetRequest(req *http.Request)        { n.c.req = req }
+func (n *Native) ResponseWriter() http.ResponseWriter { return &n.c.rw }
 func (n *Native) SetWriter(w http.ResponseWriter) {
 	n.c.rw.ResponseWriter = w
 	// A wrapping writer may own a different header map.

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -114,8 +115,12 @@ func TestTextBytesNoContent(t *testing.T) {
 	engine, r := newTestEngine(t)
 	r.GET("/text", func(ctx httpx.Context) error { return ctx.Text(http.StatusOK, "hi") })
 	r.GET("/text204", func(ctx httpx.Context) error { return ctx.Text(http.StatusNoContent, "dropped") })
-	r.GET("/sniff", func(ctx httpx.Context) error { return ctx.Bytes(http.StatusOK, []byte("<html><body>x</body></html>"), "") })
-	r.GET("/typed", func(ctx httpx.Context) error { return ctx.Bytes(http.StatusOK, []byte{1, 2}, "application/octet-stream") })
+	r.GET("/sniff", func(ctx httpx.Context) error {
+		return ctx.Bytes(http.StatusOK, []byte("<html><body>x</body></html>"), "")
+	})
+	r.GET("/typed", func(ctx httpx.Context) error {
+		return ctx.Bytes(http.StatusOK, []byte{1, 2}, "application/octet-stream")
+	})
 	r.GET("/none", func(ctx httpx.Context) error { return ctx.NoContent(http.StatusResetContent) })
 
 	for _, tc := range []struct {
@@ -331,7 +336,7 @@ func TestRequestInfo(t *testing.T) {
 	if got.query != "1" || got.missingQuery != "" || strings.Join(got.queries["tag"], ",") != "a,b" {
 		t.Fatalf("query=%q missing=%q queries=%v", got.query, got.missingQuery, got.queries)
 	}
-	if got.header != "tok" || got.headers["X-Token"][0] != "tok" || got.headers["X-Raw"][0] != "v" {
+	if got.header != "tok" || !slices.Equal(got.headers["X-Token"], []string{"tok"}) || !slices.Equal(got.headers["X-Raw"], []string{"v"}) {
 		t.Fatalf("header=%q headers=%v (keys must be canonical)", got.header, got.headers)
 	}
 	if got.cookie != "1" || !errors.Is(got.cookieErr, http.ErrNoCookie) || got.cookies["b"] != "2" {
@@ -638,7 +643,10 @@ func TestBindForm(t *testing.T) {
 		w := multipart.NewWriter(&buf)
 		_ = w.WriteField("title", "mp")
 		_ = w.WriteField("tags", "x")
-		part, _ := w.CreateFormFile("file", "a.txt")
+		part, err := w.CreateFormFile("file", "a.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
 		_, _ = part.Write([]byte("content"))
 		_ = w.Close()
 		req := bodyReq(http.MethodPost, "/f", w.FormDataContentType(), buf.String())
@@ -653,7 +661,10 @@ func TestMultipartFormAndFormFile(t *testing.T) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	_ = w.WriteField("title", "sample")
-	part, _ := w.CreateFormFile("file", "a.txt")
+	part, err := w.CreateFormFile("file", "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, _ = part.Write([]byte("0123456789"))
 	_ = w.Close()
 
