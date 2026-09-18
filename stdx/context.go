@@ -375,7 +375,7 @@ func (c *stdContext) BindURI(dst any) error {
 }
 
 func (c *stdContext) BindHeader(dst any) error {
-	if err := headerDecoder.Decode(dst, url.Values(c.req.Header)); err != nil {
+	if err := headerDecoder.Decode(dst, url.Values(c.Headers())); err != nil {
 		return httpx.WrapBindError(err)
 	}
 	return httpx.WrapBindError(validateStruct(dst))
@@ -387,7 +387,9 @@ func (c *stdContext) Status(code int) {
 	// Records the status without producing a response: a later Write or the
 	// engine's final commit uses it. A bare Status must not count as a
 	// committed response, or an error after it would be swallowed.
-	c.rw.status = code
+	if !c.rw.written {
+		c.rw.status = code
+	}
 }
 
 // Content-Type values are stored as ready-made slices: assigning one into the
@@ -541,7 +543,10 @@ func (c *stdContext) Next() error {
 	if c.index < len(c.chain) {
 		mw := c.chain[c.index]
 		c.index++
-		return mw(c)
+		err := mw(c)
+		// A returned middleware has finished its continuation, including a short circuit.
+		c.index = len(c.chain) + 1
+		return err
 	}
 	if c.index == len(c.chain) {
 		c.index++
@@ -613,6 +618,10 @@ func (w *responseWriter) Header() http.Header {
 
 func (w *responseWriter) WriteHeader(code int) {
 	if w.written {
+		return
+	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		w.ResponseWriter.WriteHeader(code)
 		return
 	}
 	w.status = code

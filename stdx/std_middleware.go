@@ -1,11 +1,10 @@
 package stdx
 
 import (
-	"bufio"
 	"errors"
-	"io"
-	"net"
+	"maps"
 	"net/http"
+	"slices"
 
 	"github.com/go-sphere/httpx"
 )
@@ -18,7 +17,10 @@ import (
 // short-circuited.
 //
 // On this adapter the middleware runs on the server's own writer and request,
-// with no translation in either direction.
+// with no translation in either direction. The downstream context owns a copy
+// of request-local state, so a timed-out handler cannot access a reused context.
+// State changes propagate back only when the handler finishes before the
+// middleware returns.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(ctx httpx.Context) error {
@@ -30,66 +32,51 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 		if !ok {
 			return errors.New("AdaptStdMiddleware: invalid context type")
 		}
-		c := native.c
-		// The middleware is handed a recorder over the *underlying* writer,
-		// never over c.rw: a middleware that wraps what it is given and passes
-		// the result downstream would otherwise close a cycle through c.rw.
-		underlying := c.rw.ResponseWriter
-		recorder := &commitRecorder{ResponseWriter: underlying, ctx: c}
-
-		var nextErr error
-		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			c.req = r
-			if w != http.ResponseWriter(recorder) {
-				// The middleware wrapped the writer: downstream writes have to
-				// go through it, and the wrapper is dropped again afterwards.
-				c.rw.ResponseWriter = w
-				defer func() { c.rw.ResponseWriter = underlying }()
+		parent := native.c
+		// The continuation owns its mutable state. TimeoutHandler can return while
+		// inner is still running; neither that goroutine nor its writer may refer
+		// to the parent's pooled context after this function returns.
+		child := &stdContext{
+			engine: parent.engine, req: parent.req, route: parent.route,
+			values: slices.Clone(parent.values), chain: parent.chain, leaf: parent.leaf,
+			index: parent.index, keys: maps.Clone(parent.keys),
+		}
+		child.native.c = child
+		recorder := &commitRecorder{responseWriter: responseWriter{
+			ResponseWriter: parent.rw.ResponseWriter, status: parent.rw.status, written: parent.rw.written,
+		}}
+		parentStatus, parentWritten := parent.rw.status, parent.rw.written
+		done := make(chan error, 1)
+		inner := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			child.req = req
+			child.rw = responseWriter{ResponseWriter: w, status: parentStatus, written: parentWritten}
+			var err error
+			if continuation, ok := ctx.(interface{ NextWithContext(httpx.Context) error }); ok {
+				err = continuation.NextWithContext(child)
+			} else {
+				err = child.Next()
 			}
-			nextErr = ctx.Next()
+			done <- err
 		})
-		middleware(inner).ServeHTTP(recorder, c.req)
+		middleware(inner).ServeHTTP(recorder, parent.req)
+		// Only a completed continuation can be merged. A timed-out continuation
+		// stays isolated and becomes garbage once its handler eventually exits.
+		var nextErr error
+		select {
+		case nextErr = <-done:
+			parent.req, parent.keys = child.req, child.keys
+			if !recorder.written {
+				parent.rw.status = child.rw.status
+			}
+		default:
+		}
+		if recorder.written {
+			parent.rw.markWritten(recorder.status)
+		}
 		return nextErr
 	}
 }
 
-// commitRecorder reports writes made on the bridged writer to the context, so
-// a response produced by an adapted net/http middleware — including one that
-// short-circuits the chain — counts as committed.
-type commitRecorder struct {
-	http.ResponseWriter
-	ctx *stdContext
-}
-
-func (c *commitRecorder) WriteHeader(code int) {
-	c.ctx.rw.markWritten(code)
-	c.ResponseWriter.WriteHeader(code)
-}
-
-func (c *commitRecorder) Write(p []byte) (int, error) {
-	c.ctx.rw.markWritten(http.StatusOK)
-	return c.ResponseWriter.Write(p)
-}
-
-func (c *commitRecorder) Unwrap() http.ResponseWriter { return c.ResponseWriter }
-
-func (c *commitRecorder) Flush() {
-	c.ctx.rw.markWritten(http.StatusOK)
-	_ = http.NewResponseController(c.ResponseWriter).Flush()
-}
-
-func (c *commitRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	conn, rw, err := http.NewResponseController(c.ResponseWriter).Hijack()
-	if err == nil {
-		c.ctx.rw.markWritten(http.StatusSwitchingProtocols)
-	}
-	return conn, rw, err
-}
-
-func (c *commitRecorder) ReadFrom(r io.Reader) (int64, error) {
-	c.ctx.rw.markWritten(http.StatusOK)
-	if rf, ok := c.ResponseWriter.(io.ReaderFrom); ok {
-		return rf.ReadFrom(r)
-	}
-	return io.Copy(c.ResponseWriter, r)
-}
+// commitRecorder tracks actual output independently of either Context. It
+// retains the real writer's optional capabilities through responseWriter.
+type commitRecorder struct{ responseWriter }

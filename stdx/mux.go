@@ -284,10 +284,12 @@ func (n *node) walkChoice(method, rest string, values *[]string) (*route, []stri
 	var allow []string
 
 	if child := n.child(seg); child != nil {
+		mark := len(*values)
 		r, a := child.walk(method, next, values)
 		if r != nil {
 			return r, nil
 		}
+		*values = (*values)[:mark]
 		allow = a
 	}
 	if n.param != nil && seg != "" {

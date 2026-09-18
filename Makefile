@@ -21,7 +21,7 @@ export GOWORK := $(CURDIR)/go.work
 endif
 
 .PHONY: work deps-update tidy fmt test test-race lint lint-all check verify api-compat
-.PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network golden tag tag-all tag-delete help
+.PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network golden tag tag-all tag-delete help prepare-release release-check
 
 # The workspace is the only way the repo builds before a release: every adapter
 # requires the published github.com/go-sphere/httpx, but they use symbols that
@@ -105,6 +105,7 @@ check:
 		( cd "$$dir" && GOWORK=off $(GO) mod tidy -diff ); \
 	done
 	$(MAKE) lint
+	$(MAKE) test
 	$(MAKE) test-race
 
 verify: check api-compat
@@ -144,7 +145,17 @@ tag:
 	git tag -s $(TAG) -m "$(TAG)"
 	git push origin --tags
 
-tag-all:
+# Publication is deliberately staged: root tag, dependency preparation,
+# commit, consumer checks, and only then adapter tags.
+prepare-release:
+	@test -n "$(TAG)" || { echo "TAG is required"; exit 1; }
+	GO="$(GO)" bash scripts/prepare-release.sh "$(TAG)"
+
+release-check:
+	@test -n "$(TAG)" || { echo "TAG is required"; exit 1; }
+	GO="$(GO)" bash scripts/check-release.sh "$(TAG)"
+
+tag-all: release-check
 	@test -n "$(TAG)" || { echo "TAG is required: make tag-all TAG=v0.0.1"; exit 1; }
 	@set -eu; \
 	for adapter in $(TAG_ADAPTERS); do \
@@ -168,7 +179,7 @@ help:
 	  '  fmt                         format all modules' \
 	  '  test | test-race            test all modules' \
 	  '  lint | lint-all             lint all modules' \
-	  '  check                       run dependency, lint, and race checks' \
+	  '  check                       run dependency, lint, test, and race checks' \
 	  '  verify                      run check plus API compatibility validation' \
 	  '  api-compat                  compare public APIs with the baseline tag' \
 	  '  golden                      rewrite and verify the shared response contracts' \
@@ -178,6 +189,8 @@ help:
 	  '  bench-native                pair each scenario against a no-httpx implementation' \
 	  '  (bench-adapter/suite/native take BENCH_COUNT=$(BENCH_COUNT) BENCH_TIME=$(BENCH_TIME))' \
 	  '  bench-network               run fixed-rate Vegeta network comparison' \
+	  '  prepare-release TAG=v0.0.5    update adapter dependencies after the root tag is published' \
+	  '  release-check TAG=v0.0.5      test published dependencies without go.work' \
 	  '  tag TAG=v0.0.1              create and push the root tag' \
 	  '  tag-all TAG=v0.0.1          create and push adapter tags' \
 	  '  tag-delete TAG=v0.0.1       delete local and remote tags'

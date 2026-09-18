@@ -1,5 +1,6 @@
 status: 200
 content-type: text/plain
 body: text
+body-bytes: 6
 ---
 delete

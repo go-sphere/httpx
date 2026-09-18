@@ -105,6 +105,12 @@ type nextContext struct {
 }
 
 func (c *nextContext) Next() error {
+	return c.NextWithContext(c.ctxBase)
+}
+
+// NextWithContext lets an adapter isolate the continuation of asynchronous
+// middleware while preserving the composed chain.
+func (c *nextContext) NextWithContext(ctx Context) error {
 	if c.called {
 		// Matches the adapters: driving a finished chain again does nothing.
 		return nil
@@ -113,13 +119,13 @@ func (c *nextContext) Next() error {
 	// The rest of the chain gets the adapter's own context, not this shim:
 	// handing it the shim would make a downstream ctx.Next() re-enter Next
 	// here and stop the chain instead of continuing it.
-	return c.next(c.ctxBase)
+	return c.next(ctx)
 }
 
 // AsInterceptor adapts a Next-driven Middleware to an Interceptor, for mixing
-// middleware that has not been converted. Unlike
-// AsMiddleware this costs one allocation per request, because ctx.Next() needs
-// per-request state to point at the rest of the chain.
+// middleware that has not been converted. Unlike AsMiddleware, this allocates
+// per-request continuation state and a wrapper for any optional capabilities
+// exposed by the original context.
 func AsInterceptor(m Middleware) Interceptor {
 	return func(next Handler) Handler {
 		if m == nil {
@@ -127,7 +133,59 @@ func AsInterceptor(m Middleware) Interceptor {
 		}
 		return func(ctx Context) error {
 			c := &nextContext{ctxBase: ctx, next: next}
-			return m(c)
+			return m(preserveCapabilities(c, ctx))
 		}
+	}
+}
+
+// Preserve precisely the optional capabilities of the wrapped context. In
+// particular, a buffered adapter must not acquire Flusher merely by wrapping.
+func preserveCapabilities(c *nextContext, ctx Context) Context {
+	n, hasNative := ctx.(NativeContextProvider)
+	f, hasFlush := ctx.(Flusher)
+	s, hasStream := ctx.(Streamer)
+	switch {
+	case hasNative && hasFlush && hasStream:
+		return &struct {
+			*nextContext
+			NativeContextProvider
+			Flusher
+			Streamer
+		}{c, n, f, s}
+	case hasNative && hasFlush:
+		return &struct {
+			*nextContext
+			NativeContextProvider
+			Flusher
+		}{c, n, f}
+	case hasNative && hasStream:
+		return &struct {
+			*nextContext
+			NativeContextProvider
+			Streamer
+		}{c, n, s}
+	case hasFlush && hasStream:
+		return &struct {
+			*nextContext
+			Flusher
+			Streamer
+		}{c, f, s}
+	case hasNative:
+		return &struct {
+			*nextContext
+			NativeContextProvider
+		}{c, n}
+	case hasFlush:
+		return &struct {
+			*nextContext
+			Flusher
+		}{c, f}
+	case hasStream:
+		return &struct {
+			*nextContext
+			Streamer
+		}{c, s}
+	default:
+		return c
 	}
 }

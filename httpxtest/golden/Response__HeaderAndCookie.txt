@@ -3,5 +3,6 @@ content-type: text/plain
 x-trace: ok
 cookie: name=session value=abc path=/ domain= maxage=0 secure=false httponly=false samesite=0 expires=-
 body: text
+body-bytes: 6
 ---
 cookie

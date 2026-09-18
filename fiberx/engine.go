@@ -203,10 +203,11 @@ func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		basePath:    joinPaths("/", prefix),
-		group:       e.engine.Group(prefix),
-		middlewares: cloneMiddlewares(nil, m...),
-		errHandler:  e.errHandler,
+		basePath:     joinPaths("/", prefix),
+		group:        e.engine.Group(prefix),
+		middlewares:  cloneMiddlewares(nil, m...),
+		interceptors: e.interceptors,
+		errHandler:   e.errHandler,
 	}
 }
 

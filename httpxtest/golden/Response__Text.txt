@@ -1,5 +1,6 @@
 status: 202
 content-type: text/plain
 body: text
+body-bytes: 5
 ---
 hello

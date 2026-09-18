@@ -301,7 +301,9 @@ func (c fiberContext[T]) BindHeader(dst any) error {
 // Responder (httpx.Responder)
 
 func (c fiberContext[T]) Status(code int) {
-	c.ctx.Status(code)
+	if !responseDecided(c.ctx) {
+		c.ctx.Status(code)
+	}
 }
 
 func (c fiberContext[T]) JSON(code int, v any) error {
@@ -309,12 +311,17 @@ func (c fiberContext[T]) JSON(code int, v any) error {
 }
 
 func (c fiberContext[T]) Text(code int, s string) error {
-	return c.ctx.Status(code).SendString(s)
+	err := c.ctx.Status(code).SendString(s)
+	if err == nil && s == "" {
+		markResponseCommitted(c.ctx)
+	}
+	return err
 }
 
 func (c fiberContext[T]) NoContent(code int) error {
 	c.ctx.Status(code)
 	c.ctx.Response().ResetBody()
+	markResponseCommitted(c.ctx)
 	return nil
 }
 
@@ -323,7 +330,11 @@ func (c fiberContext[T]) Bytes(code int, b []byte, contentType string) error {
 		contentType = http.DetectContentType(b)
 	}
 	c.ctx.Set(fiber.HeaderContentType, contentType)
-	return c.ctx.Status(code).Send(b)
+	err := c.ctx.Status(code).Send(b)
+	if err == nil && len(b) == 0 {
+		markResponseCommitted(c.ctx)
+	}
+	return err
 }
 
 func (c fiberContext[T]) DataFromReader(code int, contentType string, r io.Reader, size int) error {
@@ -341,7 +352,11 @@ func (c fiberContext[T]) Redirect(code int, location string) error {
 	if !httpx.ValidRedirectCode(code) {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
 	}
-	return c.ctx.Redirect().Status(code).To(location)
+	err := c.ctx.Redirect().Status(code).To(location)
+	if err == nil {
+		markResponseCommitted(c.ctx)
+	}
+	return err
 }
 
 func (c fiberContext[T]) SetHeader(key, value string) {

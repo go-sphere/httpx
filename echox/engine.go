@@ -156,6 +156,15 @@ type Engine struct {
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
+	conf.engine.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			err := next(c)
+			if err == nil && !c.Response().Committed {
+				c.Response().WriteHeader(c.Response().Status)
+			}
+			return err
+		}
+	})
 	if conf.ipExtractor != nil {
 		conf.engine.IPExtractor = conf.ipExtractor
 	}

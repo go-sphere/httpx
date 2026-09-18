@@ -222,7 +222,9 @@ func (c *echoContext) BindHeader(dst any) error {
 // Responder (httpx.Responder)
 
 func (c *echoContext) Status(code int) {
-	c.ctx.Response().Status = code
+	if !c.ctx.Response().Committed {
+		c.ctx.Response().Status = code
+	}
 }
 
 func (c *echoContext) JSON(code int, v any) error {

@@ -138,7 +138,11 @@ func stdLeaf(h http.Handler) httpx.Handler {
 		if !ok {
 			return errors.New("fiberx: fiber context type error")
 		}
-		return native(fc)
+		err := native(fc)
+		if err == nil {
+			markResponseCommitted(fc)
+		}
+		return err
 	}
 }
 
@@ -246,15 +250,16 @@ func handledError(native fiber.Ctx) error {
 // it records a code without producing a response, and swallowing an error
 // behind it would turn a failure into a silent 2xx.
 func responseDecided(native fiber.Ctx) bool {
-	if len(native.Response().Body()) > 0 {
+	if native.Response().IsBodyStream() || len(native.Response().Body()) > 0 {
 		return true
 	}
-	status := native.Response().StatusCode()
-	if status == http.StatusNoContent || status == http.StatusNotModified || status < http.StatusOK {
-		return true
-	}
-	return httpx.ValidRedirectCode(status) && len(native.Response().Header.Peek("Location")) > 0
+	committed, _ := native.Locals(responseCommittedKey{}).(bool)
+	return committed
 }
+
+type responseCommittedKey struct{}
+
+func markResponseCommitted(native fiber.Ctx) { native.Locals(responseCommittedKey{}, true) }
 
 func splitHandlers(handlers []any) (any, []any) {
 	if len(handlers) == 0 {

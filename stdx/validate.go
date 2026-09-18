@@ -94,6 +94,9 @@ func needsValidation(t reflect.Type) bool {
 func hasBindingTag(t reflect.Type, seen map[reflect.Type]bool) bool {
 	for {
 		switch t.Kind() {
+		case reflect.Interface:
+			// The runtime value may contain validation tags absent from its interface type.
+			return true
 		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
 			t = t.Elem()
 			continue

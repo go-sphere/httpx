@@ -121,8 +121,7 @@ func Scenarios() []Scenario {
 					return ctx.JSON(http.StatusOK, payload100K)
 				})
 			},
-			Target:        "/scenario",
-			BenchmarkOnly: true,
+			Target: "/scenario",
 		},
 		{
 			Name: "State",

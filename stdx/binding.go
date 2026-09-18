@@ -1,6 +1,10 @@
 package stdx
 
 import (
+	"net/textproto"
+	"reflect"
+	"strings"
+
 	"github.com/go-playground/form/v4"
 )
 
@@ -11,7 +15,7 @@ var (
 	queryDecoder  = newDecoder("query")
 	formDecoder   = newDecoder("form")
 	uriDecoder    = newDecoder("uri")
-	headerDecoder = newDecoder("header")
+	headerDecoder = newHeaderDecoder()
 )
 
 func newDecoder(tag string) *form.Decoder {
@@ -21,4 +25,20 @@ func newDecoder(tag string) *form.Decoder {
 	// must not fail because a client added a query parameter.
 	decoder.SetMode(form.ModeImplicit)
 	return decoder
+}
+
+func newHeaderDecoder() *form.Decoder {
+	d := newDecoder("header")
+	d.RegisterTagNameFunc(func(f reflect.StructField) string {
+		name, options, hasOptions := strings.Cut(f.Tag.Get("header"), ",")
+		if name == "" {
+			name = f.Name
+		}
+		name = textproto.CanonicalMIMEHeaderKey(name)
+		if hasOptions {
+			return name + "," + options
+		}
+		return name
+	})
+	return d
 }

@@ -165,8 +165,9 @@ func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:      e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
-		errHandler: e.errHandler,
+		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
+		interceptors: e.interceptors,
+		errHandler:   e.errHandler,
 	}
 }
 

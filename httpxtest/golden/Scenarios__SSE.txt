@@ -1,6 +1,7 @@
 status: 200
 content-type: text/event-stream
 body: text
+body-bytes: 45
 ---
 data: event-0
 

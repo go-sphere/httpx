@@ -1,9 +1,12 @@
 package httpxtest
 
 import (
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,14 +83,24 @@ func contractOf(t *testing.T, resp response) responseContract {
 	} else {
 		c.ContentType = "n/a"
 	}
+	// Keep large JSON contracts reviewable without dropping their coverage.
+	if c.BodyMode == "json" && len(c.Body) > 16<<10 {
+		c.BodyMode = "json-sha256"
+		c.Body = fmt.Sprintf("%x", sha256.Sum256([]byte(c.Body)))
+	}
 	return c
 }
 
 func canonicalJSON(t *testing.T, body string) string {
 	t.Helper()
 	var v any
-	if err := json.Unmarshal([]byte(body), &v); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&v); err != nil {
 		t.Fatalf("invalid json body: %v; body=%q", err, body)
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected exactly one JSON value, got trailing data: %q", body)
 	}
 	// Re-encoding sorts object keys, so formatting and key order stop being
 	// part of the comparison while values stay exact.
@@ -122,7 +135,10 @@ func (c responseContract) render() string {
 			cookie.Secure, cookie.HttpOnly, cookie.SameSite, expires)
 	}
 	fmt.Fprintf(&b, "body: %s\n", c.BodyMode)
-	if c.BodyMode == "json" || c.BodyMode == "text" {
+	if c.BodyMode == "text" {
+		fmt.Fprintf(&b, "body-bytes: %d\n", len(c.Body))
+	}
+	if c.BodyMode == "json" || c.BodyMode == "json-sha256" || c.BodyMode == "text" {
 		b.WriteString("---\n")
 		b.WriteString(c.Body)
 		if !strings.HasSuffix(c.Body, "\n") {

@@ -224,7 +224,9 @@ func (c *hertzContext) BindHeader(dst any) error {
 // Responder (httpx.Responder)
 
 func (c *hertzContext) Status(code int) {
-	c.ctx.Status(code)
+	if !hertzResponseCommitted(c.ctx) {
+		c.ctx.Status(code)
+	}
 }
 
 func (c *hertzContext) JSON(code int, v any) error {
@@ -234,6 +236,7 @@ func (c *hertzContext) JSON(code int, v any) error {
 	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
 		c.ctx.Status(code)
 		r.WriteContentType(&c.ctx.Response)
+		c.ctx.Set(responseCommittedKey, true)
 		return nil
 	}
 	if err := r.Render(&c.ctx.Response); err != nil {
@@ -245,12 +248,16 @@ func (c *hertzContext) JSON(code int, v any) error {
 
 func (c *hertzContext) Text(code int, s string) error {
 	c.ctx.String(code, s)
+	if s == "" {
+		c.ctx.Set(responseCommittedKey, true)
+	}
 	return nil
 }
 
 func (c *hertzContext) NoContent(code int) error {
 	c.ctx.Status(code)
 	c.ctx.Response.ResetBody()
+	c.ctx.Set(responseCommittedKey, true)
 	return nil
 }
 
@@ -259,6 +266,9 @@ func (c *hertzContext) Bytes(code int, b []byte, contentType string) error {
 		contentType = http.DetectContentType(b)
 	}
 	c.ctx.Data(code, contentType, b)
+	if len(b) == 0 {
+		c.ctx.Set(responseCommittedKey, true)
+	}
 	return nil
 }
 
@@ -281,6 +291,7 @@ func (c *hertzContext) Redirect(code int, location string) error {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
 	}
 	c.ctx.Redirect(code, []byte(location))
+	c.ctx.Set(responseCommittedKey, true)
 	return nil
 }
 
@@ -397,7 +408,7 @@ func (c *hertzContext) Stream(code int, contentType string, fn func(w io.Writer)
 	// The response is committed from here on: the status and content type are
 	// decided and, over a real connection, already flushed. Recording it keeps
 	// an error returned by fn from being rendered over the stream.
-	c.ctx.Set(streamCommittedKey, true)
+	c.ctx.Set(responseCommittedKey, true)
 	if err := c.Flush(); err != nil {
 		return err
 	}

@@ -182,25 +182,10 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 // already reached the client; checking only the buffer would let the error
 // handler append a second body to a streaming response.
 func hertzResponseCommitted(rc *app.RequestContext) bool {
-	if rc.Response.GetHijackWriter() != nil || len(rc.Response.Body()) > 0 {
+	if rc.Response.GetHijackWriter() != nil || rc.Response.IsBodyStream() || len(rc.Response.Body()) > 0 {
 		return true
 	}
-	// A bodyless response is decided without writing any bytes, so "has a body"
-	// cannot detect it: 204/304/1xx carry no body by definition, and a redirect
-	// carries only a Location. A bare Status(code) is deliberately *not* counted —
-	// it records a code without producing a response, and swallowing an error
-	// behind it would turn a failure into a silent 2xx.
-	status := rc.Response.StatusCode()
-	if status == http.StatusNoContent || status == http.StatusNotModified || status < http.StatusOK {
-		return true
-	}
-	if httpx.ValidRedirectCode(status) && len(rc.Response.Header.Peek("Location")) > 0 {
-		return true
-	}
-	// A stream commits a 200 before the callback runs. Over a real connection
-	// that installs a hijack writer, but in buffered dispatch nothing is
-	// observable, so Stream records it explicitly.
-	committed, ok := rc.Get(streamCommittedKey)
+	committed, ok := rc.Get(responseCommittedKey)
 	if !ok {
 		return false
 	}
@@ -208,10 +193,9 @@ func hertzResponseCommitted(rc *app.RequestContext) bool {
 	return flag
 }
 
-// streamCommittedKey marks a request whose response was committed by Stream.
-// Set on the streaming path only, so the ordinary paths keep their allocation
-// profile.
-const streamCommittedKey = "httpx.hertzx.streamCommitted"
+// responseCommittedKey records explicit empty or streaming responses, which
+// cannot reliably be distinguished from a bare Status by inspecting the body.
+const responseCommittedKey = "httpx.hertzx.responseCommitted"
 
 // toStdHandler bridges a net/http handler into hertz's buffered response,
 // so it works both over the network and with in-process test dispatch.
@@ -270,6 +254,7 @@ func (w *stdResponseWriter) WriteHeader(code int) {
 		return
 	}
 	w.wroteHeader = true
+	w.rc.Set(responseCommittedKey, true)
 	for key, values := range w.header {
 		if strings.EqualFold(key, "Content-Length") {
 			if len(values) > 0 {

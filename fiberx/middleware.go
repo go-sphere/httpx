@@ -2,6 +2,7 @@ package fiberx
 
 import (
 	"errors"
+	"io"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
@@ -9,7 +10,7 @@ import (
 
 func adaptMiddleware(middleware httpx.Middleware, errHandler httpx.ErrorHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
-		fc := newFiberContext(ctx)
+		fc := &fiberMiddlewareContext{contextBase: newFiberContext(ctx)}
 		return handleFiberError(ctx, fc, middleware(fc), errHandler)
 	}
 }
@@ -32,4 +33,31 @@ func AdaptFiberMiddleware(middleware fiber.Handler) httpx.Middleware {
 		}
 		return middleware(fc)
 	}
+}
+
+// contextBase avoids a field-name collision with Context().
+type contextBase = httpx.Context
+
+type fiberMiddlewareContext struct {
+	contextBase
+	called bool
+}
+
+func (c *fiberMiddlewareContext) Next() error {
+	if c.called {
+		return nil
+	}
+	c.called = true
+	return c.contextBase.Next()
+}
+func (c *fiberMiddlewareContext) NativeContext() any {
+	native, _ := httpx.AsNativeContext[fiber.Ctx](c.contextBase)
+	return native
+}
+func (c *fiberMiddlewareContext) Stream(code int, contentType string, fn func(io.Writer) error) error {
+	s, ok := httpx.AsStreamer(c.contextBase)
+	if !ok {
+		return httpx.ErrStreamerNotSupported
+	}
+	return s.Stream(code, contentType, fn)
 }

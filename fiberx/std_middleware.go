@@ -86,6 +86,7 @@ func (w *fiberResponseWriter) WriteHeader(code int) {
 		return
 	}
 	w.wroteHeader = true
+	markResponseCommitted(w.fc)
 	resp := w.fc.Response()
 	for key, values := range w.header {
 		if strings.EqualFold(key, "Content-Length") {
