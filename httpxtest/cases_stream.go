@@ -193,4 +193,33 @@ func casesErrorHandling(t *testing.T, r runner) {
 			t.Fatalf("error = %q, want %q", payload["error"], "middleware boom")
 		}
 	})
+
+	// A configured handler that only records a status and a header — the
+	// shape of a handler that leaves the body to a proxy or writes nothing on
+	// purpose — still owes that response. An adapter that only commits on a
+	// body write would answer 200 here.
+	statusOnlyHandler := func(ctx httpx.Context, err error) {
+		ctx.SetHeader("X-Trace", "error:"+err.Error())
+		ctx.Status(http.StatusBadGateway)
+	}
+	t.Run("StatusOnlyHandlerCommitsStatus", func(t *testing.T) {
+		r.assertGoldenWith(t, Options{ErrorHandler: statusOnlyHandler}, func(router httpx.Router) {
+			router.GET("/mw/error/status-only", func(ctx httpx.Context) error {
+				return errors.New("upstream down")
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/error/status-only", nil))
+	})
+
+	// The same handler on the middleware error path, which every adapter
+	// implements separately from the route path.
+	t.Run("StatusOnlyHandlerCommitsStatusFromMiddleware", func(t *testing.T) {
+		r.assertGoldenWith(t, Options{ErrorHandler: statusOnlyHandler}, func(router httpx.Router) {
+			router.Use(func(ctx httpx.Context) error {
+				return errors.New("upstream down")
+			})
+			router.GET("/mw/error/status-only-mw", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "never")
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/error/status-only-mw", nil))
+	})
 }

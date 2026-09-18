@@ -1,0 +1,4 @@
+status: 502
+content-type: n/a
+x-trace: error:upstream down
+body: none

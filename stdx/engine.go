@@ -170,11 +170,12 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	err := ctx.Next()
-	switch {
-	case err != nil && !ctx.rw.written:
+	if err != nil && !ctx.rw.written {
 		e.errHandler(ctx, err)
-	case !ctx.rw.written:
-		// A handler that only called Status still owes a response.
+	}
+	if !ctx.rw.written {
+		// A handler — or an error handler — that only called Status still
+		// owes a response; without this the server would answer 200.
 		ctx.rw.WriteHeader(ctx.rw.status)
 	}
 

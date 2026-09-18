@@ -175,20 +175,17 @@ func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	h = httpx.ComposeInterceptors(h, r.interceptors)
 	return func(ec echo.Context) error {
 		ctx := newEchoContext(ec)
-		err := h(ctx)
-		if err != nil {
-			if r.errHandler != nil {
-				if ec.Response().Committed {
-					// Nothing may write to a committed response, but the
-					// error still belongs on echo's error path so logging
-					// middleware sees it instead of it vanishing here.
-					return err
-				}
-				r.errHandler(ctx, err)
-				return nil
+		if err := h(ctx); err != nil {
+			// Without a framework-neutral handler the error goes to echo's own
+			// path. So does an error after a committed response: nothing may
+			// write over it, but logging middleware must still see it.
+			if r.errHandler == nil || ec.Response().Committed {
+				return err
 			}
-			return err
+			r.errHandler(ctx, err)
 		}
+		// A handler — or an error handler — that only set the status still
+		// owes a response; echo itself would let it fall out as 200.
 		if resp := ec.Response(); !resp.Committed {
 			resp.WriteHeader(resp.Status)
 		}

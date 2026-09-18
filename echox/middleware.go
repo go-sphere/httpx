@@ -21,6 +21,12 @@ func adaptMiddleware(middleware httpx.Middleware, errHandler httpx.ErrorHandler)
 					return err
 				}
 				errHandler(ctx, err)
+				// The error handler may have only set the status: commit it
+				// here, because no layer below runs and echo does not commit
+				// on its own.
+				if resp := ec.Response(); !resp.Committed {
+					resp.WriteHeader(resp.Status)
+				}
 				return nil
 			}
 			return err
