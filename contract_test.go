@@ -7,13 +7,15 @@ import (
 
 func TestValidateWildcardPath(t *testing.T) {
 	t.Parallel()
-	valid := []string{"", "/", "/files", "/files/*filepath", "/files/*", "/a/b/*rest"}
+	valid := []string{"", "/", "/files", "/files/*filepath", "/a/b/*rest"}
 	for _, path := range valid {
 		if err := ValidateWildcardPath(path); err != nil {
 			t.Fatalf("ValidateWildcardPath(%q) = %v, want nil", path, err)
 		}
 	}
-	invalid := []string{"/a/*x/b/*y", "/foo*bar", "/a/*x/tail", "*root", "/a/*x*y"}
+	// The anonymous wildcard is invalid: gin and hertz reject it natively, and
+	// the three that accepted it disagreed on the parameter's key.
+	invalid := []string{"/a/*x/b/*y", "/foo*bar", "/a/*x/tail", "*root", "/a/*x*y", "/files/*", "/*"}
 	for _, path := range invalid {
 		if err := ValidateWildcardPath(path); err == nil {
 			t.Fatalf("ValidateWildcardPath(%q) = nil, want error", path)

@@ -16,12 +16,16 @@ func init() {
 	register("Contract", casesContract)
 }
 
-// Contract details that are easy to get subtly different: validation, method
-// name case, registration-time failures, sniffed content types, state-store
-// semantics, and plain net/http middleware.
+// Contract details that are easy to get subtly different: the absence of
+// validation, method name case, registration-time failures, sniffed content
+// types, state-store semantics, and plain net/http middleware.
 func casesContract(t *testing.T, r runner) {
-	// binding:"required" must fail with 400 for both body and query binding.
-	t.Run("BindValidation", func(t *testing.T) {
+	// Bind* decodes and does not validate: a `binding` tag is inert, so a
+	// missing "required" field binds to its zero value with no 400. Pinned
+	// rather than left untested — the adapters used to run go-playground's
+	// validator here, and the whole point of removing it is that the caller,
+	// not the binder, decides what a valid request is.
+	t.Run("BindIgnoresBindingTag", func(t *testing.T) {
 		type dto struct {
 			Name string `json:"name" query:"name" binding:"required"`
 		}
@@ -48,24 +52,81 @@ func casesContract(t *testing.T, r runner) {
 		}
 
 		for _, tc := range []struct {
-			name       string
-			request    *http.Request
-			wantStatus int
-			wantName   string
+			name     string
+			request  *http.Request
+			wantName string
 		}{
-			{"JSONMissingRequired", jsonReq(`{}`), http.StatusBadRequest, ""},
-			{"JSONPresent", jsonReq(`{"name":"sphere"}`), http.StatusOK, "sphere"},
-			{"QueryMissingRequired", httptest.NewRequest(http.MethodGet, "http://example.com/validate/query", nil), http.StatusBadRequest, ""},
-			{"QueryPresent", httptest.NewRequest(http.MethodGet, "http://example.com/validate/query?name=sphere", nil), http.StatusOK, "sphere"},
+			{"JSONMissingRequired", jsonReq(`{}`), ""},
+			{"JSONPresent", jsonReq(`{"name":"sphere"}`), "sphere"},
+			{"QueryMissingRequired", httptest.NewRequest(http.MethodGet, "http://example.com/validate/query", nil), ""},
+			{"QueryPresent", httptest.NewRequest(http.MethodGet, "http://example.com/validate/query?name=sphere", nil), "sphere"},
 		} {
 			got := r.serve(t, register, tc.request)
-			if got.Status != tc.wantStatus {
-				t.Fatalf("%s: status = %d, want %d; body=%q", tc.name, got.Status, tc.wantStatus, got.Body)
+			if got.Status != http.StatusOK {
+				t.Fatalf("%s: status = %d, want 200; body=%q", tc.name, got.Status, got.Body)
 			}
-			if tc.wantName != "" && !strings.Contains(got.Body, tc.wantName) {
-				t.Fatalf("%s: body = %q, want it to contain %q", tc.name, got.Body, tc.wantName)
+			var payload struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+				t.Fatalf("%s: parse body: %v; body=%q", tc.name, err, got.Body)
+			}
+			if payload.Name != tc.wantName {
+				t.Fatalf("%s: name = %q, want %q", tc.name, payload.Name, tc.wantName)
 			}
 		}
+	})
+
+	// The sequence generated handlers use: one struct filled from four sources
+	// in turn. Every source has to survive the next Bind* call, and none of
+	// them may fail because a *later* source has not been read yet — which is
+	// exactly what validating after each decode did, since the `uri` field is
+	// still empty when BindJSON returns.
+	t.Run("BindMultiSourceSequence", func(t *testing.T) {
+		type dto struct {
+			Name   string `json:"name"`
+			Token  string `header:"X-Token"`
+			Active string `query:"active"`
+			ID     string `uri:"id" binding:"required"`
+		}
+		register := func(router httpx.Router) {
+			router.POST("/multi/:id", func(ctx httpx.Context) error {
+				var d dto
+				if err := ctx.BindJSON(&d); err != nil {
+					return err
+				}
+				if err := ctx.BindHeader(&d); err != nil {
+					return err
+				}
+				if err := ctx.BindQuery(&d); err != nil {
+					return err
+				}
+				if err := ctx.BindURI(&d); err != nil {
+					return err
+				}
+				return ctx.JSON(http.StatusOK, map[string]string{
+					"name": d.Name, "token": d.Token, "active": d.Active, "id": d.ID,
+				})
+			})
+		}
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/multi/42?active=yes", strings.NewReader(`{"name":"sphere"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Token", "t-1")
+
+		got := r.serve(t, register, req)
+		if got.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+			t.Fatalf("parse body: %v; body=%q", err, got.Body)
+		}
+		for key, want := range map[string]string{"name": "sphere", "token": "t-1", "active": "yes", "id": "42"} {
+			if payload[key] != want {
+				t.Fatalf("%s = %q, want %q; body=%q", key, payload[key], want, got.Body)
+			}
+		}
+		r.compareGolden(t, got)
 	})
 
 	// Lowercase method names must register and dispatch.
@@ -96,6 +157,37 @@ func casesContract(t *testing.T, r runner) {
 				defer func() {
 					if recover() == nil {
 						t.Fatalf("registering %q did not panic", path)
+					}
+				}()
+				router.Handle("GET", path, func(ctx httpx.Context) error {
+					return ctx.Text(http.StatusOK, "ok")
+				})
+			})
+		}
+	})
+
+	// The anonymous wildcard is one of those shapes, and the one that used to
+	// split the adapters 2-vs-3: gin and hertz panicked with their own message,
+	// while echo, fiber and stdx registered the route and then disagreed about
+	// whether the parameter was keyed "*" or "". So this case asserts more than
+	// "it panicked" — the panic value has to be httpx's error, which is what
+	// makes the five failures identical rather than merely simultaneous.
+	t.Run("AnonymousWildcardRegistrationPanics", func(t *testing.T) {
+		for _, path := range []string{"/*", "/files/*", "/a/b/*"} {
+			t.Run(path, func(t *testing.T) {
+				engine := r.suite.NewEngine(t, Options{})
+				router := engine.Group("")
+				defer func() {
+					v := recover()
+					if v == nil {
+						t.Fatalf("registering %q did not panic", path)
+					}
+					err, ok := v.(error)
+					if !ok {
+						t.Fatalf("registering %q panicked with %T(%v), want an error", path, v, v)
+					}
+					if !strings.Contains(err.Error(), "httpx: wildcard must be named") {
+						t.Fatalf("registering %q panicked with %q, want httpx's own wildcard error", path, err)
 					}
 				}()
 				router.Handle("GET", path, func(ctx httpx.Context) error {

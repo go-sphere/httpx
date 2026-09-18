@@ -187,38 +187,23 @@ func (c *hertzContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *hertzContext) BindJSON(dst any) error {
-	if err := c.ctx.BindJSON(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.BindJSON(dst))
 }
 
 func (c *hertzContext) BindQuery(dst any) error {
-	if err := c.ctx.BindQuery(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.BindQuery(dst))
 }
 
 func (c *hertzContext) BindForm(dst any) error {
-	if err := c.ctx.BindForm(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.BindForm(dst))
 }
 
 func (c *hertzContext) BindURI(dst any) error {
-	if err := bindURIWithForm(dst, c.ctx); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.bindURIWithForm(dst))
 }
 
 func (c *hertzContext) BindHeader(dst any) error {
-	if err := c.ctx.BindHeader(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.BindHeader(dst))
 }
 
 // Responder (httpx.Responder)
@@ -272,13 +257,26 @@ func (c *hertzContext) Bytes(code int, b []byte, contentType string) error {
 	return nil
 }
 
-func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
+func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
 	if contentType != "" {
 		c.ctx.SetContentType(contentType)
 	}
 	c.ctx.Status(code)
-	c.ctx.SetBodyStream(r, size)
+	c.ctx.SetBodyStream(r, streamSize(size))
 	return nil
+}
+
+// streamSize narrows the contract's int64 size to the int that hertz's
+// SetBodyStream takes. A length that does not fit in int (only reachable on a
+// 32-bit build) degrades to -1 — unknown size, chunked transfer — because the
+// alternative, a truncating conversion, would advertise a Content-Length that
+// does not match the body and corrupt the response. The body itself is still
+// streamed in full either way.
+func streamSize(size int64) int {
+	if size < 0 || int64(int(size)) != size {
+		return -1
+	}
+	return int(size)
 }
 
 func (c *hertzContext) File(path string) error {

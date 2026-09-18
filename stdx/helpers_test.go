@@ -15,9 +15,9 @@ import (
 
 // The shared suite (httpxtest) pins what every adapter must agree on. The
 // tests in this package pin what is specific to this adapter: the pool, the
-// writer wrapper, the net/http bridge, the tree, and the validation shim —
-// the parts a refactor of context.go or engine.go can break without any
-// other adapter noticing.
+// writer wrapper, the net/http bridge, the tree, and the form decoders — the
+// parts a refactor of context.go or engine.go can break without any other
+// adapter noticing.
 
 func newTestEngine(tb testing.TB, opts ...Option) (*Engine, *Router) {
 	tb.Helper()
@@ -97,13 +97,4 @@ func (h *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 func writeFile(dir, name, content string) error {
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
-}
-
-func bindStatus(tb testing.TB, err error) int {
-	tb.Helper()
-	if err == nil {
-		tb.Fatal("bind succeeded, want an error")
-	}
-	status, _ := httpx.RenderError(err)
-	return status
 }

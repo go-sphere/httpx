@@ -15,7 +15,6 @@ func casesReleaseRegression(t *testing.T, run runner) {
 	t.Run("ConvertedCapabilities", func(t *testing.T) { releaseConvertedCapabilities(t, run) })
 	t.Run("EmptyCommitMatrix", func(t *testing.T) { releaseEmptyCommitMatrix(t, run) })
 	t.Run("HeaderCase", func(t *testing.T) { releaseHeaderCase(t, run) })
-	t.Run("ValidationInterface", func(t *testing.T) { releaseValidationInterface(t, run) })
 	t.Run("StatusAfterCommit", func(t *testing.T) { releaseStatusAfterCommit(t, run) })
 	t.Run("ConvertedStdMiddleware", func(t *testing.T) { releaseConvertedStdMiddleware(t, run) })
 	t.Run("StatusOnlyShortCircuit", func(t *testing.T) { releaseStatusOnlyShortCircuit(t, run) })
@@ -47,7 +46,7 @@ func releaseHeaderCase(t *testing.T, run runner) {
 	e := s.NewEngine(t, Options{})
 	e.Group("").GET("/", func(c httpx.Context) error {
 		var dst struct {
-			Token string `header:"x-token" binding:"required"`
+			Token string `header:"x-token"`
 		}
 		if err := c.BindHeader(&dst); err != nil {
 			return err
@@ -71,25 +70,6 @@ func releaseHeaderCase(t *testing.T, run runner) {
 	}
 	if resp.StatusCode != 200 || string(b) != "present" {
 		t.Errorf("status=%d body=%s", resp.StatusCode, b)
-	}
-}
-
-func releaseValidationInterface(t *testing.T, run runner) {
-	s := run.suite
-	e := s.NewEngine(t, Options{})
-	e.Group("").GET("/", func(c httpx.Context) error {
-		var child struct {
-			Required string `binding:"required"`
-		}
-		dst := struct{ Child any }{Child: &child}
-		if err := c.BindQuery(&dst); err != nil {
-			return err
-		}
-		return c.Text(200, "validation skipped")
-	})
-	status, body := serveReleaseEngine(t, e, "GET", "/")
-	if status != 400 {
-		t.Errorf("status=%d body=%s; want 400", status, body)
 	}
 }
 

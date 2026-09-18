@@ -1,9 +1,10 @@
 package httpx
 
 // ErrorHandler renders err into the response using the framework-neutral
-// Context. Adapters accept it via their WithHTTPXErrorHandler / WithErrorHandler
-// options so applications can share one error-rendering implementation across
-// all supported frameworks.
+// Context. Every adapter accepts it under the same name, WithErrorHandler, so
+// applications can share one error-rendering implementation across all
+// supported frameworks. Adapters whose framework has an error handler of its
+// own also offer WithNativeErrorHandler for that shape.
 type ErrorHandler func(Context, error)
 
 // DefaultErrorHandler writes the standard {success, code, message} error body

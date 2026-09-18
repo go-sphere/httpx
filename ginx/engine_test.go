@@ -3,8 +3,14 @@ package ginx
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-sphere/httpx"
 )
 
 func TestStartReturnsNilAfterGracefulStop(t *testing.T) {
@@ -22,7 +28,7 @@ func TestStartReturnsNilAfterGracefulStop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine := New(WithServerAddr(addr))
+	engine := New(WithAddr(addr))
 	errCh := make(chan error, 1)
 	go func() { errCh <- engine.Start() }()
 
@@ -51,4 +57,55 @@ func TestStartReturnsNilAfterGracefulStop(t *testing.T) {
 	if engine.IsRunning() {
 		t.Fatal("IsRunning should be false after Stop")
 	}
+}
+
+// The unmatched-path fallback is installed unconditionally, and the override
+// point is after New. Both halves of that rule are asserted here because both
+// are things a caller can get wrong: setting NoRoute before WithEngine looks
+// like it should win and does not, and the supported override has to actually
+// work or there is no way to keep your own fallback at all.
+func TestRouteFallbackPrecedence(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+
+	t.Run("BeforeNewIsReplaced", func(t *testing.T) {
+		ge := gin.New()
+		ge.NoRoute(func(gc *gin.Context) { gc.String(http.StatusNotFound, "caller's 404") })
+
+		engine := New(WithEngine(ge))
+		engine.Group("").GET("/known", func(ctx httpx.Context) error { return ctx.Text(http.StatusOK, "ok") })
+
+		rr := httptest.NewRecorder()
+		ge.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/nope", nil))
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rr.Code)
+		}
+		if body := rr.Body.String(); body == "caller's 404" {
+			t.Fatal("a NoRoute set before WithEngine survived; the adapter must replace it")
+		} else if !strings.Contains(body, `"message":"Not Found"`) {
+			t.Fatalf("body = %q, want the shared httpx error body", body)
+		}
+
+		// The 405 half comes with it: gin reports a wrong method as 404 until
+		// HandleMethodNotAllowed is set, which is the other thing this installs.
+		rr = httptest.NewRecorder()
+		ge.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/known", nil))
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405; body=%q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("AfterNewWins", func(t *testing.T) {
+		ge := gin.New()
+		engine := New(WithEngine(ge))
+		engine.Group("").GET("/known", func(ctx httpx.Context) error { return ctx.Text(http.StatusOK, "ok") })
+		// gin's setter replaces, so the last caller wins — this is the
+		// documented way to keep your own unmatched-path answer.
+		ge.NoRoute(func(gc *gin.Context) { gc.String(http.StatusNotFound, "caller's 404") })
+
+		rr := httptest.NewRecorder()
+		ge.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/nope", nil))
+		if got := rr.Body.String(); got != "caller's 404" {
+			t.Fatalf("body = %q, want the caller's NoRoute handler to have answered", got)
+		}
+	})
 }

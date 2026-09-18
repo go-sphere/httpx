@@ -171,3 +171,8 @@ coverage.txt
 *~
 /code_review
 .ocr-result.json
+
+# Agent scratch space: Claude Code puts per-agent git worktrees under
+# .claude/worktrees/. Those share this repository's object store, so an
+# `git add -A` here would otherwise commit another agent's checkout.
+.claude/

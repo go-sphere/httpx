@@ -204,7 +204,25 @@ func httpStatusError(status int32) error {
 // It recognizes StatusError, CodeError, and MessageError interfaces and falls back
 // to defaults for unknown error types.
 // code is 0 unless err implements CodeError, matching ClassifyError.
+//
+// message is empty unless err carries one through MessageError. It is never
+// err.Error(): ParseError is the default ErrorParser of sphere/httpz, so its
+// message goes straight into an HTTP response body, and err.Error() there is
+// raw internal detail — driver strings, SQL, panic text. Empty is the honest
+// answer, and it is more useful than a substitute: it says "this error has no
+// user-facing message", which a caller can distinguish from a message that
+// merely happens to equal the status text. Callers that need something to
+// render should use ClassifyError (or RenderError), which degrades an
+// unclassified error to http.StatusText(status) for exactly that purpose.
 func ParseError(err error) (code int32, status int32, message string) {
+	// A nil error is a caller mistake that must not take the process down:
+	// this is the default ErrorParser in sphere/httpz. It classifies like any
+	// other error carrying no information — 500, and no user-facing message,
+	// because nil implements MessageError no more than errors.New does.
+	// ClassifyError(nil) is where that becomes renderable status text.
+	if err == nil {
+		return 0, http.StatusInternalServerError, ""
+	}
 	var he Error
 	if errors.As(err, &he) {
 		return he.GetCode(), he.GetStatus(), he.GetMessage()
@@ -222,8 +240,6 @@ func ParseError(err error) (code int32, status int32, message string) {
 	var me MessageError
 	if errors.As(err, &me) {
 		message = me.GetMessage()
-	} else {
-		message = err.Error()
 	}
 	return
 }

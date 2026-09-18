@@ -19,10 +19,31 @@ var (
 	_ httpx.InterceptorScope = (*Router)(nil)
 )
 
+// wildcardRoute remembers what a route looked like before
+// FixWildcardPathIfNeed rewrote its named wildcard to the anonymous form echo
+// supports: the original parameter name, so Param(name) keeps resolving, and
+// the pattern as the caller registered it, so FullPath reports that rather than
+// this adapter's normalization.
+type wildcardRoute struct {
+	param   string
+	pattern string
+}
+
 // wildcardNames maps a registered route pattern (with the anonymous "*"
-// wildcard) to the original named wildcard parameter, so Param(name) keeps
-// working after FixWildcardPathIfNeed rewrote the path.
-var wildcardNames sync.Map // route pattern -> original param name
+// wildcard) to what it was written as.
+var wildcardNames sync.Map // route pattern -> wildcardRoute
+
+// lookupWildcardRoute resolves a matched route pattern back to its registered
+// form. The caller checks the pattern ends in "*" first, so a route without a
+// wildcard never pays the map lookup.
+func lookupWildcardRoute(pattern string) (wildcardRoute, bool) {
+	v, ok := wildcardNames.Load(pattern)
+	if !ok {
+		return wildcardRoute{}, false
+	}
+	route, ok := v.(wildcardRoute)
+	return route, ok
+}
 
 type Router struct {
 	group        *echo.Group
@@ -51,6 +72,13 @@ func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
 
 func (r *Router) Use(m ...httpx.Middleware) {
 	r.group.Use(adaptMiddlewares(m, r.errHandler)...)
+}
+
+// UseNative registers native echo middleware on this group. Prefer it over
+// wrapping an echo.MiddlewareFunc with AdaptEchoMiddleware: the handler runs
+// with no adapter in between.
+func (r *Router) UseNative(middleware ...echo.MiddlewareFunc) {
+	r.group.Use(middleware...)
 }
 
 func (r *Router) BasePath() string {
@@ -88,7 +116,10 @@ func (r *Router) normalizeWildcardPath(path string) string {
 		return path
 	}
 	fixed, _ := httpx.FixWildcardPathIfNeed(r, path)
-	wildcardNames.Store(joinPaths(r.basePath, fixed), orig)
+	wildcardNames.Store(joinPaths(r.basePath, fixed), wildcardRoute{
+		param:   orig,
+		pattern: joinPaths(r.basePath, path),
+	})
 	return fixed
 }
 

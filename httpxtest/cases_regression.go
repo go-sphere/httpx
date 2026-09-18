@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,186 @@ func casesRegression(t *testing.T, r runner) {
 		}
 	})
 
+	// FullPath is the pattern the caller registered. echo and fiber have no
+	// named wildcards, so FixWildcardPathIfNeed rewrites "/files/*filepath" to
+	// "/files/*" before handing it to them — an httpx-internal normalization
+	// that used to leak out through this method. It is not cosmetic: downstream
+	// gates authorization and rate limiting on FullPath, so a pattern that does
+	// not match what was registered silently misses its policy.
+	t.Run("FullPathIsTheRegisteredPattern", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			api := router.Group("/api")
+			api.Handle("GET", "/files/*filepath", func(ctx httpx.Context) error {
+				return ctx.JSON(http.StatusOK, map[string]any{
+					"fullPath": ctx.FullPath(),
+					"param":    ctx.Param("filepath"),
+				})
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/api/files/a/b.txt", nil))
+
+		if got.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
+		}
+		var payload struct {
+			FullPath string `json:"fullPath"`
+			Param    string `json:"param"`
+		}
+		if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+			t.Fatalf("parse body: %v; body=%q", err, got.Body)
+		}
+		if payload.FullPath != "/api/files/*filepath" {
+			t.Fatalf("FullPath() = %q, want %q", payload.FullPath, "/api/files/*filepath")
+		}
+		// The wildcard name still has to resolve: reporting the original
+		// pattern must not come at the cost of the lookup that made it work.
+		if payload.Param != "a/b.txt" {
+			t.Fatalf("Param(filepath) = %q, want %q", payload.Param, "a/b.txt")
+		}
+	})
+
+	// A route parameter arrives decoded everywhere. The escapes that matter are
+	// the ones net/url keeps raw in URL.RawPath ("%2F", whose "/" is not escaped
+	// on the way back), because that is where the frameworks stop agreeing:
+	// fiber matches the raw path unless UnescapePath is on, and echo matches
+	// RawPath whenever the standard library set it.
+	t.Run("EncodedWildcardParamIsDecoded", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.Handle("GET", "/files/*filepath", func(ctx httpx.Context) error {
+				return ctx.JSON(http.StatusOK, map[string]any{
+					"param":  ctx.Param("filepath"),
+					"params": ctx.Params(),
+				})
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/files/a/b%2Fc.txt", nil))
+
+		if got.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
+		}
+		var payload struct {
+			Param  string            `json:"param"`
+			Params map[string]string `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+			t.Fatalf("parse body: %v; body=%q", err, got.Body)
+		}
+		if payload.Param != "a/b/c.txt" {
+			t.Fatalf("Param(filepath) = %q, want %q", payload.Param, "a/b/c.txt")
+		}
+		if payload.Params["filepath"] != "a/b/c.txt" {
+			t.Fatalf("Params()[filepath] = %q, want %q (params=%v)", payload.Params["filepath"], "a/b/c.txt", payload.Params)
+		}
+	})
+
+	// The same value read through the binder. A named segment rather than a
+	// wildcard, because gin matches on the decoded path and would not route
+	// "%2F" to a single-segment parameter at all.
+	t.Run("EncodedParamBindsDecoded", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.Handle("GET", "/decode/:seg", func(ctx httpx.Context) error {
+				var dst struct {
+					Seg string `uri:"seg"`
+				}
+				if err := ctx.BindURI(&dst); err != nil {
+					return err
+				}
+				return ctx.JSON(http.StatusOK, map[string]any{
+					"param": ctx.Param("seg"),
+					"bound": dst.Seg,
+				})
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/decode/a%2Cb", nil))
+
+		if got.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
+		}
+		var payload struct {
+			Param string `json:"param"`
+			Bound string `json:"bound"`
+		}
+		if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+			t.Fatalf("parse body: %v; body=%q", err, got.Body)
+		}
+		if payload.Param != "a,b" {
+			t.Fatalf("Param(seg) = %q, want %q", payload.Param, "a,b")
+		}
+		if payload.Bound != "a,b" {
+			t.Fatalf("BindURI seg = %q, want %q: the binder and Param disagree", payload.Bound, "a,b")
+		}
+	})
+
+	// BindURI and Param are two readings of the same route parameter, so a
+	// field tagged uri:"x" must bind exactly what Param("x") returns — wildcards
+	// included. That is the shape protoc-gen-sphere emits for "/v1/files/*path",
+	// where the generated handler's only access to the path is ctx.BindURI, and
+	// it is where three adapters disagreed in three different ways and silently:
+	// ginx bound gin's raw wildcard value with the leading "/" that Param
+	// strips, while echox and fiberx looked the uri tag up against the
+	// framework's own parameter set, where FixWildcardPathIfNeed had left only
+	// "*", found nothing, and bound "".
+	//
+	// The assertion is the invariant rather than a per-adapter literal, so an
+	// adapter cannot satisfy it by being self-consistently wrong; want pins the
+	// one value all five must agree on, so they cannot satisfy it by all
+	// returning "".
+	t.Run("BindURIMatchesParam", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			pattern string
+			target  string
+			want    string
+		}{
+			{"Wildcard", "/bind/files/*path", "/bind/files/a/b/c.txt", "a/b/c.txt"},
+			{"WildcardSingleSegment", "/bind/files/*path", "/bind/files/c.txt", "c.txt"},
+			// Encoded separator: net/url leaves "%2F" in RawPath, which is where
+			// echo and fiber stop matching the decoded path.
+			{"WildcardEncodedSlash", "/bind/files/*path", "/bind/files/a/b%2Fc.txt", "a/b/c.txt"},
+			{"WildcardEncodedChar", "/bind/files/*path", "/bind/files/a%2Cb/c.txt", "a,b/c.txt"},
+			// The non-wildcard form already agreed; it is here so a fix for the
+			// wildcard cannot regress it.
+			{"NamedSegment", "/bind/items/:path", "/bind/items/42", "42"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := r.serve(t, func(router httpx.Router) {
+					router.Handle("GET", tc.pattern, func(ctx httpx.Context) error {
+						var in struct {
+							Path string `uri:"path"`
+						}
+						if err := ctx.BindURI(&in); err != nil {
+							return err
+						}
+						return ctx.JSON(http.StatusOK, map[string]any{
+							"param":  ctx.Param("path"),
+							"bound":  in.Path,
+							"params": ctx.Params(),
+						})
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.target, nil))
+
+				if got.Status != http.StatusOK {
+					t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
+				}
+				var payload struct {
+					Param  string            `json:"param"`
+					Bound  string            `json:"bound"`
+					Params map[string]string `json:"params"`
+				}
+				if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+					t.Fatalf("parse body: %v; body=%q", err, got.Body)
+				}
+				if payload.Bound != payload.Param {
+					t.Fatalf("BindURI path = %q, Param(path) = %q: the binder and Param disagree", payload.Bound, payload.Param)
+				}
+				if payload.Params["path"] != payload.Param {
+					t.Fatalf("Params()[path] = %q, Param(path) = %q: the map and Param disagree (params=%v)",
+						payload.Params["path"], payload.Param, payload.Params)
+				}
+				if payload.Param != tc.want {
+					t.Fatalf("Param(path) = %q, want %q", payload.Param, tc.want)
+				}
+			})
+		}
+	})
+
 	// A root-level catch-all must also match the bare "/", which downstream
 	// mounts (a std http.ServeMux serving a whole site) rely on.
 	t.Run("RootCatchAllMatchesRoot", func(t *testing.T) {
@@ -85,6 +266,43 @@ func casesRegression(t *testing.T, r runner) {
 				})
 			})
 		}, req)
+	})
+
+	// Host travels outside the header map on net/http, so it is not a header
+	// the request carries: Header("Host") is unset, exactly as Headers() has no
+	// "Host" entry. fasthttp keeps it in the header set, which is where the two
+	// fasthttp-backed adapters used to answer differently from the other three
+	// — and differently from each other's own Headers().
+	t.Run("HeaderExcludesHost", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/headers/host", func(ctx httpx.Context) error {
+				_, inHeaders := ctx.Headers()["Host"]
+				return ctx.JSON(http.StatusOK, map[string]any{
+					"header":    ctx.Header("Host"),
+					"lowercase": ctx.Header("host"),
+					"inHeaders": inHeaders,
+				})
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/headers/host", nil))
+
+		if got.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
+		}
+		var payload struct {
+			Header    string `json:"header"`
+			Lowercase string `json:"lowercase"`
+			InHeaders bool   `json:"inHeaders"`
+		}
+		if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
+			t.Fatalf("parse body: %v; body=%q", err, got.Body)
+		}
+		if payload.Header != "" || payload.Lowercase != "" {
+			t.Fatalf("Header(\"Host\") = %q, Header(\"host\") = %q, want both unset",
+				payload.Header, payload.Lowercase)
+		}
+		if payload.InHeaders {
+			t.Fatal("Headers() carries a Host entry")
+		}
 	})
 
 	// A cookie with Expires, a space in the value and every flag set must
@@ -250,30 +468,35 @@ func casesRegression(t *testing.T, r runner) {
 		}
 	})
 
-	// Binder targets that are not a plain struct: a multi-level pointer must
-	// decode and validate, and a slice with an invalid element must be
-	// rejected.
-	t.Run("PointerAndSliceValidation", func(t *testing.T) {
+	// Binder targets that are not a plain struct: a multi-level pointer and a
+	// slice of pointers both have to decode the same way everywhere. There is
+	// no validation left to assert here (Bind* decodes only — see
+	// httpx.Binder), so the case pins the decoded values instead; the null
+	// element stays because it is the one input that reaches ginx's recover,
+	// gin's validator still being the thing that panics on it.
+	t.Run("PointerAndSliceTargets", func(t *testing.T) {
 		type item struct {
-			Name string `json:"name" binding:"required"`
+			Name string `json:"name"`
 		}
 		register := func(router httpx.Router) {
-			router.POST("/validate/ptr", func(ctx httpx.Context) error {
+			router.POST("/bind/ptr", func(ctx httpx.Context) error {
 				var dst *item
 				if err := ctx.BindJSON(&dst); err != nil {
 					return err
 				}
 				return ctx.JSON(http.StatusOK, map[string]any{"name": dst.Name})
 			})
-			router.POST("/validate/slice", func(ctx httpx.Context) error {
+			router.POST("/bind/slice", func(ctx httpx.Context) error {
 				var dst []*item
 				if err := ctx.BindJSON(&dst); err != nil {
 					return err
 				}
-				// Reached only when every element is non-null, which is the
-				// point of rejecting a null element rather than passing it on.
 				names := make([]string, 0, len(dst))
 				for _, it := range dst {
+					if it == nil {
+						names = append(names, "<nil>")
+						continue
+					}
 					names = append(names, it.Name)
 				}
 				return ctx.JSON(http.StatusOK, map[string]any{"count": len(dst), "names": names})
@@ -286,21 +509,27 @@ func casesRegression(t *testing.T, r runner) {
 		}
 
 		for _, tc := range []struct {
-			name, path, body string
-			want             int
+			name, path, body, want string
 		}{
-			// A null element cannot satisfy the element rules and would
-			// nil-dereference in the handler; gin's validator panics on it,
-			// so every adapter reports it as a bind failure instead.
-			{"slice with a null element", "/validate/slice", `[{"name":"ok"},null]`, http.StatusBadRequest},
-			{"invalid pointer target", "/validate/ptr", `{}`, http.StatusBadRequest},
-			{"valid pointer target", "/validate/ptr", `{"name":"ok"}`, http.StatusOK},
-			{"valid slice target", "/validate/slice", `[{"name":"ok"},{"name":"ok"}]`, http.StatusOK},
-			{"slice with invalid element", "/validate/slice", `[{"name":"ok"},{}]`, http.StatusBadRequest},
+			{"pointer target", "/bind/ptr", `{"name":"ok"}`, `{"name":"ok"}`},
+			{"pointer target, absent field", "/bind/ptr", `{}`, `{"name":""}`},
+			{"slice target", "/bind/slice", `[{"name":"a"},{"name":"b"}]`, `{"count":2,"names":["a","b"]}`},
+			{"slice with an empty element", "/bind/slice", `[{"name":"a"},{}]`, `{"count":2,"names":["a",""]}`},
+			{"slice with a null element", "/bind/slice", `[{"name":"a"},null]`, `{"count":2,"names":["a","<nil>"]}`},
 		} {
 			got := r.serve(t, register, jsonReq(tc.path, tc.body))
-			if got.Status != tc.want {
-				t.Fatalf("%s: status = %d, want %d; body=%q", tc.name, got.Status, tc.want, got.Body)
+			if got.Status != http.StatusOK {
+				t.Fatalf("%s: status = %d, want 200; body=%q", tc.name, got.Status, got.Body)
+			}
+			var gotBody, wantBody any
+			if err := json.Unmarshal([]byte(got.Body), &gotBody); err != nil {
+				t.Fatalf("%s: parse body: %v; body=%q", tc.name, err, got.Body)
+			}
+			if err := json.Unmarshal([]byte(tc.want), &wantBody); err != nil {
+				t.Fatalf("%s: parse want: %v", tc.name, err)
+			}
+			if !reflect.DeepEqual(gotBody, wantBody) {
+				t.Fatalf("%s: body = %q, want %q", tc.name, got.Body, tc.want)
 			}
 		}
 	})

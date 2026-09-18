@@ -177,13 +177,13 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 		if opts.errorMode == harnessErrorTeapot {
 			engine = ginx.New(
 				ginx.WithEngine(g),
-				ginx.WithServerAddr(addr),
-				ginx.WithErrorHandler(func(ctx *gin.Context, err error) {
+				ginx.WithAddr(addr),
+				ginx.WithNativeErrorHandler(func(ctx *gin.Context, err error) {
 					ctx.JSON(http.StatusTeapot, gin.H{"error": err.Error()})
 				}),
 			)
 		} else {
-			engine = ginx.New(ginx.WithEngine(g), ginx.WithServerAddr(addr))
+			engine = ginx.New(ginx.WithEngine(g), ginx.WithAddr(addr))
 		}
 
 		h := frameworkHarness{
@@ -262,7 +262,7 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 		// exercises the real default behavior instead of an inline copy.
 
 		addr := ginLikeAddrForMode(tb, opts.mode)
-		engine := echox.New(echox.WithEngine(e), echox.WithServerAddr(addr))
+		engine := echox.New(echox.WithEngine(e), echox.WithAddr(addr))
 		h := frameworkHarness{
 			Name:   name,
 			Engine: engine,
@@ -289,7 +289,7 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 		if opts.errorMode == harnessErrorTeapot {
 			engine = hertzx.New(
 				hertzx.WithEngine(h),
-				hertzx.WithErrorHandler(func(ctx context.Context, rc *app.RequestContext, err error) {
+				hertzx.WithNativeErrorHandler(func(ctx context.Context, rc *app.RequestContext, err error) {
 					rc.JSON(http.StatusTeapot, map[string]string{"error": err.Error()})
 				}),
 			)

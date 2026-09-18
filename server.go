@@ -4,34 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"time"
 )
-
-// ListenAndAutoShutdown starts an HTTP server and automatically handles graceful shutdown.
-// It listens for context cancellation to trigger shutdown with the specified timeout.
-// Returns any error from server startup or shutdown, prioritizing startup errors.
-func ListenAndAutoShutdown(ctx context.Context, server *http.Server, closeTimeout time.Duration) error {
-	errChan := make(chan error, 1)
-	go func() {
-		defer close(errChan)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errChan <- err
-		}
-	}()
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-		defer cancel()
-		shutdownErr := server.Shutdown(shutdownCtx)
-		listenErr := <-errChan
-		if listenErr != nil {
-			return listenErr
-		}
-		return shutdownErr
-	case err := <-errChan:
-		return err
-	}
-}
 
 // Start begins serving HTTP requests on the configured address.
 // It handles nil server gracefully and returns nil.
@@ -47,15 +20,47 @@ func Start(server *http.Server) error {
 	return nil
 }
 
-// Close gracefully shuts down the HTTP server using the provided context.
-// It handles nil server gracefully and returns any shutdown error.
+// Close stops the HTTP server: Shutdown(ctx) drains the requests in flight,
+// and a drain the caller's context cut short is followed by a forced close, so
+// nothing is left serving once Close returns. Graceful alone is not enough —
+// without the forced close a caller whose deadline expired has no way to get
+// the connections down, which is what Engine.Stop promises.
+//
+// A forced close reports success: the drain degraded, but the server is down.
+// A nil result therefore does not by itself mean every in-flight request
+// finished. A Shutdown that failed for some other reason is force-closed too,
+// but that cause is what Close returns.
+//
+// This lives here rather than in each adapter because ginx, echox and stdx all
+// stop the same *http.Server, and "graceful, then forced" is a property of
+// net/http, not of any one framework; putting it here also keeps the exported
+// helper from being the one shutdown path in the repository that leaves
+// connections serving. It matches sphere/httpz.StopServer, which had to
+// reimplement exactly this downstream.
+//
+// A nil server is a no-op.
 func Close(ctx context.Context, server *http.Server) error {
 	if server == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	err := server.Shutdown(ctx)
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() == nil {
+		// Shutdown failed for a reason other than the caller's context — a
+		// listener or connection close error, say. Force-close anyway so
+		// nothing keeps serving, but report the original cause.
+		if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+			return errors.Join(err, closeErr)
+		}
 		return err
+	}
+	if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+		return closeErr
 	}
 	return nil
 }

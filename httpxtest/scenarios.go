@@ -155,11 +155,11 @@ func Scenarios() []Scenario {
 		},
 		{
 			// The most expensive request path a generated handler takes: body,
-			// query, path and header all decoded and validated.
+			// query, path and header all decoded into separate structs.
 			Name: "BindFull",
 			Register: func(r httpx.Router) {
 				type body struct {
-					Name string `json:"name" binding:"required"`
+					Name string `json:"name"`
 					Age  int    `json:"age"`
 				}
 				type query struct {

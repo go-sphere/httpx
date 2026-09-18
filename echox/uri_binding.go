@@ -26,17 +26,33 @@ func bindForm(dst any, ctx echo.Context) error {
 	return formDecoder.Decode(dst, values)
 }
 
-func bindURIWithForm(dst any, ctx echo.Context) error {
-	names := ctx.ParamNames()
+// bindURIWithForm decodes the matched route's parameters into dst. It is a
+// method on echoContext rather than a function over echo.Context because it has
+// to read the parameter set exactly as Param and Params do — same decoding
+// rule, same resolution of the "*" key back to the name the route was
+// registered with. Binding straight off ctx.ParamNames() instead is how a field
+// tagged uri:"filepath" used to bind "" on a /files/*filepath route: echo only
+// knows that parameter as "*", so the tag matched nothing and the failure was
+// silent.
+func (c *echoContext) bindURIWithForm(dst any) error {
+	names := c.ctx.ParamNames()
 	if len(names) == 0 {
 		return nil
 	}
-	params := ctx.ParamValues()
+	params := c.ctx.ParamValues()
+	decode := c.decodesParams()
+	wildcard := c.wildcardParamName()
 	values := make(url.Values, len(names))
 	for i, key := range names {
 		value := ""
 		if i < len(params) {
 			value = params[i]
+			if decode {
+				value = decodeParamValue(value)
+			}
+		}
+		if key == "*" && wildcard != "" {
+			key = wildcard
 		}
 		values.Set(key, value)
 	}

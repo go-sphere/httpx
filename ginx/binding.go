@@ -6,21 +6,23 @@ import (
 	"github.com/gin-gonic/gin/binding"
 )
 
-type QueryBinding struct{}
+// queryBinding is gin's missing `query`-tag binding: gin.binding reads the
+// `form` tag and parses the request body along with the query string, so the
+// adapter supplies a query-only binder. It is unexported because it implements
+// nothing a caller outside this package can use — gin's own binding.Binding
+// interface is satisfied incidentally, not as a promise.
+//
+// MapFormWithTag is gin's own field mapping, so the decode rules (defaults,
+// time formats, collection formats, unexported fields) are gin's. It is the
+// one binder in this package that does not reach gin's validator, because it
+// never calls gin's validate(); see bind in context.go for why the others'
+// verdict is dropped.
+type queryBinding struct{}
 
-func (QueryBinding) Name() string {
+func (queryBinding) Name() string {
 	return "query"
 }
 
-func (QueryBinding) Bind(req *http.Request, obj any) error {
-	values := req.URL.Query()
-	if err := binding.MapFormWithTag(obj, values, "query"); err != nil {
-		return err
-	}
-	// Run struct validation so `binding:"required"` works for query fields,
-	// matching gin's built-in bindings.
-	if binding.Validator == nil {
-		return nil
-	}
-	return binding.Validator.ValidateStruct(obj)
+func (queryBinding) Bind(req *http.Request, obj any) error {
+	return binding.MapFormWithTag(obj, req.URL.Query(), "query")
 }

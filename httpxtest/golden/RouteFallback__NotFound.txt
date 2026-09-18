@@ -1,0 +1,9 @@
+status: 404
+content-type: application/json
+body: json
+---
+{
+  "code": 0,
+  "message": "Not Found",
+  "success": false
+}

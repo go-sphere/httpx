@@ -40,7 +40,7 @@ func NewConfig(opts ...Option) *Config {
 	// custom one on the engine. Comparing against echo's default handler makes
 	// echox.New(WithEngine(echo.New())) behave the same as echox.New().
 	if conf.engine.HTTPErrorHandler == nil || isEchoDefaultErrorHandler(conf.engine) {
-		conf.engine.HTTPErrorHandler = DefaultHTTPErrorHandler
+		conf.engine.HTTPErrorHandler = DefaultErrorHandler
 	}
 	if conf.server == nil {
 		conf.server = &http.Server{
@@ -57,15 +57,29 @@ func isEchoDefaultErrorHandler(e *echo.Echo) bool {
 	return reflect.ValueOf(e.HTTPErrorHandler).Pointer() == reflect.ValueOf(e.DefaultHTTPErrorHandler).Pointer()
 }
 
-// DefaultHTTPErrorHandler renders errors with the standard httpx error body.
+// DefaultErrorHandler renders errors with the standard httpx error body.
 // It understands *echo.HTTPError (framework 404/405/... errors) so their
 // status codes are preserved instead of being reported as 500.
-func DefaultHTTPErrorHandler(err error, c echo.Context) {
+//
+// Naming rule for the whole repository: DefaultErrorHandler is always *this
+// adapter's default handler in its native shape*, the value the adapter
+// installs on the framework when the caller configures nothing. That is why
+// the five signatures differ — gin's is func(*gin.Context, error), echo's is
+// echo.HTTPErrorHandler, fiber's is func(fiber.Ctx, error) error, hertz's
+// takes (context.Context, *app.RequestContext, error) — and why for stdx the
+// native shape happens to *be* httpx.ErrorHandler: net/http has no error
+// handler of its own, so the adapter's own shape is the only one there is.
+// The portable, framework-neutral entry point is WithErrorHandler, which
+// takes httpx.ErrorHandler on every adapter; DefaultErrorHandler is not that
+// and is not interchangeable across adapters.
+func DefaultErrorHandler(err error, c echo.Context) {
 	if c.Response().Committed {
 		return
 	}
 	status, body := httpx.RenderError(normalizeEchoError(err))
-	_ = c.JSON(status, body)
+	// Through the adapter's own context so the JSON Content-Type carries the
+	// charset the other four adapters write.
+	_ = newEchoContext(c).JSON(status, body)
 }
 
 func normalizeEchoError(err error) error {
@@ -88,7 +102,9 @@ func WithServer(server *http.Server) Option {
 	}
 }
 
-func WithServerAddr(addr string) Option {
+// WithAddr sets the listen address, creating the http.Server when none was
+// supplied. It is the framework-neutral option present on every adapter.
+func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		if conf.server == nil {
 			conf.server = &http.Server{
@@ -98,12 +114,6 @@ func WithServerAddr(addr string) Option {
 			conf.server.Addr = addr
 		}
 	}
-}
-
-// WithAddr sets the listen address. It is the framework-neutral equivalent of
-// WithServerAddr, present on every adapter.
-func WithAddr(addr string) Option {
-	return WithServerAddr(addr)
 }
 
 // WithErrorHandler installs a framework-neutral error handler. Errors
@@ -168,6 +178,25 @@ func New(opts ...Option) httpx.Engine {
 	if conf.ipExtractor != nil {
 		conf.engine.IPExtractor = conf.ipExtractor
 	}
+	if errHandler := conf.errHandler; errHandler != nil {
+		// Errors echo raises for itself — an unmatched path, a rejected method —
+		// never pass through the router wrapper, so without this the configured
+		// httpx.ErrorHandler would own every response except the ones the
+		// application did not route. The other adapters route their 404/405
+		// through it too (see ginx/hertzx installRouteFallback, fiberx
+		// routeFallback, stdx notAllowedLeaf).
+		conf.engine.HTTPErrorHandler = func(err error, c echo.Context) {
+			if c.Response().Committed {
+				return
+			}
+			errHandler(newEchoContext(c), normalizeEchoError(err))
+			// The handler may have only set the status; commit it here, since
+			// nothing runs below and echo does not commit on its own.
+			if resp := c.Response(); !resp.Committed {
+				resp.WriteHeader(resp.Status)
+			}
+		}
+	}
 	conf.server.Handler = conf.engine
 	engine := &Engine{
 		engine:     conf.engine,
@@ -189,6 +218,12 @@ func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
 		return
 	}
 	e.interceptors = append(slices.Clone(e.interceptors), m...)
+}
+
+// UseNative registers native echo middleware on the engine. See
+// Router.UseNative for why it is preferred over AdaptEchoMiddleware.
+func (e *Engine) UseNative(middleware ...echo.MiddlewareFunc) {
+	e.engine.Use(middleware...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
@@ -223,11 +258,12 @@ func (e *Engine) Start() error {
 
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
-	err := httpx.Close(ctx, e.server)
-	if err == nil {
-		e.running.Store(false)
-	}
-	return err
+	// httpx.Close force-closes when the graceful drain fails, so the server is
+	// down whatever it returns — the running flag has to fall with it. Storing
+	// it only on a nil error left IsRunning reporting true for the rest of the
+	// process after a stop the caller's deadline cut short.
+	defer e.running.Store(false)
+	return httpx.Close(ctx, e.server)
 }
 
 // IsRunning returns true if the server is currently running.

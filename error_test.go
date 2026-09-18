@@ -3,6 +3,7 @@ package httpx
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,128 @@ func TestClassifyError(t *testing.T) {
 	_, status, message = ClassifyError(UnauthorizedError(errors.New("token is expired")))
 	if status != http.StatusUnauthorized || message != http.StatusText(http.StatusUnauthorized) {
 		t.Fatalf("empty message: status=%d message=%q", status, message)
+	}
+}
+
+// ParseError is the default ErrorParser in sphere/server/httpz, so a nil error
+// reaching it must classify like any other error carrying no information
+// rather than panic: 500, and no message, exactly as for an unclassified
+// error. Turning that into renderable text is ClassifyError's job, so the two
+// deliberately disagree on the message and agree on everything else.
+func TestParseErrorNil(t *testing.T) {
+	t.Parallel()
+	code, status, message := ParseError(nil)
+	if code != 0 || status != http.StatusInternalServerError || message != "" {
+		t.Fatalf("ParseError(nil) = (%d, %d, %q), want (0, 500, \"\")", code, status, message)
+	}
+
+	unclassifiedCode, unclassifiedStatus, unclassifiedMessage := ParseError(errors.New("boom"))
+	if code != unclassifiedCode || status != unclassifiedStatus || message != unclassifiedMessage {
+		t.Fatalf("ParseError(nil) = (%d, %d, %q), want the unclassified triple (%d, %d, %q)",
+			code, status, message, unclassifiedCode, unclassifiedStatus, unclassifiedMessage)
+	}
+
+	classifiedCode, classifiedStatus, classifiedMessage := ClassifyError(nil)
+	if classifiedCode != 0 || classifiedStatus != http.StatusInternalServerError ||
+		classifiedMessage != http.StatusText(http.StatusInternalServerError) {
+		t.Fatalf("ClassifyError(nil) = (%d, %d, %q), want (0, 500, %q)",
+			classifiedCode, classifiedStatus, classifiedMessage, http.StatusText(http.StatusInternalServerError))
+	}
+}
+
+// The three sub-interfaces, implemented separately, so ParseError is exercised
+// on the partial shapes an application error can have — not just httpx.Error.
+type statusOnlyError struct{ error }
+
+func (statusOnlyError) GetStatus() int32 { return http.StatusTeapot }
+
+type codeOnlyError struct{ error }
+
+func (codeOnlyError) GetCode() int32 { return 4041 }
+
+type messageOnlyError struct {
+	error
+	message string
+}
+
+func (e messageOnlyError) GetMessage() string { return e.message }
+
+// ParseError feeds an HTTP response body through sphere/httpz, so an error
+// that carries no MessageError must yield no message at all rather than
+// err.Error(). ClassifyError is the rendering path and keeps substituting the
+// status text; its output — which adapter error bodies and the golden files
+// depend on — must not move for any of these shapes.
+func TestParseErrorDoesNotLeakErrorString(t *testing.T) {
+	t.Parallel()
+	const raw = "pq: password authentication failed for user \"admin\""
+	cases := []struct {
+		name string
+		err  error
+		// what ParseError must report
+		code    int32
+		status  int32
+		message string
+		// what ClassifyError must still report
+		classifiedCode    int32
+		classifiedStatus  int32
+		classifiedMessage string
+	}{
+		{
+			name: "unclassified", err: errors.New(raw),
+			code: 0, status: http.StatusInternalServerError, message: "",
+			classifiedCode: 0, classifiedStatus: http.StatusInternalServerError, classifiedMessage: http.StatusText(http.StatusInternalServerError),
+		},
+		{
+			name: "status only", err: statusOnlyError{errors.New(raw)},
+			code: 0, status: http.StatusTeapot, message: "",
+			classifiedCode: 0, classifiedStatus: http.StatusTeapot, classifiedMessage: http.StatusText(http.StatusTeapot),
+		},
+		{
+			name: "code only", err: codeOnlyError{errors.New(raw)},
+			code: 4041, status: http.StatusInternalServerError, message: "",
+			classifiedCode: 4041, classifiedStatus: http.StatusInternalServerError, classifiedMessage: http.StatusText(http.StatusInternalServerError),
+		},
+		{
+			// An explicit but empty message is still "no message": it must not
+			// fall back to err.Error() either.
+			name: "message only, empty", err: messageOnlyError{errors.New(raw), ""},
+			code: 0, status: http.StatusInternalServerError, message: "",
+			classifiedCode: 0, classifiedStatus: http.StatusInternalServerError, classifiedMessage: http.StatusText(http.StatusInternalServerError),
+		},
+		{
+			name: "message only, real", err: messageOnlyError{errors.New(raw), "please try again later"},
+			code: 0, status: http.StatusInternalServerError, message: "please try again later",
+			classifiedCode: 0, classifiedStatus: http.StatusInternalServerError, classifiedMessage: "please try again later",
+		},
+		{
+			name: "full httpx.Error", err: NewError(http.StatusForbidden, 4030, "no permission", errors.New(raw)),
+			code: 4030, status: http.StatusForbidden, message: "no permission",
+			classifiedCode: 4030, classifiedStatus: http.StatusForbidden, classifiedMessage: "no permission",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, status, message := ParseError(tc.err)
+			if code != tc.code || status != tc.status || message != tc.message {
+				t.Fatalf("ParseError = (%d, %d, %q), want (%d, %d, %q)", code, status, message, tc.code, tc.status, tc.message)
+			}
+			if message == tc.err.Error() && tc.err.Error() != tc.message {
+				t.Fatalf("ParseError leaked err.Error(): %q", message)
+			}
+
+			code, status, message = ClassifyError(tc.err)
+			if code != tc.classifiedCode || status != tc.classifiedStatus || message != tc.classifiedMessage {
+				t.Fatalf("ClassifyError = (%d, %d, %q), want (%d, %d, %q)", code, status, message, tc.classifiedCode, tc.classifiedStatus, tc.classifiedMessage)
+			}
+
+			renderStatus, body := RenderError(tc.err)
+			if renderStatus != int(tc.classifiedStatus) || body.Success || body.Code != int(tc.classifiedCode) || body.Message != tc.classifiedMessage {
+				t.Fatalf("RenderError = (%d, %+v), want (%d, {false %d %q})", renderStatus, body, tc.classifiedStatus, tc.classifiedCode, tc.classifiedMessage)
+			}
+			if strings.Contains(body.Message, "password authentication failed") {
+				t.Fatalf("RenderError leaked the raw error: %q", body.Message)
+			}
+		})
 	}
 }
 

@@ -20,10 +20,31 @@ var (
 	_ httpx.InterceptorScope = (*Router)(nil)
 )
 
+// wildcardRoute remembers what a route looked like before
+// FixWildcardPathIfNeed rewrote its named wildcard to the anonymous form fiber
+// supports: the original parameter name, so Param(name) keeps resolving, and
+// the pattern as the caller registered it, so FullPath reports that rather than
+// this adapter's normalization.
+type wildcardRoute struct {
+	param   string
+	pattern string
+}
+
 // wildcardNames maps a registered route pattern (with the anonymous "*"
-// wildcard) to the original named wildcard parameter, so Param(name) keeps
-// working after FixWildcardPathIfNeed rewrote the path.
-var wildcardNames sync.Map // route pattern -> original param name
+// wildcard) to what it was written as.
+var wildcardNames sync.Map // route pattern -> wildcardRoute
+
+// lookupWildcardRoute resolves a matched route pattern back to its registered
+// form. The caller checks the pattern ends in "*" first, so a route without a
+// wildcard never pays the map lookup.
+func lookupWildcardRoute(pattern string) (wildcardRoute, bool) {
+	v, ok := wildcardNames.Load(pattern)
+	if !ok {
+		return wildcardRoute{}, false
+	}
+	route, ok := v.(wildcardRoute)
+	return route, ok
+}
 
 type Router struct {
 	basePath     string
@@ -53,6 +74,23 @@ func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
 
 func (r *Router) Use(m ...httpx.Middleware) {
 	r.middlewares = append(r.middlewares, m...)
+}
+
+// UseNative registers native fiber middleware on this group. Prefer it over
+// wrapping a fiber.Handler with AdaptFiberMiddleware: the handler runs with no
+// adapter in between.
+//
+// Two fiber-specific rules apply here that do not on gin, echo or hertz.
+// Register it before the routes it should wrap: fiber matches its route stack
+// in registration order, so a native middleware added after a route is reached
+// only if that route's handler calls Next. And it always runs outside the
+// middleware registered with Use on this scope, whatever the call order —
+// unlike gin, where the two interleave — because Use composes into each route
+// at registration while this occupies a real fiber stack entry ahead of it.
+func (r *Router) UseNative(handlers ...fiber.Handler) {
+	for _, h := range handlers {
+		r.group.Use(h)
+	}
 }
 
 func (r *Router) BasePath() string {
@@ -95,7 +133,10 @@ func (r *Router) normalizeWildcardPath(path string) string {
 		return path
 	}
 	fixed, _ := httpx.FixWildcardPathIfNeed(r, path)
-	wildcardNames.Store(joinPaths(r.basePath, fixed), orig)
+	wildcardNames.Store(joinPaths(r.basePath, fixed), wildcardRoute{
+		param:   orig,
+		pattern: joinPaths(r.basePath, path),
+	})
 	return fixed
 }
 
@@ -218,7 +259,10 @@ func handleFiberError(native fiber.Ctx, fc httpx.Context, err error, errHandler 
 		return nil
 	}
 	if errHandler != nil {
-		errHandler(fc, err)
+		// The error may be fiber's own (a middleware whose Next fell through to
+		// an unmatched path): normalize it so the configured handler sees
+		// 404/405 rather than an unclassified 500.
+		errHandler(fc, normalizeFiberError(err))
 		// Rendered, but still recorded: gin and hertz keep a handled error on
 		// the native error list, so an outer layer's Next sees it. Without
 		// this, rendering at the failing layer would hide the failure from

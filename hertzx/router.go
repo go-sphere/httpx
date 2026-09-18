@@ -50,6 +50,13 @@ func (r *Router) Use(m ...httpx.Middleware) {
 	r.group.Use(adaptMiddlewares(m, r.errHandler)...)
 }
 
+// UseNative registers native hertz middleware on this group. Prefer it over
+// wrapping an app.HandlerFunc with AdaptHertzMiddleware: the handler runs with
+// no adapter in between.
+func (r *Router) UseNative(handlers ...app.HandlerFunc) {
+	r.group.Use(handlers...)
+}
+
 func (r *Router) BasePath() string {
 	return r.group.BasePath()
 }

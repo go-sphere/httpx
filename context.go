@@ -148,11 +148,28 @@ type Request interface {
 // into the provided destination structure. Decoding behavior is
 // based on struct tags and follows framework-independent conventions.
 //
-// Validation is part of the contract: after a successful decode into a
-// struct (or pointer to struct), implementations run go-playground/validator
-// rules declared with the `binding` struct tag (gin's convention, e.g.
-// `binding:"required"`). Validation failures are reported as HTTP 400
-// errors via WrapBindError on every adapter.
+// Bind* decodes and does **not** validate. A `binding` struct tag means
+// nothing to httpx, and no adapter runs go-playground/validator (or any other
+// rule engine) on the decoded value; deciding whether a request is acceptable
+// belongs to the caller — protovalidate in generated sphere handlers, or
+// whatever check the handler writes for itself.
+//
+// This is not merely a simplification. "Validate after every successful
+// decode" cannot hold for multi-source binding, which is the shape generated
+// code uses: given
+//
+//	struct {
+//		Name string `json:"name"`
+//		ID   string `uri:"id" binding:"required"`
+//	}
+//
+// and the sequence BindJSON → BindHeader → BindQuery → BindURI, validating
+// inside BindJSON rejects the request for an empty ID that only BindURI is
+// going to fill. A binder cannot know it is the last one to run, so it cannot
+// know when validation would be meaningful.
+//
+// A decode failure is still an error, reported as HTTP 400 via WrapBindError
+// on every adapter.
 //
 // Binder methods MAY consume the request body or trigger parsing
 // of request data. Implementations SHOULD ensure that decoding can
@@ -183,7 +200,14 @@ type Binder interface {
 
 	// BindURI decodes route parameters into dst.
 	//
-	// Decoding is performed based on `uri` struct tags.
+	// Decoding is performed based on `uri` struct tags. A field tagged
+	// `uri:"x"` receives exactly what RequestInfo.Param("x") returns —
+	// same string, same percent-decoding — for every route parameter,
+	// **including a named wildcard**: /files/*path binding "a/b.txt", not
+	// "/a/b.txt" and not "". Adapters that rewrite named wildcards for a
+	// router without them (see RouterFeatureNamedWildcard) must resolve the
+	// name here too; binding straight off the framework's parameter set
+	// fails silently, since an unmatched tag is not an error.
 	BindURI(dst any) error
 
 	// BindHeader decodes HTTP headers into dst.
@@ -255,8 +279,10 @@ type Responder interface {
 	// DataFromReader streams data from the provided reader to the response.
 	//
 	// The size parameter specifies the total number of bytes to be written.
-	// A size of -1 indicates that the size is unknown.
-	// Note: size is an int, so on 32-bit platforms it is limited to 2GiB.
+	// A size of -1 indicates that the size is unknown. It is an int64 to
+	// match Content-Length and every framework's own stream-size type, so a
+	// caller holding an int64 length (a file size, an object-store metadata
+	// field) can pass it through without a truncating conversion.
 	//
 	// Reader lifecycle: implementations either consume r synchronously
 	// before returning (net/http based adapters) or hand it to the
@@ -267,7 +293,7 @@ type Responder interface {
 	//
 	// Calling this method commits the response.
 	// Returns nil on success, error on failure (e.g., IO error, response already committed).
-	DataFromReader(code int, contentType string, r io.Reader, size int) error
+	DataFromReader(code int, contentType string, r io.Reader, size int64) error
 
 	// File writes the contents of the specified file to the response.
 	//
@@ -428,14 +454,6 @@ type Context interface {
 	// If an error is returned, the middleware chain should be interrupted
 	// and the error should be handled appropriately.
 	Next() error
-}
-
-// AsResponseInfo returns response inspection capability when supported.
-//
-// Deprecated: ResponseInfo is now part of the Context interface; use ctx
-// directly. Kept for backward compatibility with existing callers.
-func AsResponseInfo(ctx Context) (ResponseInfo, bool) {
-	return ctx, true
 }
 
 // ValidRedirectCode reports whether code is acceptable for Responder.Redirect:

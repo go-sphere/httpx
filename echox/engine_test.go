@@ -22,7 +22,7 @@ func TestStartReturnsNilAfterGracefulStop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine := New(WithServerAddr(addr))
+	engine := New(WithAddr(addr))
 	errCh := make(chan error, 1)
 	go func() { errCh <- engine.Start() }()
 

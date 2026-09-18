@@ -19,7 +19,7 @@ import (
 
 func TestStreamErrorDoesNotRenderSecondResponse(t *testing.T) {
 	h := server.New(server.WithDisablePrintRoute(true))
-	engine := New(WithEngine(h), WithHTTPXErrorHandler(func(ctx httpx.Context, err error) {
+	engine := New(WithEngine(h), WithErrorHandler(func(ctx httpx.Context, err error) {
 		t.Error("error handler ran after stream was committed")
 	}))
 	engine.Group("").GET("/", func(ctx httpx.Context) error {

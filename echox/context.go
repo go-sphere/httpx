@@ -10,7 +10,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
@@ -32,6 +34,16 @@ func newEchoContext(ctx echo.Context) *echoContext {
 	}
 }
 
+// FromEcho wraps an echo.Context as httpx.Context. Use it from an echo
+// HTTPErrorHandler or native middleware to write through httpx helpers.
+//
+// The returned context carries no downstream handler, so Next is a no-op that
+// returns nil: this is a writing and request-inspection handle, not a place to
+// resume a chain from.
+func FromEcho(ctx echo.Context) httpx.Context {
+	return newEchoContext(ctx)
+}
+
 // Request (httpx.Request)
 
 func (c *echoContext) Method() string {
@@ -42,8 +54,21 @@ func (c *echoContext) Path() string {
 	return c.ctx.Request().URL.Path
 }
 
+// FullPath reports the route pattern as it was registered. When the pattern
+// carried a named wildcard, FixWildcardPathIfNeed rewrote it to echo's
+// anonymous form ("/files/*filepath" -> "/files/*") because echo has no named
+// wildcards — that rewrite is this adapter's business and must not surface
+// here, or a caller matching on FullPath (downstream auth and rate limiting do)
+// would see a different pattern than it registered. The trailing-byte check
+// keeps a route without a wildcard from paying the map lookup.
 func (c *echoContext) FullPath() string {
-	return c.ctx.Path()
+	pattern := c.ctx.Path()
+	if lastCharIs('*', pattern) {
+		if route, ok := lookupWildcardRoute(pattern); ok {
+			return route.pattern
+		}
+	}
+	return pattern
 }
 
 func (c *echoContext) ClientIP() string {
@@ -54,11 +79,11 @@ func (c *echoContext) Param(key string) string {
 	v := c.ctx.Param(key)
 	if v == "" && key != "*" {
 		// Named wildcard rewritten to "*" at registration time.
-		if orig, ok := wildcardNames.Load(c.ctx.Path()); ok && orig == key {
-			return c.ctx.Param("*")
+		if c.wildcardParamName() == key {
+			v = c.ctx.Param("*")
 		}
 	}
-	return v
+	return c.paramValue(v)
 }
 
 func (c *echoContext) Params() map[string]string {
@@ -67,27 +92,80 @@ func (c *echoContext) Params() map[string]string {
 		return nil
 	}
 	values := c.ctx.ParamValues()
+	decode := c.decodesParams()
 	out := make(map[string]string, len(names))
 	for i, name := range names {
+		value := ""
 		if i < len(values) {
-			out[name] = values[i]
+			value = values[i]
+		}
+		if decode {
+			out[name] = decodeParamValue(value)
 		} else {
-			out[name] = ""
+			out[name] = value
 		}
 	}
 	if v, exists := out["*"]; exists {
-		if orig, ok := wildcardNames.Load(c.ctx.Path()); ok {
-			if name, isStr := orig.(string); isStr && name != "" {
-				out[name] = v
-				// "*" is this adapter's normalization artifact: the route was
-				// registered as /*name, so Params must read the same as on an
-				// adapter with native named wildcards. An anonymous /* route
-				// has no entry here and keeps its "*" key.
-				delete(out, "*")
-			}
+		if name := c.wildcardParamName(); name != "" {
+			out[name] = v
+			// "*" is this adapter's normalization artifact: the route was
+			// registered as /*name, so Params must read the same as on an
+			// adapter with native named wildcards. An anonymous /* route
+			// has no entry here and keeps its "*" key.
+			delete(out, "*")
 		}
 	}
 	return out
+}
+
+// wildcardParamName reports the name the matched route's wildcard was
+// registered with, or "" when the route has no named wildcard. echo only knows
+// the parameter as "*"; every reading of the parameter set (Param, Params,
+// BindURI) resolves it back through here so none of them can disagree.
+func (c *echoContext) wildcardParamName() string {
+	route, ok := lookupWildcardRoute(c.ctx.Path())
+	if !ok {
+		return ""
+	}
+	return route.param
+}
+
+// paramValue makes a route parameter read the same as on gin, hertz and stdx.
+//
+// echo matches on URL.RawPath when the standard library set it, which happens
+// exactly when a segment carries an escape whose decoded form re-encodes
+// differently — "%2F" above all, since "/" is not escaped on the way back. The
+// parameter then arrives percent-encoded where the other adapters hand back the
+// decoded value. An ordinary request leaves RawPath empty and echo already
+// matched the decoded path, so the checks are ordered to cost a pointer
+// comparison and, only past that, a byte scan.
+//
+// Gating on RawPath rather than on the '%' alone is what keeps this from
+// decoding twice: "/decode/a%252Fb" arrives with RawPath empty and echo's
+// parameter already reads "a%2Fb", which is the value the caller sent.
+func (c *echoContext) paramValue(v string) string {
+	if !c.decodesParams() {
+		return v
+	}
+	return decodeParamValue(v)
+}
+
+// decodesParams reports whether route parameters of *this* request still carry
+// percent-escapes the other adapters would have decoded.
+func (c *echoContext) decodesParams() bool {
+	return c.ctx.Request().URL.RawPath != ""
+}
+
+func decodeParamValue(v string) string {
+	if !strings.ContainsRune(v, '%') {
+		return v
+	}
+	decoded, err := url.PathUnescape(v)
+	if err != nil {
+		// A malformed escape is not an escape; hand back what was matched.
+		return v
+	}
+	return decoded
 }
 
 func (c *echoContext) Query(key string) string {
@@ -185,38 +263,23 @@ func (c *echoContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *echoContext) BindJSON(dst any) error {
-	if err := json.NewDecoder(c.ctx.Request().Body).Decode(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(json.NewDecoder(c.ctx.Request().Body).Decode(dst))
 }
 
 func (c *echoContext) BindQuery(dst any) error {
-	if err := c.binder.BindQueryParams(c.ctx, dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.binder.BindQueryParams(c.ctx, dst))
 }
 
 func (c *echoContext) BindForm(dst any) error {
-	if err := bindForm(dst, c.ctx); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(bindForm(dst, c.ctx))
 }
 
 func (c *echoContext) BindURI(dst any) error {
-	if err := bindURIWithForm(dst, c.ctx); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.bindURIWithForm(dst))
 }
 
 func (c *echoContext) BindHeader(dst any) error {
-	if err := c.binder.BindHeaders(c.ctx, dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.binder.BindHeaders(c.ctx, dst))
 }
 
 // Responder (httpx.Responder)
@@ -228,6 +291,13 @@ func (c *echoContext) Status(code int) {
 }
 
 func (c *echoContext) JSON(code int, v any) error {
+	// echo labels JSON "application/json" where the other four adapters add
+	// "; charset=utf-8". echo only fills the header when it is still empty, so
+	// writing it first aligns the label while leaving a Content-Type the
+	// handler chose itself (a "+json" media type, say) alone.
+	if header := c.ctx.Response().Header(); header.Get(echo.HeaderContentType) == "" {
+		header.Set(echo.HeaderContentType, "application/json; charset=utf-8")
+	}
 	return c.ctx.JSON(code, v)
 }
 
@@ -250,7 +320,7 @@ func (c *echoContext) Bytes(code int, b []byte, contentType string) error {
 	return c.ctx.Blob(code, contentType, b)
 }
 
-func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
+func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
 	if rc, ok := r.(io.Closer); ok {
 		defer func() {
 			_ = rc.Close()
@@ -260,7 +330,7 @@ func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, 
 		contentType = http.DetectContentType(nil)
 	}
 	if size >= 0 {
-		c.ctx.Response().Header().Set(echo.HeaderContentLength, strconv.Itoa(size))
+		c.ctx.Response().Header().Set(echo.HeaderContentLength, strconv.FormatInt(size, 10))
 	}
 	return c.ctx.Stream(code, contentType, r)
 }

@@ -3,12 +3,9 @@ package httpx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"net/http"
 )
-
-type H map[string]any
 
 // Handler is the canonical function signature for framework adapters.
 type Handler func(Context) error
@@ -134,37 +131,12 @@ func AsTestRequester(e Engine) (TestRequester, bool) {
 	return tr, ok
 }
 
-// WithJson wraps a handler with a JSON success envelope.
-// A panic inside handler is recovered into a 500 Error and returned through
-// the normal Handler error path so the engine's configured error handler runs.
-func WithJson[T any](handler func(ctx Context) (T, error)) Handler {
-	return func(ctx Context) (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				err = recoverToError(r)
-			}
-		}()
-		var data T
-		data, err = handler(ctx)
-		if err != nil {
-			return err
-		}
-		return ctx.JSON(200, H{
-			"success": true,
-			"data":    data,
-		})
-	}
-}
-
-func recoverToError(r any) Error {
-	switch v := r.(type) {
-	case Error:
-		return v
-	case error:
-		return InternalServerError(v)
-	case string:
-		return InternalServerError(errors.New(v))
-	default:
-		return InternalServerError(fmt.Errorf("%v", r))
-	}
-}
+// The success-envelope wrapper deliberately does not live here. Deciding what
+// a handler's return value looks like on the wire is a convention, not part of
+// the framework-agnostic transport contract, and this package shipped a second,
+// diverging copy of it: a hardcoded 200 and an untyped map. The one callers
+// actually use is sphere/server/httpz.WithJson, which honors a status the
+// handler set via ctx.Status, routes 204/304 through NoContent because those
+// forbid a body, and returns a named DataResponse[T]. Keep the envelope there,
+// where a single definition can evolve without two packages disagreeing about
+// what "success" serializes to.

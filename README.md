@@ -16,6 +16,33 @@ A unified HTTP framework abstraction layer for Go that provides a consistent int
   `Middleware` at registration like `Interceptor`, so a 10-layer chain costs
   ~61 ns with zero allocations
 
+## Adapter options
+
+Every adapter's `New` takes the same core options under the same names, so
+setup code is portable across all five:
+
+| Option | Type | Notes |
+| --- | --- | --- |
+| `WithAddr(addr)` | `string` | The listen address, on all five. `ginx`/`echox`/`stdx` create the `*http.Server` if one was not supplied; `fiberx` wraps `WithListen`; `hertzx` only applies it when the adapter builds the engine. |
+| `WithErrorHandler(h)` | `httpx.ErrorHandler` | Framework-neutral, on all five. `h` is called with a real adapter-backed `httpx.Context`. |
+| `WithNativeErrorHandler(h)` | adapter's own `ErrorHandler` | `ginx` and `hertzx` only — the two frameworks whose error-handler shape the adapter installs directly. |
+| `WithTrustedProxies(...)` | `...string` | Uniform `ClientIP` policy; an empty list ignores forwarding headers. |
+| `WithEngine(e)` | native engine | Bring your own `*gin.Engine`, `*echo.Echo`, `*fiber.App`, `*server.Hertz`. |
+
+Two related names are *not* portable, on purpose:
+
+- `Default<X>ErrorHandler` — each adapter exports `DefaultErrorHandler`, which
+  is **that adapter's default handler in its native shape**: the value it
+  installs on the framework when you configure nothing. The five signatures
+  therefore differ (`func(*gin.Context, error)`, `echo.HTTPErrorHandler`,
+  `func(fiber.Ctx, error) error`, `func(context.Context, *app.RequestContext,
+  error)`), and for `stdx` the native shape simply *is* `httpx.ErrorHandler`,
+  because net/http has no error handler of its own to match.
+- `From<Framework>` — `ginx.FromGin`, `echox.FromEcho`, `fiberx.FromFiber`,
+  `hertzx.FromHertz` and `stdx.FromStd` build an `httpx.Context` from a native
+  one, so httpx helpers can be used from a native error handler or middleware.
+  Each takes what its framework hands you.
+
 ## Testing
 
 The shared conformance suite lives in `httpxtest`. An adapter is certified on
@@ -146,8 +173,21 @@ router.(*ginx.Router).UseNative(gin.Recovery())
 router.Use(ginx.AdaptGinMiddleware(gin.Recovery()))
 ```
 
+`UseNative` is on both `Engine` and `Router` in `ginx` (`gin.HandlerFunc`),
+`echox` (`echo.MiddlewareFunc`), `fiberx` (`fiber.Handler`) and `hertzx`
+(`app.HandlerFunc`). On `fiberx` it has two framework-specific rules: register
+it before the routes it should wrap, and it always runs *outside* anything
+registered with `Use` on the same scope, because `Use` composes into the route
+while `UseNative` takes a real fiber stack entry ahead of it.
+
+`stdx` has no `UseNative`, deliberately. There is no framework chain to hand a
+middleware to — routes are composed at registration — so the only possible
+implementation would be `Use(AdaptStdMiddleware(mw))`, spelled differently.
+`AdaptStdMiddleware` is not a bridge there; it is what keeps `ctx.Next()` wired
+across the `net/http` handler boundary.
+
 `AdaptStdMiddleware` (`func(http.Handler) http.Handler`) drives the chain
-through `ctx.Next()` and works the same way.
+through `ctx.Next()` and works the same way on every adapter.
 
 ### Interceptors (experimental)
 

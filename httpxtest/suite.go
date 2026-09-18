@@ -36,8 +36,7 @@ import (
 // Options describe the engine one case needs.
 type Options struct {
 	// ErrorHandler, when non-nil, must be installed as the engine's
-	// framework-neutral error handler (the adapter's WithHTTPXErrorHandler /
-	// WithErrorHandler option).
+	// framework-neutral error handler (the adapter's WithErrorHandler option).
 	ErrorHandler httpx.ErrorHandler
 }
 
@@ -67,6 +66,26 @@ type Caps struct {
 	// leaves this false is stating that the property cannot be *verified*
 	// in-process, not that it is unsupported.
 	InProcessUnknownLengthBody bool
+	// ForcedStopCutsConnections reports that when Engine.Stop's context
+	// expires, the adapter also cuts the connections still being served,
+	// instead of only closing the listener and leaving them to finish.
+	//
+	// Closing the listener is the contract and every adapter does it; this is
+	// the part the frameworks genuinely differ on. net/http has Server.Close,
+	// so ginx, echox and stdx cut in-flight connections. fasthttp has no
+	// equivalent — no Server.Close, and fiber hands out no listener to close
+	// behind its back — and hertz's Engine.Close is Shutdown with an
+	// already-expired context, which closes the listener but never touches an
+	// active connection. So fiberx and hertzx let an in-flight request run to
+	// completion, and say so here rather than leaving it as a silent
+	// divergence.
+	//
+	// Unlike the rest of Caps this one is **not** checked by the Caps group:
+	// it needs a real connection to hold open, which no in-process requester
+	// has. conformance.TestEngineForcedStopConformance verifies it against
+	// actual behavior in both directions, so the claim still cannot drift into
+	// documentation.
+	ForcedStopCutsConnections bool
 }
 
 // Suite is what an adapter provides to run the shared cases.

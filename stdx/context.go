@@ -77,6 +77,26 @@ func (c *stdContext) reset(w http.ResponseWriter, req *http.Request) {
 	c.index = 0
 }
 
+// FromStd wraps a plain net/http request pair as httpx.Context. Use it to
+// call httpx helpers from an ordinary http.Handler, or from an http.Server's
+// own error paths, without mounting a stdx Engine.
+//
+// The net/http pair is this adapter's native context — there is no framework
+// object to reach for — so this is the FromGin/FromHertz escape hatch in the
+// only shape net/http has.
+//
+// The returned context is standalone: it belongs to no Engine and no route,
+// so FullPath and Param are empty, Next is a no-op returning nil, and
+// ClientIP falls back to the peer address because there is no configured
+// trusted-proxy policy to consult. It is not pooled — unlike the contexts the
+// Engine hands to handlers — so it costs one allocation per call.
+func FromStd(w http.ResponseWriter, req *http.Request) httpx.Context {
+	ctx := &stdContext{}
+	ctx.native.c = ctx
+	ctx.reset(w, req)
+	return ctx
+}
+
 // maxRetainedKeys bounds the state map a recycled context keeps: a request
 // that stored an unusual number of keys should not pin that map for every
 // request that follows.
@@ -128,6 +148,13 @@ func (c *stdContext) FullPath() string {
 }
 
 func (c *stdContext) ClientIP() string {
+	if c.engine == nil {
+		// A context built by FromStd has no Engine and therefore no
+		// trusted-proxy policy. Fall back to the peer address, which is what
+		// the configured-but-empty policy does too: never trust forwarding
+		// headers we cannot attribute to a trusted hop.
+		return remoteIP(c.req)
+	}
 	return c.engine.clientIP(c.req)
 }
 
@@ -315,17 +342,11 @@ func (c *stdContext) BindJSON(dst any) error {
 		// What a Decoder reports for an empty body.
 		return httpx.WrapBindError(io.EOF)
 	}
-	if err := json.Unmarshal(body, dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(json.Unmarshal(body, dst))
 }
 
 func (c *stdContext) BindQuery(dst any) error {
-	if err := queryDecoder.Decode(dst, c.queryValues()); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(queryDecoder.Decode(dst, c.queryValues()))
 }
 
 func (c *stdContext) BindForm(dst any) error {
@@ -341,10 +362,7 @@ func (c *stdContext) BindForm(dst any) error {
 	if c.req.MultipartForm != nil && len(c.req.MultipartForm.Value) > 0 {
 		values = url.Values(c.req.MultipartForm.Value)
 	}
-	if err := formDecoder.Decode(dst, values); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(formDecoder.Decode(dst, values))
 }
 
 func (c *stdContext) BindURI(dst any) error {
@@ -367,18 +385,13 @@ func (c *stdContext) BindURI(dst any) error {
 		}
 		err := uriDecoder.Decode(dst, values)
 		clear(values)
-		if err != nil {
-			return httpx.WrapBindError(err)
-		}
+		return httpx.WrapBindError(err)
 	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return nil
 }
 
 func (c *stdContext) BindHeader(dst any) error {
-	if err := headerDecoder.Decode(dst, url.Values(c.Headers())); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(headerDecoder.Decode(dst, url.Values(c.Headers())))
 }
 
 // Responder (httpx.Responder)
@@ -471,7 +484,7 @@ func (c *stdContext) Bytes(code int, b []byte, contentType string) error {
 	return err
 }
 
-func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
+func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
 	if rc, ok := r.(io.Closer); ok {
 		defer func() { _ = rc.Close() }()
 	}
@@ -479,7 +492,7 @@ func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, s
 		c.rw.Header().Set("Content-Type", contentType)
 	}
 	if size >= 0 {
-		c.rw.Header().Set("Content-Length", strconv.Itoa(size))
+		c.rw.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	c.rw.WriteHeader(code)
 	_, err := io.Copy(&c.rw, r)

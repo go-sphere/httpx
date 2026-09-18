@@ -16,12 +16,13 @@ import (
 	"github.com/gin-gonic/gin/binding"
 	"github.com/gin-gonic/gin/codec/json"
 	"github.com/gin-gonic/gin/render"
+	"github.com/go-playground/validator/v10"
 	"github.com/go-sphere/httpx"
 )
 
 var _ httpx.Context = ginContext{}
 
-var queryBinding = QueryBinding{}
+var queryBinder = queryBinding{}
 
 // A single-pointer value fits directly in an interface without allocating a
 // wrapper. Mutable chain state belongs only to middleware invocations.
@@ -177,7 +178,7 @@ func (c ginContext) BindJSON(dst any) error {
 }
 
 func (c ginContext) BindQuery(dst any) error {
-	return bind(dst, func() error { return queryBinding.Bind(c.ctx.Request, dst) })
+	return bind(dst, func() error { return queryBinder.Bind(c.ctx.Request, dst) })
 }
 
 func (c ginContext) BindForm(dst any) error {
@@ -188,36 +189,103 @@ func (c ginContext) BindForm(dst any) error {
 	return bind(dst, func() error { return c.ctx.ShouldBindWith(dst, binding.Form) })
 }
 
+// BindURI binds route parameters the same way Param reads them. It cannot be
+// gin's ShouldBindUri, which feeds the binder gin's raw parameter values: a
+// wildcard value carries a leading "/" there, so a field tagged uri:"path"
+// would bind "/a/b.txt" where Param("path") hands back "a/b.txt". Same binder
+// and same tags as gin's — only the values are normalized first.
 func (c ginContext) BindURI(dst any) error {
-	return bind(dst, func() error { return c.ctx.ShouldBindUri(dst) })
+	return bind(dst, func() error { return binding.Uri.BindUri(c.uriValues(), dst) })
+}
+
+func (c ginContext) uriValues() map[string][]string {
+	m := make(map[string][]string, len(c.ctx.Params))
+	for _, p := range c.ctx.Params {
+		m[p.Key] = []string{c.normalizeParam(p.Key, p.Value)}
+	}
+	return m
 }
 
 func (c ginContext) BindHeader(dst any) error {
 	return bind(dst, func() error { return c.ctx.ShouldBindHeader(dst) })
 }
 
-// bind runs a gin binding call and reports failures as bind errors.
+// bind runs a gin binding call and reports **decode** failures as bind errors.
 //
-// gin's validator panics on a typed nil inside a slice
-// (reflect.Value.Interface on a zero Value), which would otherwise escape into
-// the server — the other adapters report that input as a validation failure.
-// The recover is installed only for slice and array targets, the only shape
-// that can trigger it, so a struct target (what generated handlers bind) keeps
-// its allocation profile.
+// httpx.Binder decodes and does not validate, but gin's binding package does
+// both: every binding.Binding runs gin's validator on the decoded value before
+// returning. That validator is the package-level binding.Validator — a
+// variable shared with every other gin user in the process — so ginx cannot
+// silence it without disabling validation for code it has never heard of.
+// It lets gin validate and drops the verdict here instead.
+//
+// The cost is the validator's wasted work on every bind and a direct
+// dependency on go-playground/validator purely to recognize its error types.
+// The alternative, decoding without gin's bindings the way stdx does, would
+// lose decode semantics the conformance suite does not pin — binding a
+// multipart *multipart.FileHeader field runs through gin's unexported
+// multipartRequest source, which MapFormWithTag has no equivalent for.
+//
+// One case this cannot cover: a process that replaces binding.Validator with
+// its own StructValidator gets error values ginx has no way to tell apart from
+// a decode failure, so those would surface as 400. Installing a global
+// validator is asking gin to validate; httpx's contract is what it does with
+// gin's own.
+//
+// gin's validator also panics on a typed nil inside a slice
+// (reflect.Value.Interface on a zero Value). That is validation failing on
+// input the decode accepted, so slice and array targets — the only shape that
+// can trigger it — run under a recover that drops it. Any other panic is still
+// reported, and a struct target (what generated handlers bind) keeps its
+// allocation profile.
 func bind(dst any, run func() error) error {
 	if sliceTarget(dst) {
 		return bindRecovering(run)
 	}
-	return httpx.WrapBindError(run())
+	return httpx.WrapBindError(decodeError(run()))
 }
 
 func bindRecovering(run func() error) (err error) {
 	defer func() {
-		if rec := recover(); rec != nil {
+		switch rec := recover(); {
+		case rec == nil:
+		case isValidatorPanic(rec):
+			err = nil
+		default:
 			err = httpx.WrapBindError(fmt.Errorf("ginx: binding a slice target panicked: %v", rec))
 		}
 	}()
-	return httpx.WrapBindError(run())
+	return httpx.WrapBindError(decodeError(run()))
+}
+
+// decodeError keeps only what the decode itself reported, dropping gin's
+// validation verdict. Those are the three shapes gin's default validator
+// returns: validator.ValidationErrors from a struct target,
+// binding.SliceValidationError from a slice one (whose elements are themselves
+// validation errors, since gin builds it from per-element ValidateStruct
+// calls), and *validator.InvalidValidationError for a target the validator
+// refuses to inspect, such as a bare time.Time.
+func decodeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var (
+		fieldErrors   validator.ValidationErrors
+		elementErrors binding.SliceValidationError
+		invalidTarget *validator.InvalidValidationError
+	)
+	if errors.As(err, &fieldErrors) || errors.As(err, &elementErrors) || errors.As(err, &invalidTarget) {
+		return nil
+	}
+	return err
+}
+
+// isValidatorPanic reports the panic gin's validator raises when it reaches a
+// typed nil element: reflect.Value.Interface on the zero Value obtained from
+// dereferencing it.
+func isValidatorPanic(rec any) bool {
+	valueErr, ok := rec.(*reflect.ValueError)
+	return ok && valueErr.Kind == reflect.Invalid
 }
 
 func sliceTarget(dst any) bool {
@@ -284,7 +352,7 @@ func (c ginContext) Bytes(code int, b []byte, contentType string) error {
 	return nil
 }
 
-func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, size int) error {
+func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
 	if rc, ok := r.(io.Closer); ok {
 		defer func() {
 			_ = rc.Close()
@@ -298,7 +366,7 @@ func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, si
 		_, err := io.Copy(c.ctx.Writer, r)
 		return err
 	}
-	c.ctx.DataFromReader(code, int64(size), contentType, r, nil)
+	c.ctx.DataFromReader(code, size, contentType, r, nil)
 	return nil
 }
 

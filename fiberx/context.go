@@ -36,6 +36,20 @@ func newFiberContext(ctx fiber.Ctx) httpx.Context {
 	return &fiberContext[fiber.Ctx]{ctx: ctx}
 }
 
+// FromFiber wraps a fiber.Ctx as httpx.Context. Use it from a fiber
+// ErrorHandler or native middleware to write through httpx helpers.
+//
+// It takes the fiber.Ctx interface and returns httpx.Context rather than
+// exposing the generic fiberContext[T]. The type parameter exists only to let
+// the common *fiber.DefaultCtx case fit in an interface without a heap
+// wrapper; it is an implementation detail, and the two instantiations that
+// exist are the two this package checks against httpx.Context. A generic
+// FromFiber[T fiber.Ctx] would make callers name a type parameter for no gain
+// and would let them instantiate a third, unverified variant.
+func FromFiber(ctx fiber.Ctx) httpx.Context {
+	return newFiberContext(ctx)
+}
+
 // Request (httpx.Request)
 
 func (c fiberContext[T]) Method() string {
@@ -49,8 +63,21 @@ func (c fiberContext[T]) Path() string {
 	return string(c.ctx.Request().URI().Path())
 }
 
+// FullPath reports the route pattern as it was registered. When the pattern
+// carried a named wildcard, FixWildcardPathIfNeed rewrote it to fiber's
+// anonymous form ("/files/*filepath" -> "/files/*") because fiber has no named
+// wildcards — that rewrite is this adapter's business and must not surface
+// here, or a caller matching on FullPath (downstream auth and rate limiting do)
+// would see a different pattern than it registered. The trailing-byte check
+// keeps a route without a wildcard from paying the map lookup.
 func (c fiberContext[T]) FullPath() string {
-	return c.ctx.FullPath()
+	pattern := c.ctx.FullPath()
+	if lastCharIs('*', pattern) {
+		if route, ok := lookupWildcardRoute(pattern); ok {
+			return route.pattern
+		}
+	}
+	return pattern
 }
 
 func (c fiberContext[T]) ClientIP() string {
@@ -61,13 +88,28 @@ func (c fiberContext[T]) Param(key string) string {
 	v := c.paramValue(c.ctx.Params(key))
 	if v == "" && key != "*" {
 		// Named wildcard rewritten to "*" at registration time.
-		if route := c.ctx.Route(); route != nil {
-			if orig, ok := wildcardNames.Load(route.Path); ok && orig == key {
-				return c.paramValue(c.ctx.Params("*"))
-			}
+		if c.wildcardParamName() == key {
+			return c.paramValue(c.ctx.Params("*"))
 		}
 	}
 	return v
+}
+
+// wildcardParamName reports the name the matched route's wildcard was
+// registered with, or "" when the route has no named wildcard. fiber only knows
+// the parameter as "*" (spelled "*1" in Route().Params); every reading of the
+// parameter set (Param, Params, BindURI) resolves it back through here so none
+// of them can disagree.
+func (c fiberContext[T]) wildcardParamName() string {
+	route := c.ctx.Route()
+	if route == nil {
+		return ""
+	}
+	wr, ok := lookupWildcardRoute(route.Path)
+	if !ok {
+		return ""
+	}
+	return wr.param
 }
 
 // paramValue makes a route parameter read the same as on gin, echo and hertz.
@@ -109,10 +151,7 @@ func (c fiberContext[T]) Params() map[string]string {
 	if route == nil || len(route.Params) == 0 {
 		return nil
 	}
-	origName := ""
-	if orig, ok := wildcardNames.Load(route.Path); ok {
-		origName, _ = orig.(string)
-	}
+	origName := c.wildcardParamName()
 	params := make(map[string]string, len(route.Params))
 	for _, name := range route.Params {
 		value := c.paramValue(c.ctx.Params(name))
@@ -159,6 +198,14 @@ func (c fiberContext[T]) RawQuery() string {
 }
 
 func (c fiberContext[T]) Header(key string) string {
+	// Host travels outside the header map on net/http, so the other four
+	// adapters report it as unset. Headers() already skips it for that reason;
+	// fasthttp keeps it in the header set, so Header has to skip it too instead
+	// of being the one adapter where Header("Host") answers. Path(), Method()
+	// and the request URI are how the host is meant to be reached.
+	if strings.EqualFold(key, fiber.HeaderHost) {
+		return ""
+	}
 	return strings.Clone(c.ctx.Get(key))
 }
 
@@ -240,47 +287,59 @@ func (c fiberContext[T]) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c fiberContext[T]) BindJSON(dst any) error {
-	if err := c.ctx.Bind().JSON(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.Bind().JSON(dst))
 }
 
 func (c fiberContext[T]) BindQuery(dst any) error {
-	if err := c.ctx.Bind().Query(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.Bind().Query(dst))
 }
 
 func (c fiberContext[T]) BindForm(dst any) error {
-	if err := c.ctx.Bind().Form(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.Bind().Form(dst))
 }
 
 func (c fiberContext[T]) BindURI(dst any) error {
-	if err := c.bindURI(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.bindURI(dst))
 }
 
-// bindURI runs fiber's own URI binder, but feeds it decoded values when the app
-// left UnescapePath off — otherwise a generated handler would bind "a%20b"
-// where the other adapters bind "a b". Same binder, same tags, same conversion
-// rules; only the source of the strings differs.
+// bindURI runs fiber's own URI binder, but over this adapter's view of the
+// parameter set rather than fiber's. Two things differ from fiber's own
+// Bind().URI, and both would otherwise make BindURI contradict Param:
+//
+//   - a named wildcard reaches fiber as "*" ("*1" in Route().Params), so a field
+//     tagged uri:"filepath" on a /files/*filepath route matched nothing and bound
+//     "" — silently, since an absent parameter is not an error;
+//   - values arrive percent-encoded when the app left UnescapePath off, so a
+//     generated handler would bind "a%20b" where the other adapters bind "a b".
+//
+// Same binder, same tags, same conversion rules; only the names and the source
+// of the strings differ. A route with neither problem keeps fiber's own path.
 func (c fiberContext[T]) bindURI(dst any) error {
-	if !c.decodesParams() {
-		return c.ctx.Bind().URI(dst)
-	}
 	route := c.ctx.Route()
 	if route == nil || len(route.Params) == 0 {
 		return nil
 	}
+	wildcard := c.wildcardParamName()
+	if wildcard == "" && !c.decodesParams() {
+		return c.ctx.Bind().URI(dst)
+	}
+	names := route.Params
+	if wildcard != "" {
+		// Route().Params belongs to the route, not the request: rename into a
+		// copy.
+		names = make([]string, len(route.Params))
+		copy(names, route.Params)
+		for i, name := range names {
+			if name == "*" || name == "*1" {
+				names[i] = wildcard
+			}
+		}
+	}
 	// URIBinding is stateless, so it needs neither fiber's pool nor a reset.
-	return (&binder.URIBinding{}).Bind(route.Params, func(key string, defaultValue ...string) string {
+	return (&binder.URIBinding{}).Bind(names, func(key string, defaultValue ...string) string {
+		if wildcard != "" && key == wildcard {
+			key = "*"
+		}
 		if v := c.paramValue(c.ctx.Params(key)); v != "" {
 			return v
 		}
@@ -292,10 +351,7 @@ func (c fiberContext[T]) bindURI(dst any) error {
 }
 
 func (c fiberContext[T]) BindHeader(dst any) error {
-	if err := c.ctx.Bind().Header(dst); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	return httpx.WrapBindError(validateStruct(dst))
+	return httpx.WrapBindError(c.ctx.Bind().Header(dst))
 }
 
 // Responder (httpx.Responder)
@@ -337,11 +393,24 @@ func (c fiberContext[T]) Bytes(code int, b []byte, contentType string) error {
 	return err
 }
 
-func (c fiberContext[T]) DataFromReader(code int, contentType string, r io.Reader, size int) error {
+func (c fiberContext[T]) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
 	if contentType != "" {
 		c.ctx.Set(fiber.HeaderContentType, contentType)
 	}
-	return c.ctx.Status(code).SendStream(r, size)
+	return c.ctx.Status(code).SendStream(r, streamSize(size))
+}
+
+// streamSize narrows the contract's int64 size to the int that fiber's
+// SendStream takes. A length that does not fit in int (only reachable on a
+// 32-bit build) degrades to -1 — unknown size, chunked transfer — because the
+// alternative, a truncating conversion, would advertise a Content-Length that
+// does not match the body and corrupt the response. The body itself is still
+// streamed in full either way.
+func streamSize(size int64) int {
+	if size < 0 || int64(int(size)) != size {
+		return -1
+	}
+	return int(size)
 }
 
 func (c fiberContext[T]) File(path string) error {

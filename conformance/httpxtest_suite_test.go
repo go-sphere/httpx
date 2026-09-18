@@ -45,12 +45,13 @@ func httpxtestSuites() []httpxtest.Suite {
 				RendersErrorAtFailingLayer: true,
 				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
+				ForcedStopCutsConnections:  true,
 			},
 			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
 				gin.SetMode(gin.ReleaseMode)
 				engineOpts := []ginx.Option{ginx.WithEngine(gin.New())}
 				if opts.ErrorHandler != nil {
-					engineOpts = append(engineOpts, ginx.WithHTTPXErrorHandler(opts.ErrorHandler))
+					engineOpts = append(engineOpts, ginx.WithErrorHandler(opts.ErrorHandler))
 				}
 				return ginx.New(engineOpts...)
 			},
@@ -69,6 +70,8 @@ func httpxtestSuites() []httpxtest.Suite {
 			Caps: httpxtest.Caps{
 				RendersErrorAtFailingLayer: true,
 				ComposesInterceptors:       true,
+				// fasthttp offers no forced connection close; see the field doc.
+				ForcedStopCutsConnections: false,
 			},
 			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
 				var engineOpts []fiberx.Option
@@ -94,6 +97,7 @@ func httpxtestSuites() []httpxtest.Suite {
 				Flusher:                    true,
 				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
+				ForcedStopCutsConnections:  true,
 			},
 			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
 				engineOpts := []echox.Option{echox.WithEngine(echo.New())}
@@ -123,13 +127,16 @@ func httpxtestSuites() []httpxtest.Suite {
 				RendersErrorAtFailingLayer: true,
 				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
+				// hertz's Engine.Close never touches an active connection; see
+				// the field doc.
+				ForcedStopCutsConnections: false,
 			},
 			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
 				hlog.SetSilentMode(true)
 				hlog.SetOutput(io.Discard)
 				var engineOpts []hertzx.Option
 				if opts.ErrorHandler != nil {
-					engineOpts = append(engineOpts, hertzx.WithHTTPXErrorHandler(opts.ErrorHandler))
+					engineOpts = append(engineOpts, hertzx.WithErrorHandler(opts.ErrorHandler))
 				}
 				return hertzx.New(engineOpts...)
 			},
@@ -150,6 +157,7 @@ func httpxtestSuites() []httpxtest.Suite {
 				Flusher:                    true,
 				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
+				ForcedStopCutsConnections:  true,
 			},
 			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
 				var engineOpts []stdx.Option

@@ -94,7 +94,7 @@ var (
 )
 
 type nativeBody struct {
-	Name string `json:"name" binding:"required" validate:"required"`
+	Name string `json:"name"`
 	Age  int    `json:"age"`
 }
 

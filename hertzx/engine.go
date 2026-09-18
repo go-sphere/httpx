@@ -3,6 +3,7 @@ package hertzx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/textproto"
@@ -73,16 +74,23 @@ func WithAddr(addr string) Option {
 	}
 }
 
-func WithErrorHandler(errHandler ErrorHandler) Option {
+// WithNativeErrorHandler installs hertz's own error handler shape. Use it when
+// the handler needs the *app.RequestContext directly; WithErrorHandler is the
+// portable option that every adapter accepts.
+func WithNativeErrorHandler(errHandler ErrorHandler) Option {
 	return func(conf *Config) {
 		conf.errHandler = errHandler
 	}
 }
 
-// WithHTTPXErrorHandler installs a framework-neutral error handler. The
-// handler receives a real httpx.Context backed by the hertz context, so the
-// same error-rendering code can be shared across all adapters.
-func WithHTTPXErrorHandler(errHandler httpx.ErrorHandler) Option {
+// WithErrorHandler installs a framework-neutral error handler. The handler
+// receives a real httpx.Context backed by the hertz context, so the same
+// error-rendering code can be shared across all adapters.
+//
+// The hertz context is aborted afterwards unless the handler already did it:
+// the handler owns the response, and letting hertz continue into the
+// remaining chain would let a later layer write over the error body.
+func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
 		if errHandler == nil {
 			return
@@ -141,6 +149,7 @@ func New(opts ...Option) httpx.Engine {
 	if conf.clientIP != nil {
 		conf.engine.SetClientIPFunc(conf.clientIP)
 	}
+	installRouteFallback(conf.engine, conf.errHandler)
 	engine := &Engine{
 		engine:     conf.engine,
 		errHandler: conf.errHandler,
@@ -148,6 +157,41 @@ func New(opts ...Option) httpx.Engine {
 	}
 	engine.running.Store(false)
 	return engine
+}
+
+// installRouteFallback makes hertz answer a request no route handled through
+// the configured error handler instead of its own plain-text bodies, so 404 and
+// 405 read the same on every adapter. hertz also has to be told to look for a
+// 405 at all: with HandleMethodNotAllowed off (its default) a path that exists
+// under another method is reported as 404. The flag lives in the options struct
+// GetOptions hands back by pointer, which is the only way to reach it on an
+// engine supplied through WithEngine — server.WithHandleMethodNotAllowed can
+// only be passed to server.New. It is read per request, so setting it here is
+// in time for every request the engine will ever serve.
+//
+// Engine middleware keeps running for these requests — hertz composes NoRoute
+// and NoMethod on top of the engine's own handler chain — which is what an
+// access log or a recovery layer registered with Use depends on.
+//
+// Precedence is ginx's rule, for ginx's reasons: both handlers are installed
+// unconditionally, so a NoRoute or NoMethod set on an engine *before* it is
+// passed to WithEngine is replaced, and the override point is after New —
+// hertz's setters replace rather than append, so server.Hertz.NoRoute called
+// once hertzx.New has returned wins outright. Keeping the two adapters on the
+// same rule is the point; a precedence that differed between them would be
+// another 404 divergence of exactly the kind this function exists to remove.
+func installRouteFallback(h *server.Hertz, errHandler ErrorHandler) {
+	h.GetOptions().HandleMethodNotAllowed = true
+	h.NoRoute(func(ctx context.Context, rc *app.RequestContext) {
+		errHandler(ctx, rc, httpx.NewNotFoundError(http.StatusText(http.StatusNotFound)))
+	})
+	h.NoMethod(func(ctx context.Context, rc *app.RequestContext) {
+		// Unlike gin, hertz does not write the Allow header RFC 7231 requires,
+		// and it does not expose which methods it matched, so there is nothing
+		// to write it from here.
+		errHandler(ctx, rc, httpx.NewError(http.StatusMethodNotAllowed, 0,
+			http.StatusText(http.StatusMethodNotAllowed), nil))
+	})
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
@@ -161,6 +205,12 @@ func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
 		return
 	}
 	e.interceptors = append(slices.Clone(e.interceptors), m...)
+}
+
+// UseNative registers native hertz middleware on the engine. See
+// Router.UseNative for why it is preferred over AdaptHertzMiddleware.
+func (e *Engine) UseNative(handlers ...app.HandlerFunc) {
+	e.engine.Use(handlers...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
@@ -180,11 +230,39 @@ func (e *Engine) Start() error {
 	return e.engine.Run()
 }
 
+// Stop follows the same semantic as httpx.Close, which the net/http-backed
+// adapters share: drain gracefully, and when that fails force the transport
+// closed so nothing is left accepting. A drain the caller's context cut short
+// reports success — the server is down, the drain degraded — while any other
+// failure is force-closed too but reported.
+//
+// What hertz cannot do is cut live connections: Engine.Close is Shutdown with
+// an already-expired context, so it closes the listener immediately but still
+// leaves a request in flight to finish on its own. Closing the listener is the
+// part a caller asking for a forced stop actually needs, and claiming more than
+// that would be wrong.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	running := e.running.Load()
+	// The engine is down whatever Shutdown reports, so the running flag has to
+	// fall with it. Storing it only on a nil error left IsRunning reporting true
+	// for the rest of the process after a stop that timed out.
+	defer e.running.Store(false)
 	err := e.engine.Shutdown(ctx)
-	if err == nil {
-		e.running.Store(false)
+	if err == nil || !running {
+		// Nothing was ever serving: there is no transport to force closed, and
+		// hertz's own "not running" error is the honest answer.
+		return err
+	}
+	closeErr := e.engine.Close()
+	if ctx.Err() != nil {
+		return closeErr
+	}
+	if closeErr != nil {
+		return errors.Join(err, closeErr)
 	}
 	return err
 }

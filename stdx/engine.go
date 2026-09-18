@@ -226,11 +226,12 @@ func (e *Engine) Start() error {
 
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
-	err := httpx.Close(ctx, e.server)
-	if err == nil {
-		e.running.Store(false)
-	}
-	return err
+	// httpx.Close force-closes when the graceful drain fails, so the server is
+	// down whatever it returns — the running flag has to fall with it. Storing
+	// it only on a nil error left IsRunning reporting true for the rest of the
+	// process after a stop the caller's deadline cut short.
+	defer e.running.Store(false)
+	return httpx.Close(ctx, e.server)
 }
 
 // IsRunning returns true if the server is currently running.

@@ -20,7 +20,10 @@ func adaptMiddleware(middleware httpx.Middleware, errHandler httpx.ErrorHandler)
 					// middleware sees it instead of it vanishing here.
 					return err
 				}
-				errHandler(ctx, err)
+				// The error may be echo's own (a middleware whose Next fell
+				// through to an unmatched path): normalize it so the configured
+				// handler sees 404/405 rather than an unclassified 500.
+				errHandler(ctx, normalizeEchoError(err))
 				// The error handler may have only set the status: commit it
 				// here, because no layer below runs and echo does not commit
 				// on its own.

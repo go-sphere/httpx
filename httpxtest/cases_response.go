@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,7 +67,13 @@ func casesResponse(t *testing.T, r runner) {
 		}, "/bytes"},
 		{"DataFromReader", func(router httpx.Router) {
 			router.GET("/reader", func(ctx httpx.Context) error {
-				return ctx.DataFromReader(http.StatusOK, "text/plain", strings.NewReader("stream"), 6)
+				// The size is held in a declared int64 rather than written as
+				// an untyped constant on purpose: an untyped 6 satisfies both
+				// int and int64, so it would keep compiling if the parameter
+				// were narrowed back to int. This makes the suite fail to
+				// build instead.
+				var size int64 = 6
+				return ctx.DataFromReader(http.StatusOK, "text/plain", strings.NewReader("stream"), size)
 			})
 		}, "/reader"},
 		{"File", func(router httpx.Router) {
@@ -116,20 +123,41 @@ func casesResponse(t *testing.T, r runner) {
 	casesWithJSON(t, r)
 }
 
-// httpx.WithJson is the wrapper the generated HTTP layer uses, so its success,
-// panic and error paths are part of the contract.
+// The success-envelope wrapper the generated HTTP layer uses lives downstream
+// (sphere/server/httpz.WithJson), not in this module — an envelope is a
+// convention, not part of the transport contract. What every adapter still owes
+// such a wrapper is pinned here, written out by hand so the cases do not depend
+// on which package defines the envelope: the shape of the success response, and
+// that a panic recovered into an error travels the ordinary Handler error path
+// and reaches the engine's configured error handler with the panic text intact.
 func casesWithJSON(t *testing.T, r runner) {
+	// recovered is the wrapper's panic path: the panic value becomes an httpx
+	// 500 returned to the adapter, never a framework-rendered stack trace.
+	recovered := func(h httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) (err error) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					err = httpx.InternalServerError(fmt.Errorf("%v", rec))
+				}
+			}()
+			return h(ctx)
+		}
+	}
+
 	t.Run("WithJSONSuccess", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
-			router.GET("/withjson/success", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
-				return map[string]any{"name": "ok"}, nil
-			}))
+			router.GET("/withjson/success", func(ctx httpx.Context) error {
+				return ctx.JSON(http.StatusOK, map[string]any{
+					"success": true,
+					"data":    map[string]any{"name": "ok"},
+				})
+			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/success", nil))
 	})
 
 	t.Run("WithJSONPanic", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
-			router.GET("/withjson/panic", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
+			router.GET("/withjson/panic", recovered(func(ctx httpx.Context) error {
 				panic("boom")
 			}))
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/panic", nil))
@@ -139,7 +167,7 @@ func casesWithJSON(t *testing.T, r runner) {
 	// error handler, carrying the original message.
 	t.Run("WithJSONPanicThroughCustomErrorHandler", func(t *testing.T) {
 		got := r.serveWith(t, Options{ErrorHandler: teapotErrorHandler}, func(router httpx.Router) {
-			router.GET("/withjson/panic/custom", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
+			router.GET("/withjson/panic/custom", recovered(func(ctx httpx.Context) error {
 				panic("boom")
 			}))
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/panic/custom", nil))
@@ -158,8 +186,8 @@ func casesWithJSON(t *testing.T, r runner) {
 
 	t.Run("WithJSONErrorThroughCustomErrorHandler", func(t *testing.T) {
 		got := r.serveWith(t, Options{ErrorHandler: teapotErrorHandler}, func(router httpx.Router) {
-			router.GET("/withjson/err/custom", httpx.WithJson(func(ctx httpx.Context) (map[string]any, error) {
-				return nil, errors.New("boom")
+			router.GET("/withjson/err/custom", recovered(func(ctx httpx.Context) error {
+				return errors.New("boom")
 			}))
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/err/custom", nil))
 

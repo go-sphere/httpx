@@ -70,28 +70,14 @@ func WithServer(server *http.Server) Option {
 	}
 }
 
-func WithServerAddr(addr string) Option {
-	return func(conf *Config) {
-		if conf.server == nil {
-			conf.server = &http.Server{
-				Addr: addr,
-			}
-		} else {
-			conf.server.Addr = addr
-		}
-	}
-}
-
-func WithErrorHandler(errHandler ErrorHandler) Option {
-	return func(conf *Config) {
-		conf.errHandler = errHandler
-	}
-}
-
-// WithHTTPXErrorHandler installs a framework-neutral error handler. The
-// handler receives a real httpx.Context backed by the gin context, so the
-// same error-rendering code can be shared across all adapters.
-func WithHTTPXErrorHandler(errHandler httpx.ErrorHandler) Option {
+// WithErrorHandler installs a framework-neutral error handler. The handler
+// receives a real httpx.Context backed by the gin context, so the same
+// error-rendering code can be shared across all adapters.
+//
+// The gin context is aborted afterwards unless the handler already did it:
+// the handler owns the response, and letting gin continue into the remaining
+// chain would let a later layer write over the error body.
+func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
 		if errHandler == nil {
 			return
@@ -105,10 +91,27 @@ func WithHTTPXErrorHandler(errHandler httpx.ErrorHandler) Option {
 	}
 }
 
-// WithAddr sets the listen address. It is the framework-neutral equivalent of
-// WithServerAddr, present on every adapter.
+// WithNativeErrorHandler installs gin's own error handler shape. Use it when
+// the handler needs the *gin.Context directly; WithErrorHandler is the
+// portable option that every adapter accepts.
+func WithNativeErrorHandler(errHandler ErrorHandler) Option {
+	return func(conf *Config) {
+		conf.errHandler = errHandler
+	}
+}
+
+// WithAddr sets the listen address, creating the http.Server when none was
+// supplied. It is the framework-neutral option present on every adapter.
 func WithAddr(addr string) Option {
-	return WithServerAddr(addr)
+	return func(conf *Config) {
+		if conf.server == nil {
+			conf.server = &http.Server{
+				Addr: addr,
+			}
+		} else {
+			conf.server.Addr = addr
+		}
+	}
 }
 
 // WithDefaultMiddleware enables Gin's default Logger and Recovery middleware.
@@ -160,11 +163,44 @@ func New(opts ...Option) httpx.Engine {
 		}
 	}
 	conf.server.Handler = conf.engine
+	installRouteFallback(conf.engine, conf.errHandler)
 	return &Engine{
 		engine:     conf.engine,
 		server:     conf.server,
 		errHandler: conf.errHandler,
 	}
+}
+
+// installRouteFallback makes gin answer a request no route handled through the
+// configured error handler instead of its own plain-text bodies, so 404 and 405
+// read the same on every adapter. gin also has to be told to look for a 405 at
+// all: with HandleMethodNotAllowed off (its default) a path that exists under
+// another method is reported as 404.
+//
+// Engine middleware keeps running for these requests — gin composes NoRoute and
+// NoMethod on top of engine.Handlers — which is what an access log or a recovery
+// layer registered with Use depends on.
+//
+// Precedence: both handlers are installed unconditionally, so a NoRoute or
+// NoMethod set on an engine *before* it is passed to WithEngine is replaced.
+// The override point is after New — gin's setters replace rather than append, so
+// gin.Engine.NoRoute called once ginx.New has returned wins outright, and that is
+// the supported way to keep your own fallback.
+//
+// Detecting a pre-existing handler is possible (gin keeps both slices unexported
+// with no getter, so it takes reflection over a third-party private field) but
+// not worth it: it would buy only the set-it-before-New case, and it would change
+// behavior silently the day gin renames the field. Unconditional is predictable.
+func installRouteFallback(ge *gin.Engine, errHandler ErrorHandler) {
+	ge.HandleMethodNotAllowed = true
+	ge.NoRoute(func(gc *gin.Context) {
+		errHandler(gc, httpx.NewNotFoundError(http.StatusText(http.StatusNotFound)))
+	})
+	ge.NoMethod(func(gc *gin.Context) {
+		// gin has already written the Allow header required by RFC 7231.
+		errHandler(gc, httpx.NewError(http.StatusMethodNotAllowed, 0,
+			http.StatusText(http.StatusMethodNotAllowed), nil))
+	})
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
@@ -217,11 +253,12 @@ func (e *Engine) Start() error {
 
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
-	err := httpx.Close(ctx, e.server)
-	if err == nil {
-		e.running.Store(false)
-	}
-	return err
+	// httpx.Close force-closes when the graceful drain fails, so the server is
+	// down whatever it returns — the running flag has to fall with it. Storing
+	// it only on a nil error left IsRunning reporting true for the rest of the
+	// process after a stop the caller's deadline cut short.
+	defer e.running.Store(false)
+	return httpx.Close(ctx, e.server)
 }
 
 // IsRunning returns true if the server is currently running.

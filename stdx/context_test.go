@@ -487,7 +487,7 @@ func TestBodyRaw(t *testing.T) {
 
 func TestBindJSON(t *testing.T) {
 	type dto struct {
-		Name string `json:"name" binding:"required"`
+		Name string `json:"name"`
 		Age  int    `json:"age"`
 	}
 	engine, r := newTestEngine(t)
@@ -505,10 +505,10 @@ func TestBindJSON(t *testing.T) {
 			t.Fatalf("status = %d, got = %+v", rec.Code, got)
 		}
 	})
-	t.Run("MissingRequiredIs400", func(t *testing.T) {
+	t.Run("AbsentFieldKeepsZeroValue", func(t *testing.T) {
 		rec := serve(engine, bodyReq(http.MethodPost, "/b", "application/json", `{"age":3}`))
-		if rec.Code != http.StatusBadRequest || bindStatus(t, bindErr) != http.StatusBadRequest {
-			t.Fatalf("status = %d, err = %v", rec.Code, bindErr)
+		if rec.Code != http.StatusOK || bindErr != nil || got.Name != "" || got.Age != 3 {
+			t.Fatalf("status = %d, err = %v, got = %+v", rec.Code, bindErr, got)
 		}
 	})
 	t.Run("MalformedIs400", func(t *testing.T) {
@@ -590,26 +590,30 @@ func TestBindQueryURIHeader(t *testing.T) {
 	}
 }
 
-func TestBindValidationRunsOnEverySource(t *testing.T) {
+// No Bind* call validates: a `binding` tag is inert on every source, so an
+// absent field decodes to its zero value instead of failing the request.
+func TestBindDoesNotValidateOnAnySource(t *testing.T) {
 	type need struct {
 		V string `query:"v" uri:"v" header:"X-V" form:"v" binding:"required"`
 	}
 	engine, r := newTestEngine(t)
-	var errs map[string]int
+	var errs map[string]error
 	r.POST("/plain", func(ctx httpx.Context) error {
-		errs = map[string]int{}
+		errs = map[string]error{}
 		var n need
-		errs["query"] = bindStatus(t, ctx.BindQuery(&n))
-		// No route parameters at all: validation still has to run.
-		errs["uri"] = bindStatus(t, ctx.BindURI(&n))
-		errs["header"] = bindStatus(t, ctx.BindHeader(&n))
-		errs["form"] = bindStatus(t, ctx.BindForm(&n))
+		errs["query"] = ctx.BindQuery(&n)
+		// No route parameters at all, so BindURI decodes nothing.
+		errs["uri"] = ctx.BindURI(&n)
+		errs["header"] = ctx.BindHeader(&n)
+		errs["form"] = ctx.BindForm(&n)
 		return nil
 	})
-	serve(engine, bodyReq(http.MethodPost, "/plain", "application/x-www-form-urlencoded", "other=1"))
-	for source, status := range errs {
-		if status != http.StatusBadRequest {
-			t.Fatalf("%s: validation failure rendered as %d, want 400", source, status)
+	if rec := serve(engine, bodyReq(http.MethodPost, "/plain", "application/x-www-form-urlencoded", "other=1")); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	for source, err := range errs {
+		if err != nil {
+			t.Fatalf("%s: bind reported %v, want no error", source, err)
 		}
 	}
 }

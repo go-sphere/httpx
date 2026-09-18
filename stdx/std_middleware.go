@@ -21,6 +21,19 @@ import (
 // of request-local state, so a timed-out handler cannot access a reused context.
 // State changes propagate back only when the handler finishes before the
 // middleware returns.
+//
+// There is deliberately no UseNative here, though ginx, echox, fiberx and
+// hertzx all have one. On those adapters UseNative buys something real: it
+// hands the middleware to the framework's own chain instead of routing it
+// through an Adapt*Middleware bridge. This adapter has no framework chain to
+// hand it to — a route's layers are composed at registration, and what follows
+// is not a bridge but the implementation: it is what keeps ctx.Next wired to
+// the httpx chain across the net/http handler boundary, forwards a replaced
+// request, follows a wrapped writer, and isolates the continuation so a
+// timed-out handler cannot reach a recycled context. A UseNative(...func(
+// http.Handler) http.Handler) could only be Use(AdaptStdMiddleware(...)),
+// which would cost a name in the public API and imply a shorter path that
+// does not exist. Use Use(stdx.AdaptStdMiddleware(mw)) instead.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(ctx httpx.Context) error {
