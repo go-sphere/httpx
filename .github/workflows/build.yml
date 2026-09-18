@@ -1,4 +1,4 @@
-name: Test
+name: CI
 
 permissions:
   contents: read
@@ -10,15 +10,34 @@ on:
     branches: [master]
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: conformance/go.mod
+          go-version-file: go.mod
           cache-dependency-path: "**/go.sum"
+
+      # go.work is gitignored, and without it every adapter resolves
+      # github.com/go-sphere/httpx from the proxy — which does not yet have the
+      # symbols they use. `make work` builds the workspace from the Makefile's
+      # module list, so adding a module cannot leave this step behind.
       - name: Create Go workspace
-        run: go work init . ./ginx ./fiberx ./echox ./hertzx ./conformance
-      - name: Test
-        run: make test
+        run: make work
+
+      # Pinned so a new linter release cannot turn a green branch red on its
+      # own. `golangci-lint fmt` needs v2.
+      - name: Install lint tools
+        env:
+          GOWORK: "off"
+          GOFLAGS: ""
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260915140140-59aa42bdc591
+
+      # Dependency hygiene (go mod tidy -diff per module, with GOWORK=off so
+      # each go.mod is checked as a consumer sees it), then format/vet/lint,
+      # then the race-enabled tests.
+      - name: Check
+        run: make check

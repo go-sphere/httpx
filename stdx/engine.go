@@ -119,7 +119,11 @@ func New(opts ...Option) httpx.Engine {
 		errHandler:     conf.errHandler,
 		trustedProxies: conf.trustedProxies,
 	}
-	engine.pool.New = func() any { return new(stdContext) }
+	engine.pool.New = func() any {
+		ctx := &stdContext{engine: engine}
+		ctx.native.c = ctx
+		return ctx
+	}
 	engine.server.Handler = engine
 	engine.running.Store(false)
 	return engine
@@ -151,8 +155,7 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 // render an error only when the handlers produced no response of their own.
 func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx, _ := e.pool.Get().(*stdContext)
-	ctx.reset(e, w, req)
-	defer e.pool.Put(ctx)
+	ctx.reset(w, req)
 
 	r, allow := e.root.match(req.Method, req.URL.Path, &ctx.values)
 	if r != nil {
@@ -174,6 +177,11 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// A handler that only called Status still owes a response.
 		ctx.rw.WriteHeader(ctx.rw.status)
 	}
+
+	// Recycled without a defer: a context whose handler panicked is left to
+	// the garbage collector rather than handed to the next request, and the
+	// happy path saves the defer.
+	e.pool.Put(ctx)
 }
 
 // notAllowedLeaf answers a path that no route matched: 404, or 405 with an

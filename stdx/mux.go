@@ -18,19 +18,30 @@ import (
 // redirects, path cleaning and case-insensitive fixups. A request matches
 // exactly as received, or it does not match.
 //
-// Matching allocates nothing: the path is consumed in place and captured
-// values are appended to a slice the caller owns.
+// Matching allocates nothing and hashes nothing on the hot path: a segment is
+// compared against a short slice (a map only appears on wide nodes) and the
+// method indexes a fixed array, so a request costs string compares instead of
+// map lookups.
 type node struct {
-	static map[string]*node
+	// Parallel slices instead of a map: a node usually has a handful of
+	// children, and comparing a few short strings beats hashing one.
+	staticKeys  []string
+	staticNodes []*node
+	// staticMap takes over above staticSliceMax children, where the linear
+	// scan would start to lose.
+	staticMap map[string]*node
 	// param matches one segment and binds it to paramName.
 	param     *node
 	paramName string
 	// wildcard terminates the path: it binds the remainder to wildcardName.
 	wildcard     *node
 	wildcardName string
-	// routes are the handlers registered on this node, by method.
-	routes map[string]*route
+	// routes stays nil on inner nodes, which is most of the tree.
+	routes *methodRoutes
 }
+
+// staticSliceMax is where a linear scan stops being cheaper than a map.
+const staticSliceMax = 8
 
 type route struct {
 	// pattern is the path as registered, so FullPath reads the same here as on
@@ -40,6 +51,117 @@ type route struct {
 	params  []string
 	chain   []httpx.Middleware
 	handler httpx.Handler
+}
+
+// methodRoutes keeps the nine standard methods in a fixed array so dispatch is
+// an index rather than a map lookup. Anything else (a WebDAV verb, say) still
+// works, through the rare map.
+type methodRoutes struct {
+	common [len(methodNames)]*route
+	rare   map[string]*route
+}
+
+var methodNames = [...]string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"}
+
+// methodIndex maps a canonical method name to its slot, or -1 for the rest.
+func methodIndex(method string) int {
+	switch method {
+	case "GET":
+		return 0
+	case "POST":
+		return 1
+	case "PUT":
+		return 2
+	case "PATCH":
+		return 3
+	case "DELETE":
+		return 4
+	case "HEAD":
+		return 5
+	case "OPTIONS":
+		return 6
+	case "CONNECT":
+		return 7
+	case "TRACE":
+		return 8
+	default:
+		return -1
+	}
+}
+
+func (m *methodRoutes) get(method string) *route {
+	if i := methodIndex(method); i >= 0 {
+		return m.common[i]
+	}
+	return m.rare[method]
+}
+
+// set reports whether the method was already registered here.
+func (m *methodRoutes) set(method string, r *route) bool {
+	if i := methodIndex(method); i >= 0 {
+		if m.common[i] != nil {
+			return true
+		}
+		m.common[i] = r
+		return false
+	}
+	if m.rare == nil {
+		m.rare = make(map[string]*route, 1)
+	}
+	if _, exists := m.rare[method]; exists {
+		return true
+	}
+	m.rare[method] = r
+	return false
+}
+
+func (m *methodRoutes) methods() []string {
+	if m == nil {
+		return nil
+	}
+	out := make([]string, 0, len(methodNames))
+	for i, r := range m.common {
+		if r != nil {
+			out = append(out, methodNames[i])
+		}
+	}
+	for method := range m.rare {
+		out = append(out, method)
+	}
+	return out
+}
+
+func (n *node) child(seg string) *node {
+	if n.staticMap != nil {
+		return n.staticMap[seg]
+	}
+	for i, key := range n.staticKeys {
+		if key == seg {
+			return n.staticNodes[i]
+		}
+	}
+	return nil
+}
+
+func (n *node) childOrCreate(seg string) *node {
+	if child := n.child(seg); child != nil {
+		return child
+	}
+	child := &node{}
+	if n.staticMap != nil {
+		n.staticMap[seg] = child
+		return child
+	}
+	n.staticKeys = append(n.staticKeys, seg)
+	n.staticNodes = append(n.staticNodes, child)
+	if len(n.staticKeys) > staticSliceMax {
+		n.staticMap = make(map[string]*node, len(n.staticKeys)*2)
+		for i, key := range n.staticKeys {
+			n.staticMap[key] = n.staticNodes[i]
+		}
+		n.staticKeys, n.staticNodes = nil, nil
+	}
+	return child
 }
 
 // add registers pattern for method. Conflicting registrations panic, like
@@ -75,24 +197,15 @@ func (n *node) add(method, pattern string, r *route) {
 			r.params = append(r.params, name)
 			current = current.param
 		default:
-			if current.static == nil {
-				current.static = make(map[string]*node, 4)
-			}
-			child, ok := current.static[seg]
-			if !ok {
-				child = &node{}
-				current.static[seg] = child
-			}
-			current = child
+			current = current.childOrCreate(seg)
 		}
 	}
 	if current.routes == nil {
-		current.routes = make(map[string]*route, 2)
+		current.routes = &methodRoutes{}
 	}
-	if _, exists := current.routes[method]; exists {
+	if current.routes.set(method, r) {
 		panic("stdx: duplicate route " + method + " " + pattern)
 	}
-	current.routes[method] = r
 }
 
 // match resolves path for method.
@@ -104,9 +217,58 @@ func (n *node) match(method, path string, values *[]string) (*route, []string) {
 	return n.walk(method, path, values)
 }
 
+// walk descends one level at a time, iteratively while the tree leaves no
+// choice and recursively (through walkChoice) where it does.
+//
+// The split matters because an ordinary route table is unambiguous: at
+// /api/v1/users/:id every level offers exactly one way forward, so nothing has
+// to be remembered in case of a retreat. Recursing anyway costs a frame and a
+// two-value return per segment.
 func (n *node) walk(method, rest string, values *[]string) (*route, []string) {
+	for rest != "" {
+		seg, next := cutSegment(rest)
+		child := n.child(seg)
+		switch {
+		case child != nil && n.param == nil && n.wildcard == nil:
+			n, rest = child, next
+		case child == nil && n.param != nil && n.wildcard == nil && seg != "":
+			*values = append(*values, seg)
+			n, rest = n.param, next
+		case child == nil && n.param == nil:
+			if n.wildcard == nil || n.wildcard.routes == nil {
+				return nil, nil
+			}
+			if r := n.wildcard.routes.get(method); r != nil {
+				*values = append(*values, trimLeadingSlash(rest))
+				return r, nil
+			}
+			return nil, n.wildcard.routes.methods()
+		default:
+			// More than one branch could match from here: the walk has to be
+			// able to come back, so hand this level to the recursive form.
+			return n.walkChoice(method, rest, values)
+		}
+	}
+	return n.walkTerminal(method)
+}
+
+func (n *node) walkTerminal(method string) (*route, []string) {
+	if n.routes == nil {
+		return nil, nil
+	}
+	if r := n.routes.get(method); r != nil {
+		return r, nil
+	}
+	// A wildcard is deliberately not tried here; see walkChoice.
+	return nil, n.routes.methods()
+}
+
+func (n *node) walkChoice(method, rest string, values *[]string) (*route, []string) {
 	if rest == "" {
-		if r, ok := n.routes[method]; ok {
+		if n.routes == nil {
+			return nil, nil
+		}
+		if r := n.routes.get(method); r != nil {
 			return r, nil
 		}
 		// A wildcard is deliberately not tried here. It would make
@@ -115,38 +277,35 @@ func (n *node) walk(method, rest string, values *[]string) (*route, []string) {
 		// every framework answers it from /:p0. /assets/ still reaches the
 		// wildcard: a trailing slash is an empty segment, not an exhausted
 		// path, so it goes through the branch below with an empty remainder.
-		if len(n.routes) > 0 {
-			return nil, methodsOf(n.routes)
-		}
-		return nil, nil
+		return nil, n.routes.methods()
 	}
 
 	seg, next := cutSegment(rest)
 	var allow []string
 
-	if child, ok := n.static[seg]; ok {
-		if r, a := child.walk(method, next, values); r != nil {
+	if child := n.child(seg); child != nil {
+		r, a := child.walk(method, next, values)
+		if r != nil {
 			return r, nil
-		} else {
-			allow = mergeMethods(allow, a)
 		}
+		allow = a
 	}
 	if n.param != nil && seg != "" {
 		mark := len(*values)
 		*values = append(*values, seg)
-		if r, a := n.param.walk(method, next, values); r != nil {
+		r, a := n.param.walk(method, next, values)
+		if r != nil {
 			return r, nil
-		} else {
-			allow = mergeMethods(allow, a)
-			*values = (*values)[:mark]
 		}
+		allow = mergeMethods(allow, a)
+		*values = (*values)[:mark]
 	}
-	if n.wildcard != nil {
-		if r, ok := n.wildcard.routes[method]; ok {
-			*values = append(*values, strings.TrimPrefix(rest, "/"))
+	if n.wildcard != nil && n.wildcard.routes != nil {
+		if r := n.wildcard.routes.get(method); r != nil {
+			*values = append(*values, trimLeadingSlash(rest))
 			return r, nil
 		}
-		allow = mergeMethods(allow, methodsOf(n.wildcard.routes))
+		allow = mergeMethods(allow, n.wildcard.routes.methods())
 	}
 	return nil, allow
 }
@@ -155,22 +314,18 @@ func (n *node) walk(method, rest string, values *[]string) (*route, []string) {
 // "", and "/" is a single empty segment — which is what makes /files/ and
 // /files different routes, as they are on every other adapter.
 func cutSegment(rest string) (seg, next string) {
-	rest = strings.TrimPrefix(rest, "/")
+	rest = trimLeadingSlash(rest)
 	if i := strings.IndexByte(rest, '/'); i >= 0 {
 		return rest[:i], rest[i:]
 	}
 	return rest, ""
 }
 
-func methodsOf(routes map[string]*route) []string {
-	if len(routes) == 0 {
-		return nil
+func trimLeadingSlash(s string) string {
+	if len(s) > 0 && s[0] == '/' {
+		return s[1:]
 	}
-	out := make([]string, 0, len(routes))
-	for method := range routes {
-		out = append(out, method)
-	}
-	return out
+	return s
 }
 
 func mergeMethods(dst, src []string) []string {

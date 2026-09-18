@@ -44,11 +44,12 @@ type stdContext struct {
 	keys map[string]any
 }
 
-func (c *stdContext) reset(e *Engine, w http.ResponseWriter, req *http.Request) {
+// reset prepares a pooled context for one request. engine and native are set
+// once when the context is created: both are constant for the pool's lifetime,
+// so writing them per request would be pure overhead.
+func (c *stdContext) reset(w http.ResponseWriter, req *http.Request) {
 	c.rw = responseWriter{ResponseWriter: w, status: http.StatusOK}
 	c.req = req
-	c.engine = e
-	c.native = Native{c: c}
 	c.route = nil
 	c.values = c.valueBuf[:0]
 	c.chain = nil

@@ -20,8 +20,18 @@ ifneq ($(wildcard $(CURDIR)/go.work),)
 export GOWORK := $(CURDIR)/go.work
 endif
 
-.PHONY: deps-update tidy fmt test test-race lint lint-all check verify api-compat
+.PHONY: work deps-update tidy fmt test test-race lint lint-all check verify api-compat
 .PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network golden tag tag-all tag-delete help
+
+# The workspace is the only way the repo builds before a release: every adapter
+# requires the published github.com/go-sphere/httpx, but they use symbols that
+# are only in the local root module until it is tagged. go.work is gitignored,
+# so CI regenerates it here — from GO_MOD_DIRS, so adding a module cannot leave
+# CI resolving it from the proxy.
+work:
+	@test -f go.work || GOWORK= $(GO) work init
+	@GOWORK=$(CURDIR)/go.work $(GO) work use $(GO_MOD_DIRS)
+	@echo "==> workspace: $$(GOWORK=$(CURDIR)/go.work $(GO) work edit -json | grep -c '"DiskPath"' || true) modules"
 
 deps-update:
 	@set -eu; \
@@ -152,6 +162,7 @@ tag-delete:
 help:
 	@printf '%s\n' \
 	  'Targets:' \
+	  '  work                        create or refresh go.work from the module list' \
 	  '  deps-update                 update direct dependencies in all modules' \
 	  '  tidy                        tidy all modules' \
 	  '  fmt                         format all modules' \
