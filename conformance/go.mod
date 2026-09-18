@@ -8,6 +8,7 @@ replace (
 	github.com/go-sphere/httpx/fiberx => ../fiberx
 	github.com/go-sphere/httpx/ginx => ../ginx
 	github.com/go-sphere/httpx/hertzx => ../hertzx
+	github.com/go-sphere/httpx/stdx => ../stdx
 )
 
 require (
@@ -18,6 +19,7 @@ require (
 	github.com/go-sphere/httpx/fiberx v0.0.3
 	github.com/go-sphere/httpx/ginx v0.0.3
 	github.com/go-sphere/httpx/hertzx v0.0.3
+	github.com/go-sphere/httpx/stdx v0.0.0-00010101000000-000000000000
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/valyala/fasthttp v1.73.0

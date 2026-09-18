@@ -9,8 +9,8 @@ NILAWAY ?= nilaway
 BENCH_COUNT ?= 12
 BENCH_TIME ?= 200ms
 
-GO_MOD_DIRS := . ginx fiberx echox hertzx conformance
-TAG_ADAPTERS := ginx fiberx echox hertzx
+GO_MOD_DIRS := . ginx fiberx echox hertzx stdx conformance
+TAG_ADAPTERS := ginx fiberx echox hertzx stdx
 DIRECT_DEPS_TEMPLATE := {{if and (not .Main) (not .Indirect) (not .Replace)}}{{.Path}}{{end}}
 
 .DEFAULT_GOAL := check

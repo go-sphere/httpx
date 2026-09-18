@@ -17,6 +17,7 @@ import (
 	"github.com/go-sphere/httpx/ginx"
 	"github.com/go-sphere/httpx/hertzx"
 	"github.com/go-sphere/httpx/httpxtest"
+	"github.com/go-sphere/httpx/stdx"
 	"github.com/gofiber/fiber/v3"
 	"github.com/labstack/echo/v4"
 	"github.com/valyala/fasthttp"
@@ -142,6 +143,33 @@ func httpxtestSuites() []httpxtest.Suite {
 				})
 			},
 		},
+		{
+			Name: "stdx",
+			Caps: httpxtest.Caps{
+				NamedWildcard:              true,
+				Flusher:                    true,
+				ComposesInterceptors:       true,
+				InProcessUnknownLengthBody: true,
+			},
+			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
+				var engineOpts []stdx.Option
+				if opts.ErrorHandler != nil {
+					engineOpts = append(engineOpts, stdx.WithErrorHandler(opts.ErrorHandler))
+				}
+				return stdx.New(engineOpts...)
+			},
+			StdMiddleware: stdx.AdaptStdMiddleware,
+			Dispatch:      stdDispatch,
+			NativeMiddleware: func(mark func(string)) httpx.Middleware {
+				return stdx.AdaptStdMiddleware(func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						mark("native-pre")
+						next.ServeHTTP(w, r)
+						mark("native-post")
+					})
+				})
+			},
+		},
 	}
 }
 
@@ -205,6 +233,17 @@ func ginDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) 
 	ge := gin.New()
 	register(ginx.New(ginx.WithEngine(ge)).Group(""))
 	return ginRunner(tb, "ginx", ge, req)
+}
+
+// stdDispatch needs no bridging at all: the engine is the http.Handler.
+func stdDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
+	engine := stdx.New()
+	register(engine.Group(""))
+	handler, ok := engine.(http.Handler)
+	if !ok {
+		tb.Fatal("stdx: engine is not an http.Handler")
+	}
+	return netHTTPRunner(tb, "stdx", handler, req)
 }
 
 func echoDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
