@@ -24,7 +24,7 @@ ifneq ($(wildcard $(CURDIR)/go.work),)
 export GOWORK := $(CURDIR)/go.work
 endif
 
-.PHONY: work deps-update tidy fmt test test-race lint lint-all check verify api-compat
+.PHONY: work deps-update tidy tidy-check fmt build test test-race lint lint-all check verify api-compat
 .PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network bench-report golden tag tag-all tag-delete help prepare-release release-check
 
 # The workspace is the only way the repo builds before a release: every adapter
@@ -55,12 +55,30 @@ tidy:
 		( cd "$$dir" && GOWORK=off $(GO) mod tidy ); \
 	done
 
+# Non-mutating counterpart of tidy, for CI: fails if any module's go.mod/go.sum
+# is not what a consumer would resolve.
+tidy-check:
+	@set -eu; \
+	for dir in $(GO_MOD_DIRS); do \
+		echo "==> checking dependencies in $$dir"; \
+		( cd "$$dir" && GOWORK=off $(GO) mod tidy -diff ); \
+	done
+
 fmt:
 	@set -eu; \
 	for dir in $(GO_MOD_DIRS); do \
 		echo "==> formatting $$dir"; \
 		( cd "$$dir" && $(GO) fmt ./... && \
 		  $(GOLANGCI_LINT) fmt --no-config --enable gofmt --enable goimports ); \
+	done
+
+# Compiles every module through go.work (see `work`), so adapters are built
+# against the local root module rather than the published one.
+build:
+	@set -eu; \
+	for dir in $(GO_MOD_DIRS); do \
+		echo "==> building $$dir"; \
+		( cd "$$dir" && $(GO) build ./... ); \
 	done
 
 test:
@@ -103,12 +121,7 @@ lint:
 # Backward-compatible alias.
 lint-all: lint
 
-check:
-	@set -eu; \
-	for dir in $(GO_MOD_DIRS); do \
-		echo "==> checking dependencies in $$dir"; \
-		( cd "$$dir" && GOWORK=off $(GO) mod tidy -diff ); \
-	done
+check: tidy-check
 	$(MAKE) lint
 	$(MAKE) test
 	$(MAKE) test-race
@@ -191,7 +204,9 @@ help:
 	  '  work                        create or refresh go.work from the module list' \
 	  '  deps-update                 update direct dependencies in all modules' \
 	  '  tidy                        tidy all modules' \
+	  '  tidy-check                  check all modules are tidy (no writes)' \
 	  '  fmt                         format all modules' \
+	  '  build                       compile all modules through go.work' \
 	  '  test | test-race            test all modules' \
 	  '  lint | lint-all             lint all modules' \
 	  '  check                       run dependency, lint, test, and race checks' \

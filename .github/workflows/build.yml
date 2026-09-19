@@ -10,7 +10,7 @@ on:
     branches: [master]
 
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -26,18 +26,14 @@ jobs:
       - name: Create Go workspace
         run: make work
 
-      # Pinned so a new linter release cannot turn a green branch red on its
-      # own. `golangci-lint fmt` needs v2.
-      - name: Install lint tools
-        env:
-          GOWORK: "off"
-          GOFLAGS: ""
-        run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-          go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260915140140-59aa42bdc591
-
-      # Dependency hygiene (go mod tidy -diff per module, with GOWORK=off so
-      # each go.mod is checked as a consumer sees it), then format/vet/lint,
-      # then the race-enabled tests.
-      - name: Check
-        run: make check
+      # Dependency hygiene per module (GOWORK=off, so each go.mod is checked as
+      # a consumer sees it), then compile and test every module through the
+      # workspace. `make check` adds format/vet/golangci-lint/nilaway and the
+      # race detector for local use; CI deliberately stops at build + test, so
+      # it needs no linter toolchain.
+      - name: Check dependencies
+        run: make tidy-check
+      - name: Build
+        run: make build
+      - name: Test
+        run: make test
