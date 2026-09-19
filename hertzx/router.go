@@ -175,6 +175,7 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 			// by a second body.
 			if !rc.IsAborted() && !hertzResponseCommitted(rc) {
 				r.errHandler(ctx, rc, err)
+				commitErrorStatus(rc, err)
 			}
 			if !rc.IsAborted() {
 				rc.Abort()
@@ -188,6 +189,26 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 // and body writing, so Response.Body() stays empty while bytes have in fact
 // already reached the client; checking only the buffer would let the error
 // handler append a second body to a streaming response.
+// commitErrorStatus records the error's own status when the configured
+// ErrorHandler rendered nothing for it.
+//
+// Rendering nothing is a legitimate shape — a handler that only logs, and
+// leaves the body to a layer above — but the chain is aborted right after, and
+// the status hertz has recorded is still the 200 every response starts at, so
+// the request answered 200 with an empty body. The error's own status is the
+// floor; a status the error handler set for itself still wins, and a response
+// it wrote is never touched (the caller checks hertzResponseCommitted first).
+//
+// On hertz's own NoRoute/NoMethod path this changes nothing: hertz records
+// 404/405 before running the fallback, so the guard below already holds.
+func commitErrorStatus(rc *app.RequestContext, err error) {
+	if hertzResponseCommitted(rc) || rc.Response.StatusCode() != http.StatusOK {
+		return
+	}
+	_, status, _ := httpx.ClassifyError(err)
+	rc.SetStatusCode(int(status))
+}
+
 func hertzResponseCommitted(rc *app.RequestContext) bool {
 	if rc.Response.GetHijackWriter() != nil || rc.Response.IsBodyStream() || len(rc.Response.Body()) > 0 {
 		return true

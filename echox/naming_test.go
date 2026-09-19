@@ -111,6 +111,56 @@ func TestFromEcho(t *testing.T) {
 	}
 }
 
+// A context built by FromEcho has no engine behind it, so it cannot resolve
+// this adapter's named-wildcard normalization — the same degradation FromStd
+// documents for having no Engine. It must degrade, not panic: the name lives in
+// the engine's table, and the only thing that would let a detached context
+// reach one is a process-wide table, which is what scoping the mapping per
+// engine exists to avoid.
+func TestFromEchoDegradesNamedWildcard(t *testing.T) {
+	e := echo.New()
+	app := New(WithEngine(e))
+
+	var detached httpx.Context
+	app.Group("").GET("/files/*filepath", func(ctx httpx.Context) error {
+		// The adapter's own context resolves the name.
+		if got := ctx.FullPath(); got != "/files/*filepath" {
+			t.Errorf("adapter context FullPath = %q, want %q", got, "/files/*filepath")
+		}
+		if got := ctx.Param("filepath"); got != "a/b.txt" {
+			t.Errorf("adapter context Param(filepath) = %q, want %q", got, "a/b.txt")
+		}
+		ec, ok := httpx.AsNativeContext[echo.Context](ctx)
+		if !ok {
+			t.Fatal("native echo context unavailable")
+		}
+		detached = FromEcho(ec)
+		return ctx.NoContent(http.StatusNoContent)
+	})
+
+	rr := httptest.NewRecorder()
+	e.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/files/a/b.txt", nil))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if detached == nil {
+		t.Fatal("handler did not run")
+	}
+	if got := detached.FullPath(); got != "/files/*" {
+		t.Fatalf("FromEcho FullPath = %q, want echo's own %q", got, "/files/*")
+	}
+	if got := detached.Param("filepath"); got != "" {
+		t.Fatalf("FromEcho Param(filepath) = %q, want empty", got)
+	}
+	// The value is still reachable under the name echo knows.
+	if got := detached.Param("*"); got != "a/b.txt" {
+		t.Fatalf("FromEcho Param(*) = %q, want %q", got, "a/b.txt")
+	}
+	if got := detached.Params()["*"]; got != "a/b.txt" {
+		t.Fatalf("FromEcho Params()[*] = %q, want %q", got, "a/b.txt")
+	}
+}
+
 // DefaultErrorHandler is echo's native shape (echo.HTTPErrorHandler) and must
 // stay assignable to it: that is what NewConfig installs on the engine.
 func TestDefaultErrorHandlerIsNativeShape(t *testing.T) {

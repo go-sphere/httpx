@@ -8,7 +8,6 @@ import (
 	"path"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
@@ -30,20 +29,40 @@ type wildcardRoute struct {
 	pattern string
 }
 
-// wildcardNames maps a registered route pattern (with the anonymous "*"
-// wildcard) to what it was written as.
-var wildcardNames sync.Map // route pattern -> wildcardRoute
+// wildcardRouteKey names the Locals slot holding the matched route's
+// named-wildcard mapping. An unexported struct type cannot collide with an
+// application's own Locals keys.
+type wildcardRouteKey struct{}
 
-// lookupWildcardRoute resolves a matched route pattern back to its registered
-// form. The caller checks the pattern ends in "*" first, so a route without a
-// wildcard never pays the map lookup.
-func lookupWildcardRoute(pattern string) (wildcardRoute, bool) {
-	v, ok := wildcardNames.Load(pattern)
-	if !ok {
-		return wildcardRoute{}, false
+// markWildcardRoute records a route's wildcard mapping on the request before
+// next runs, so every reading of the parameter set resolves the name the route
+// was registered with.
+//
+// The mapping belongs to one route and is known at registration, but a fiber
+// context cannot carry it: fiberContext holds a single pointer so it fits in an
+// interface without a heap wrapper (see its doc), and a second field would cost
+// an allocation on every request. Fiber's own request-local storage is the next
+// cheapest place, and only a route that *has* a named wildcard is wrapped, so
+// an ordinary route pays nothing at all.
+//
+// This replaces a process-wide "normalized pattern -> name" map. Normalization
+// is lossy — /files/*filename and /files/*filepath both become /files/* — so two
+// engines in one process overwrote each other's entry and the last registration
+// answered for both, silently reporting another engine's pattern from FullPath.
+// Attaching the mapping to the route makes it per engine by construction.
+func markWildcardRoute(next fiber.Handler, route *wildcardRoute) fiber.Handler {
+	return func(ctx fiber.Ctx) error {
+		ctx.Locals(wildcardRouteKey{}, route)
+		return next(ctx)
 	}
-	route, ok := v.(wildcardRoute)
-	return route, ok
+}
+
+// wildcardRouteOf returns the matched route's wildcard mapping, or nil when the
+// route has none — including on a context built by FromFiber for a request this
+// adapter did not route.
+func wildcardRouteOf(native fiber.Ctx) *wildcardRoute {
+	route, _ := native.Locals(wildcardRouteKey{}).(*wildcardRoute)
+	return route
 }
 
 type Router struct {
@@ -120,30 +139,31 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 }
 
 // normalizeWildcardPath rewrites named wildcards (/*filepath) to fiber's
-// anonymous form (/*) and records the original name so Param("filepath")
-// still resolves. Unsupported wildcard shapes panic at registration,
+// anonymous form (/*) and returns what the route was written as, so
+// Param("filepath") still resolves; the second result is nil for a route with
+// no named wildcard. Unsupported wildcard shapes panic at registration,
 // matching gin/hertz native behavior (fiber would otherwise silently
 // register a semantically different route).
-func (r *Router) normalizeWildcardPath(path string) string {
+func (r *Router) normalizeWildcardPath(path string) (string, *wildcardRoute) {
 	if err := httpx.ValidateWildcardPath(path); err != nil {
 		panic(err)
 	}
 	orig := httpx.WildcardParamName(path)
 	if orig == "" || orig == "*" {
-		return path
+		return path, nil
 	}
 	fixed, _ := httpx.FixWildcardPathIfNeed(r, path)
-	wildcardNames.Store(joinPaths(r.basePath, fixed), wildcardRoute{
+	return fixed, &wildcardRoute{
 		param:   orig,
 		pattern: joinPaths(r.basePath, path),
-	})
-	return fixed
+	}
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	methods := []string{strings.ToUpper(method)}
-	handler, handlers := splitHandlers(r.adaptHandler(h))
-	r.group.Add(methods, r.normalizeWildcardPath(path), handler, handlers...)
+	fixed, wildcard := r.normalizeWildcardPath(path)
+	handler, handlers := splitHandlers(r.adaptHandler(h, wildcard))
+	r.group.Add(methods, fixed, handler, handlers...)
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
@@ -153,8 +173,9 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
-	handler, handlers := splitHandlers(r.adaptHandler(h))
-	r.group.All(r.normalizeWildcardPath(path), handler, handlers...)
+	fixed, wildcard := r.normalizeWildcardPath(path)
+	handler, handlers := splitHandlers(r.adaptHandler(h, wildcard))
+	r.group.All(fixed, handler, handlers...)
 }
 
 func (r *Router) Static(prefix, root string) {
@@ -222,22 +243,33 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 	r.Handle("OPTIONS", path, h)
 }
 
-func (r *Router) combineHandlers(h fiber.Handler) []any {
-	mid := make([]any, 0, len(r.middlewares)+1)
+func (r *Router) combineHandlers(h fiber.Handler, wildcard *wildcardRoute) []any {
+	chain := make([]fiber.Handler, 0, len(r.middlewares)+1)
 	for _, m := range r.middlewares {
-		mid = append(mid, adaptMiddleware(m, r.errHandler))
+		chain = append(chain, adaptMiddleware(m, r.errHandler))
 	}
-	mid = append(mid, h)
+	chain = append(chain, h)
+	if wildcard != nil {
+		// Marked on the *first* layer of the route, not on the handler: Use
+		// composes into the route here rather than taking a native slot, so a
+		// middleware registered with it runs inside this chain and must read
+		// the same FullPath and Param as the handler below it.
+		chain[0] = markWildcardRoute(chain[0], wildcard)
+	}
+	mid := make([]any, len(chain))
+	for i, handler := range chain {
+		mid[i] = handler
+	}
 	return mid
 }
 
-func (r *Router) adaptHandler(h httpx.Handler) []any {
+func (r *Router) adaptHandler(h httpx.Handler, wildcard *wildcardRoute) []any {
 	// Composed once per route, never per request.
 	h = httpx.ComposeInterceptors(h, r.interceptors)
 	return r.combineHandlers(func(ctx fiber.Ctx) error {
 		fc := newFiberContext(ctx)
 		return handleFiberError(ctx, fc, h(fc), r.errHandler)
-	})
+	}, wildcard)
 }
 
 // handleFiberError routes a handler/middleware error either through the
@@ -263,6 +295,7 @@ func handleFiberError(native fiber.Ctx, fc httpx.Context, err error, errHandler 
 		// an unmatched path): normalize it so the configured handler sees
 		// 404/405 rather than an unclassified 500.
 		errHandler(fc, normalizeFiberError(err))
+		commitErrorStatus(native, err)
 		// Rendered, but still recorded: gin and hertz keep a handled error on
 		// the native error list, so an outer layer's Next sees it. Without
 		// this, rendering at the failing layer would hide the failure from
@@ -271,6 +304,26 @@ func handleFiberError(native fiber.Ctx, fc httpx.Context, err error, errHandler 
 		return nil
 	}
 	return err
+}
+
+// commitErrorStatus gives the response the error's own status when the
+// configured httpx.ErrorHandler rendered nothing for it.
+//
+// Rendering nothing is a legitimate shape — a handler that only logs, and
+// leaves the body to a layer above — but the error is swallowed here (fiber
+// must not be allowed to render it a second time), so the status fiber would
+// send is its initial 200. On an unmatched path that answered a request no
+// route handled with 200, which caches and monitoring believe. The error's own
+// status is the floor; a status the error handler set for itself still wins,
+// and a response it decided is never touched.
+func commitErrorStatus(native fiber.Ctx, err error) {
+	if responseDecided(native) || native.Response().StatusCode() != fiber.StatusOK {
+		return
+	}
+	// Classify the normalized error so fiber's own 404/405 keeps its status
+	// instead of being reported as an unclassified 500.
+	_, status, _ := httpx.ClassifyError(normalizeFiberError(err))
+	native.Status(int(status))
 }
 
 // handledErrorKey names the Locals slot holding an error that could not be

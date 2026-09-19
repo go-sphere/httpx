@@ -3,6 +3,7 @@ package ginx
 import (
 	"errors"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -94,5 +95,59 @@ func TestBindRecoveringReportsOtherPanics(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v, want it to mention the panic", err)
+	}
+}
+
+// panicItem's UnmarshalJSON panics with exactly the value gin's validator
+// panics with. The shape is what bindRecovering used to match on, so this is
+// the narrowest reproduction of a *decode* panic wearing the validator's
+// signature — a buggy custom unmarshaler is how one arrives in practice.
+type panicItem struct {
+	Name string `json:"name" binding:"required"`
+}
+
+func (p *panicItem) UnmarshalJSON(b []byte) error {
+	if string(b) == `{"boom":true}` {
+		var zero reflect.Value
+		_ = zero.Interface()
+	}
+	p.Name = "partial"
+	return nil
+}
+
+// A decode panic must not be reported as a successful bind, even when it looks
+// exactly like the validator's. Matching on the panic value alone let this
+// return nil with a half-written destination, so the handler ran on garbage
+// where it should have seen a 400.
+func TestBindReportsDecodePanicShapedLikeTheValidators(t *testing.T) {
+	var dst []*panicItem
+	err := bindJSON(t, `[{"name":"ok"},{"boom":true}]`, &dst)
+	if err == nil {
+		t.Fatal("a decode-phase panic was reported as a successful bind")
+	}
+	if status, _ := httpx.RenderError(err); status != 400 {
+		t.Fatalf("status = %d, want 400 (err = %v)", status, err)
+	}
+}
+
+// The frame ginx keys the decision on has to exist, or the typed-nil parity
+// silently turns into a 400 on a gin upgrade. Assert the symbol name directly
+// so the failure names the cause instead of showing up as an unexpected status.
+func TestGinValidatorFrameStillExists(t *testing.T) {
+	var dst []*dropItem
+	found := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				found = panickedInGinValidator()
+			}
+		}()
+		gin.SetMode(gin.TestMode)
+		req := httptest.NewRequest("POST", "http://example.com/x", strings.NewReader(`[{"name":"ok"},null]`))
+		req.Header.Set("Content-Type", "application/json")
+		_ = binding.JSON.Bind(req, &dst)
+	}()
+	if !found {
+		t.Fatalf("gin no longer panics from %s; ginx now answers 400 for a typed nil slice element", ginValidatorFrame)
 	}
 }

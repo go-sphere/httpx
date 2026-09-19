@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -168,6 +169,110 @@ func TestEngineForcedStopConformance(t *testing.T) {
 			openGate()
 			<-held
 		})
+	}
+}
+
+// failCloseListener is a real TCP listener whose Close fails. The failure is
+// held until the test releases it, so the moment fasthttp collects it is fixed
+// rather than raced for: see TestFiberxStopReportsListenerCloseFailure.
+type failCloseListener struct {
+	net.Listener
+	closing chan struct{}
+	release chan struct{}
+	once    sync.Once
+	err     error
+}
+
+func (l *failCloseListener) Close() error {
+	l.once.Do(func() {
+		_ = l.Listener.Close()
+		close(l.closing)
+		<-l.release
+	})
+	return l.err
+}
+
+// A listener that fails to close means the socket may still be bound, and that
+// must never be reported as a successful stop — the whole point of the forced-stop
+// work is not telling a caller the server is down when it is not.
+//
+// fiberx is the adapter that could get this wrong, because fasthttp closes its
+// listeners and collects their errors *before* it consults the context: testing
+// ctx.Err() alone turned a genuine close failure into nil for every caller who
+// passed a context.WithTimeout, which is every caller doing a graceful drain.
+//
+// This is fiberx-only and lives here rather than in the shared suite because it
+// needs a real listener and a fiber-specific injection point (WithListener);
+// no other adapter routes a caller's net.Listener into its shutdown path.
+func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
+	// A deadline that is already spent, so ctx.Err() is set when Stop inspects
+	// it. That is the state in which the old check returned nil.
+	stopCtx, cancelStop := context.WithCancel(context.Background())
+	cancelStop()
+
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ln := &failCloseListener{
+		Listener: base,
+		closing:  make(chan struct{}),
+		release:  make(chan struct{}),
+		err:      errors.New("fiberx test: listener close failed"),
+	}
+
+	// Wait for the listener to be handed to fasthttp without dialing it: an
+	// accepted connection counts as open, and fasthttp only reports the listener
+	// error while nothing is. The settle covers the gap between this hook and
+	// fasthttp registering the listener, before which Shutdown is a no-op.
+	serving := make(chan struct{})
+	engine := fiberx.New(fiberx.WithListener(ln, fiber.ListenConfig{
+		DisableStartupMessage: true,
+		BeforeServeFunc:       func(*fiber.App) error { close(serving); return nil },
+	}))
+	engine.Group("").GET("/ping", func(ctx httpx.Context) error {
+		return ctx.Text(http.StatusOK, "pong")
+	})
+
+	served := make(chan error, 1)
+	go func() { served <- engine.Start() }()
+	<-serving
+	time.Sleep(100 * time.Millisecond)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- engine.Stop(stopCtx) }()
+
+	// Let the close failure land only once fasthttp's accept loop has exited, so
+	// it sees no connection open and returns the listener error instead of the
+	// context's. Without this the two are chosen between by a 100ms ticker race.
+	select {
+	case <-ln.closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop never closed the listener")
+	}
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after the listener closed")
+	}
+	close(ln.release)
+
+	select {
+	case stopErr := <-stopped:
+		if !errors.Is(stopErr, ln.err) {
+			t.Fatalf("Stop = %v, want the listener close failure %v", stopErr, ln.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop did not return")
+	}
+
+	// Still the rest of the contract: the flag falls and the engine is single-use
+	// whatever shutdown reported.
+	if engine.IsRunning() {
+		t.Fatal("IsRunning() is true after Stop returned")
+	}
+	if err := engine.Start(); !errors.Is(err, httpx.ErrEngineClosed) {
+		t.Fatalf("Start after a failed Stop = %v, want httpx.ErrEngineClosed", err)
 	}
 }
 

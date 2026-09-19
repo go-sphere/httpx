@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"reflect"
+	"runtime"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -235,8 +236,10 @@ func (c ginContext) BindHeader(dst any) error {
 // gin's validator also panics on a typed nil inside a slice
 // (reflect.Value.Interface on a zero Value). That is validation failing on
 // input the decode accepted, so slice and array targets — the only shape that
-// can trigger it — run under a recover that drops it. Any other panic is still
-// reported, and a struct target (what generated handlers bind) keeps its
+// can trigger it — run under a recover that drops it, but only once the
+// panicking stack confirms gin's validator raised it (see
+// panickedInGinValidator). Any other panic, from either phase, is reported as a
+// bind failure, and a struct target (what generated handlers bind) keeps its
 // allocation profile.
 func bind(dst any, run func() error) error {
 	if sliceTarget(dst) {
@@ -249,13 +252,61 @@ func bindRecovering(run func() error) (err error) {
 	defer func() {
 		switch rec := recover(); {
 		case rec == nil:
-		case isValidatorPanic(rec):
+		case isValidatorPanic(rec) && panickedInGinValidator():
 			err = nil
 		default:
 			err = httpx.WrapBindError(fmt.Errorf("ginx: binding a slice target panicked: %v", rec))
 		}
 	}()
 	return httpx.WrapBindError(decodeError(run()))
+}
+
+// ginValidatorFrame is the function that raises the one panic ginx drops: gin's
+// default validator dereferencing a typed nil slice element.
+const ginValidatorFrame = "github.com/gin-gonic/gin/binding.(*defaultValidator).ValidateStruct"
+
+// panickedInGinValidator reports whether the panic currently being recovered
+// was raised underneath gin's default validator.
+//
+// It is what keeps a dropped verdict from becoming a dropped *decode*. recover
+// alone cannot tell them apart: bindRecovering wraps a single
+// binding.Binding.Bind call, which decodes and validates with no seam between
+// the two, so a panic from either phase arrives at the same defer wearing the
+// same *reflect.ValueError. Dropping the validator's is correct because the
+// decode has already finished and the destination is fully populated; dropping
+// a decode panic returns nil with a half-written destination and sends the
+// handler into garbage where it should have answered 400.
+//
+// The panicking frames are still on the stack while a deferred function runs,
+// so the frame set says which phase raised it — and it says so by construction
+// rather than by guess: gin calls binding.validate only after the decode
+// returned no error, so ValidateStruct sitting below the panic *is* the proof
+// that the decode completed. The destination's own state is not a usable signal
+// (a decode that panicked part way through a slice leaves the same shape a
+// successful one does), and the panic value carries no origin.
+//
+// It costs one bounded stack walk, on a path that only runs when something
+// already panicked; an ordinary bind pays nothing. In exchange it reads a
+// gin-internal symbol name, and so is written to fail closed: a gin release
+// that renames that function makes ginx answer 400 for a typed nil element
+// instead of binding it, which TestBindDropsGinValidationVerdict catches at
+// upgrade time. Matching on the panic shape alone — what this did before —
+// fails open, and silently.
+func panickedInGinValidator() bool {
+	// Skip this frame; the validator sits just below the panic, so the window
+	// only has to cover its recursion down to the slice element.
+	var pcs [32]uintptr
+	n := runtime.Callers(1, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		if frame.Function == ginValidatorFrame {
+			return true
+		}
+		if !more {
+			return false
+		}
+	}
 }
 
 // decodeError keeps only what the decode itself reported, dropping gin's

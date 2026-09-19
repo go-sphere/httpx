@@ -26,11 +26,17 @@ type echoContext struct {
 	ctx    echo.Context
 	next   echo.HandlerFunc
 	binder echo.DefaultBinder
+	// wildcards is the engine's named-wildcard table, or nil for a context
+	// built by FromEcho. Carrying the pointer here is what scopes the mapping
+	// to one engine; the context is heap-allocated per request either way, so
+	// the field costs no extra allocation.
+	wildcards *wildcardTable
 }
 
-func newEchoContext(ctx echo.Context) *echoContext {
+func newEchoContext(ctx echo.Context, wildcards *wildcardTable) *echoContext {
 	return &echoContext{
-		ctx: ctx,
+		ctx:       ctx,
+		wildcards: wildcards,
 	}
 }
 
@@ -40,8 +46,16 @@ func newEchoContext(ctx echo.Context) *echoContext {
 // The returned context carries no downstream handler, so Next is a no-op that
 // returns nil: this is a writing and request-inspection handle, not a place to
 // resume a chain from.
+//
+// It also has no engine behind it, so — like FromStd — it cannot resolve this
+// adapter's named-wildcard normalization: on a route registered as
+// /files/*filepath, FullPath reports echo's own "/files/*", Param("filepath")
+// and BindURI's uri:"filepath" are empty, and Params carries the value under
+// "*". The name lives in the engine's table, which only a context the adapter
+// built holds a pointer to; a process-wide table would make FromEcho resolve
+// names another engine registered. Param("*") reaches the value on any route.
 func FromEcho(ctx echo.Context) httpx.Context {
-	return newEchoContext(ctx)
+	return newEchoContext(ctx, nil)
 }
 
 // Request (httpx.Request)
@@ -64,7 +78,7 @@ func (c *echoContext) Path() string {
 func (c *echoContext) FullPath() string {
 	pattern := c.ctx.Path()
 	if lastCharIs('*', pattern) {
-		if route, ok := lookupWildcardRoute(pattern); ok {
+		if route, ok := c.wildcards.lookup(pattern); ok {
 			return route.pattern
 		}
 	}
@@ -123,7 +137,7 @@ func (c *echoContext) Params() map[string]string {
 // the parameter as "*"; every reading of the parameter set (Param, Params,
 // BindURI) resolves it back through here so none of them can disagree.
 func (c *echoContext) wildcardParamName() string {
-	route, ok := lookupWildcardRoute(c.ctx.Path())
+	route, ok := c.wildcards.lookup(c.ctx.Path())
 	if !ok {
 		return ""
 	}

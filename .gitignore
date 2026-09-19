@@ -174,5 +174,7 @@ coverage.txt
 
 # Agent scratch space: Claude Code puts per-agent git worktrees under
 # .claude/worktrees/. Those share this repository's object store, so an
-# `git add -A` here would otherwise commit another agent's checkout.
-.claude/
+# `git add -A` here would otherwise commit another agent's checkout. Only the
+# worktrees are ignored — .claude/settings.json, agents and skills are project
+# configuration and belong in the repository.
+.claude/worktrees/

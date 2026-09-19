@@ -36,6 +36,7 @@ func adaptMiddleware(middleware httpx.Middleware, errHandler ErrorHandler) gin.H
 			// by a second body, matching toGinHandler.
 			if !ctx.IsAborted() && !ctx.Writer.Written() {
 				errHandler(ctx, err)
+				commitErrorStatus(ctx, err)
 			}
 			if !ctx.IsAborted() {
 				ctx.Abort()

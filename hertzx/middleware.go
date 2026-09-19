@@ -15,6 +15,7 @@ func adaptMiddleware(middleware httpx.Middleware, errHandler ErrorHandler) app.H
 			_ = ctx.Error(err)
 			if !ctx.IsAborted() && !hertzResponseCommitted(ctx) {
 				errHandler(c, ctx, err)
+				commitErrorStatus(ctx, err)
 			}
 			if !ctx.IsAborted() {
 				ctx.Abort()

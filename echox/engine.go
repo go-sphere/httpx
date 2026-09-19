@@ -36,10 +36,29 @@ func NewConfig(opts ...Option) *Config {
 	if conf.engine == nil {
 		conf.engine = echo.New()
 	}
-	// Install the adapter default error handler unless the user configured a
-	// custom one on the engine. Comparing against echo's default handler makes
+	// Install the adapter default error handler unless something more specific
+	// owns the slot. Comparing against echo's default handler makes
 	// echox.New(WithEngine(echo.New())) behave the same as echox.New().
-	if conf.engine.HTTPErrorHandler == nil || isEchoDefaultErrorHandler(conf.engine) {
+	//
+	// Precedence for echo.Echo.HTTPErrorHandler, highest first:
+	//
+	//  1. WithErrorHandler — New installs it, replacing whatever is here. It is
+	//     the portable surface, so passing it is an explicit request for httpx to
+	//     own every error echo renders; leaving the engine's own handler in place
+	//     would split the answers, with handler errors going through the
+	//     framework-neutral handler and echo's own 404/405 not (see New).
+	//  2. a handler the caller set on their own echo.Echo before WithEngine.
+	//  3. this adapter's DefaultErrorHandler.
+	//
+	// Deciding it here rather than in New would be wrong for case 1 and deciding
+	// it only in New would be wrong for case 2, so both sites read this list:
+	// New owns the top entry, and this skips the slot entirely when New will.
+	//
+	// ginx installs its fallback unconditionally instead (see
+	// ginx.installRouteFallback) because gin keeps NoRoute/NoMethod in unexported
+	// slices with no getter, so case 2 is not detectable there without reflecting
+	// over a third-party private field. Here the field is public and comparable.
+	if conf.errHandler == nil && (conf.engine.HTTPErrorHandler == nil || isEchoDefaultErrorHandler(conf.engine)) {
 		conf.engine.HTTPErrorHandler = DefaultErrorHandler
 	}
 	if conf.server == nil {
@@ -78,8 +97,10 @@ func DefaultErrorHandler(err error, c echo.Context) {
 	}
 	status, body := httpx.RenderError(normalizeEchoError(err))
 	// Through the adapter's own context so the JSON Content-Type carries the
-	// charset the other four adapters write.
-	_ = newEchoContext(c).JSON(status, body)
+	// charset the other four adapters write. No wildcard table: this is a
+	// package-level function with no engine behind it, and rendering an error
+	// body reads no route parameters.
+	_ = newEchoContext(c, nil).JSON(status, body)
 }
 
 func normalizeEchoError(err error) error {
@@ -160,12 +181,16 @@ type Engine struct {
 	// interceptors are inherited by every group created from this engine; see
 	// Router.UseInterceptor.
 	interceptors []httpx.Interceptor
-	running      atomic.Bool
-	closed       atomic.Bool
+	// wildcards is this engine's named-wildcard table; every Router it makes
+	// shares it, and no other engine can see it. See wildcardTable.
+	wildcards *wildcardTable
+	running   atomic.Bool
+	closed    atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
+	wildcards := &wildcardTable{}
 	conf.engine.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			err := next(c)
@@ -185,16 +210,22 @@ func New(opts ...Option) httpx.Engine {
 		// application did not route. The other adapters route their 404/405
 		// through it too (see ginx/hertzx installRouteFallback, fiberx
 		// routeFallback, stdx notAllowedLeaf).
+		//
+		// This is the top of the precedence list documented on NewConfig: it
+		// replaces a handler the caller set on their own echo.Echo, and the
+		// override point is after New — echo's field is a plain assignment, so
+		// setting Echo.HTTPErrorHandler once echox.New has returned wins outright
+		// and is the supported way to keep your own.
 		conf.engine.HTTPErrorHandler = func(err error, c echo.Context) {
 			if c.Response().Committed {
 				return
 			}
-			errHandler(newEchoContext(c), normalizeEchoError(err))
-			// The handler may have only set the status; commit it here, since
-			// nothing runs below and echo does not commit on its own.
-			if resp := c.Response(); !resp.Committed {
-				resp.WriteHeader(resp.Status)
-			}
+			errHandler(newEchoContext(c, wildcards), normalizeEchoError(err))
+			// The handler may have rendered nothing; commit here, since nothing
+			// runs below and echo does not commit on its own. This is the path
+			// an unmatched route takes, where Response.Status is still 200 —
+			// see commitErrorStatus.
+			commitErrorStatus(c.Response(), err)
 		}
 	}
 	conf.server.Handler = conf.engine
@@ -202,13 +233,14 @@ func New(opts ...Option) httpx.Engine {
 		engine:     conf.engine,
 		server:     conf.server,
 		errHandler: conf.errHandler,
+		wildcards:  wildcards,
 	}
 	engine.running.Store(false)
 	return engine
 }
 
 func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.engine.Use(adaptMiddlewares(middleware, e.errHandler)...)
+	e.engine.Use(adaptMiddlewares(middleware, e.errHandler, e.wildcards)...)
 }
 
 // UseInterceptor registers composed middleware on the engine, implementing
@@ -228,10 +260,11 @@ func (e *Engine) UseNative(middleware ...echo.MiddlewareFunc) {
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
+		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler, e.wildcards)...),
 		basePath:     joinPaths("/", prefix),
 		errHandler:   e.errHandler,
 		interceptors: e.interceptors,
+		wildcards:    e.wildcards,
 	}
 }
 

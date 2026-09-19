@@ -273,25 +273,53 @@ func casesRegression(t *testing.T, r runner) {
 	// "Host" entry. fasthttp keeps it in the header set, which is where the two
 	// fasthttp-backed adapters used to answer differently from the other three
 	// — and differently from each other's own Headers().
+	//
+	// All three readings of the header are asserted together on purpose. This
+	// case used to check Header and Headers only, and fiberx went a release with
+	// BindHeader still filling a header:"Host" field: one adapter contradicting
+	// itself about the same header, which is worse than the divergence the case
+	// was written for. A binder is a reading of the header set like any other.
 	t.Run("HeaderExcludesHost", func(t *testing.T) {
 		got := r.serve(t, func(router httpx.Router) {
 			router.GET("/headers/host", func(ctx httpx.Context) error {
+				var bound struct {
+					Host  string `header:"Host"`
+					Trace string `header:"X-Trace-In"`
+				}
+				if err := ctx.BindHeader(&bound); err != nil {
+					return err
+				}
 				_, inHeaders := ctx.Headers()["Host"]
 				return ctx.JSON(http.StatusOK, map[string]any{
 					"header":    ctx.Header("Host"),
 					"lowercase": ctx.Header("host"),
 					"inHeaders": inHeaders,
+					"bound":     bound.Host,
+					// An ordinary header still binds: removing Host must not
+					// cost the rest of the header set.
+					"boundTrace": bound.Trace,
+					// And reading a header after the bind still works, which an
+					// adapter that hides Host by editing the request has to
+					// leave intact.
+					"afterBind": ctx.Header("X-Trace-In"),
 				})
 			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/headers/host", nil))
+		}, func() *http.Request {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/headers/host", nil)
+			req.Header.Set("X-Trace-In", "t-1")
+			return req
+		}())
 
 		if got.Status != http.StatusOK {
 			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
 		}
 		var payload struct {
-			Header    string `json:"header"`
-			Lowercase string `json:"lowercase"`
-			InHeaders bool   `json:"inHeaders"`
+			Header     string `json:"header"`
+			Lowercase  string `json:"lowercase"`
+			InHeaders  bool   `json:"inHeaders"`
+			Bound      string `json:"bound"`
+			BoundTrace string `json:"boundTrace"`
+			AfterBind  string `json:"afterBind"`
 		}
 		if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
 			t.Fatalf("parse body: %v; body=%q", err, got.Body)
@@ -302,6 +330,16 @@ func casesRegression(t *testing.T, r runner) {
 		}
 		if payload.InHeaders {
 			t.Fatal("Headers() carries a Host entry")
+		}
+		if payload.Bound != "" {
+			t.Fatalf("BindHeader filled header:\"Host\" with %q, want unset: it must read the same header set as Header and Headers",
+				payload.Bound)
+		}
+		if payload.BoundTrace != "t-1" {
+			t.Fatalf("BindHeader filled header:\"X-Trace-In\" with %q, want %q", payload.BoundTrace, "t-1")
+		}
+		if payload.AfterBind != "t-1" {
+			t.Fatalf("Header(\"X-Trace-In\") = %q after BindHeader, want %q", payload.AfterBind, "t-1")
 		}
 	})
 

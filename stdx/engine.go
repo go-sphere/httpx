@@ -172,6 +172,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	err := ctx.Next()
 	if err != nil && !ctx.rw.written {
 		e.errHandler(ctx, err)
+		commitErrorStatus(&ctx.rw, err)
 	}
 	if !ctx.rw.written {
 		// A handler — or an error handler — that only called Status still
@@ -184,6 +185,23 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// happy path saves the defer.
 	ctx.recycle()
 	e.pool.Put(ctx)
+}
+
+// commitErrorStatus records the error's own status when the configured
+// httpx.ErrorHandler rendered nothing for it.
+//
+// Rendering nothing is a legitimate shape — a handler that only logs, and
+// leaves the body to a layer above — but nothing runs below this point, and the
+// recorded status is still the 200 every response starts at. Committing that
+// answered an unmatched path with 200, which caches and monitoring believe.
+// The error's own status is the floor; a status the error handler set for
+// itself still wins, and a response it wrote is never touched.
+func commitErrorStatus(rw *responseWriter, err error) {
+	if rw.written || rw.status != http.StatusOK {
+		return
+	}
+	_, status, _ := httpx.ClassifyError(err)
+	rw.status = int(status)
 }
 
 // notAllowedLeaf answers a path that no route matched: 404, or 405 with an

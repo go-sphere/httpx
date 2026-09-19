@@ -112,11 +112,22 @@ func TestServeHTTPResponseCommit(t *testing.T) {
 		}
 	})
 
-	t.Run("SilentErrorHandlerIs200", func(t *testing.T) {
+	// An error handler that renders nothing at all — a handler that only logs
+	// — leaves the status to the adapter, and the error's own status is what
+	// that has to be. This used to commit the 200 every response starts at, so
+	// a route that failed and a path no route matched both answered 200 with an
+	// empty body: a status caches and monitoring believe. The body stays empty,
+	// because inventing one would overwrite a decision the handler made.
+	t.Run("SilentErrorHandlerCommitsTheErrorStatus", func(t *testing.T) {
 		engine, r := newTestEngine(t, WithErrorHandler(func(ctx httpx.Context, err error) {}))
-		r.GET("/e", func(ctx httpx.Context) error { return errors.New("ignored") })
-		if rec := serve(engine, getReq("/e")); rec.Code != http.StatusOK || rec.Body.Len() != 0 {
-			t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+		r.GET("/e", func(ctx httpx.Context) error { return httpx.NewForbiddenError("ignored") })
+		if rec := serve(engine, getReq("/e")); rec.Code != http.StatusForbidden || rec.Body.Len() != 0 {
+			t.Fatalf("status = %d, body = %q, want 403 with an empty body", rec.Code, rec.Body.String())
+		}
+		// An error carrying no status of its own classifies to 500.
+		r.GET("/u", func(ctx httpx.Context) error { return errors.New("ignored") })
+		if rec := serve(engine, getReq("/u")); rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rec.Code)
 		}
 	})
 

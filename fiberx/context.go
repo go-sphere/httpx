@@ -46,6 +46,15 @@ func newFiberContext(ctx fiber.Ctx) httpx.Context {
 // exist are the two this package checks against httpx.Context. A generic
 // FromFiber[T fiber.Ctx] would make callers name a type parameter for no gain
 // and would let them instantiate a third, unverified variant.
+//
+// On a request this adapter did not route it cannot resolve the adapter's
+// named-wildcard normalization, the same degradation FromStd documents: the
+// mapping is recorded on the request by the route the adapter registered, so
+// for a route registered natively as /files/* FullPath reports "/files/*",
+// Param("filepath") and BindURI's uri:"filepath" are empty, and Params carries
+// the value under "*". Param("*") reaches the value on any route. A route this
+// adapter registered keeps resolving normally, from whatever layer FromFiber is
+// called.
 func FromFiber(ctx fiber.Ctx) httpx.Context {
 	return newFiberContext(ctx)
 }
@@ -73,7 +82,7 @@ func (c fiberContext[T]) Path() string {
 func (c fiberContext[T]) FullPath() string {
 	pattern := c.ctx.FullPath()
 	if lastCharIs('*', pattern) {
-		if route, ok := lookupWildcardRoute(pattern); ok {
+		if route := wildcardRouteOf(c.ctx); route != nil {
 			return route.pattern
 		}
 	}
@@ -101,15 +110,10 @@ func (c fiberContext[T]) Param(key string) string {
 // parameter set (Param, Params, BindURI) resolves it back through here so none
 // of them can disagree.
 func (c fiberContext[T]) wildcardParamName() string {
-	route := c.ctx.Route()
-	if route == nil {
-		return ""
+	if route := wildcardRouteOf(c.ctx); route != nil {
+		return route.param
 	}
-	wr, ok := lookupWildcardRoute(route.Path)
-	if !ok {
-		return ""
-	}
-	return wr.param
+	return ""
 }
 
 // paramValue makes a route parameter read the same as on gin, echo and hertz.
@@ -351,7 +355,37 @@ func (c fiberContext[T]) bindURI(dst any) error {
 }
 
 func (c fiberContext[T]) BindHeader(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().Header(dst))
+	return httpx.WrapBindError(c.bindHeader(dst))
+}
+
+// bindHeader runs fiber's own header binder, but over this adapter's view of
+// the request headers rather than fasthttp's — the same relationship bindURI
+// has to fiber's URI binder, and for the same reason: the two readings of one
+// header must not disagree.
+//
+// Host travels outside the header map on net/http, so the other four adapters
+// have no Host header to bind at all, and Header/Headers here already skip it
+// (see Header). fasthttp keeps it in the header set, so fiber's binder filled a
+// field tagged header:"Host" with the host — leaving BindHeader answering where
+// Header on the same context does not.
+//
+// fasthttp yields Host from the header iteration only while it is non-empty, so
+// emptying it for the duration of the bind is what takes it out of the binder's
+// input. It is restored before anything else can read it, panic included, and
+// only this goroutine is serving the request. Same binder, same tags, same
+// conversion rules; only the header set differs. A request that carries no Host
+// takes fiber's own path untouched.
+func (c fiberContext[T]) bindHeader(dst any) error {
+	header := &c.ctx.Request().Header
+	host := header.Host()
+	if len(host) == 0 {
+		return c.ctx.Bind().Header(dst)
+	}
+	// The returned slice aliases the buffer that emptying the host reuses.
+	saved := bytes.Clone(host)
+	header.SetHostBytes(nil)
+	defer header.SetHostBytes(saved)
+	return c.ctx.Bind().Header(dst)
 }
 
 // Responder (httpx.Responder)

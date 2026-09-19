@@ -27,6 +27,26 @@ type Router struct {
 	interceptors []httpx.Interceptor
 }
 
+// commitErrorStatus records the error's own status when the configured
+// ErrorHandler rendered nothing for it.
+//
+// Rendering nothing is a legitimate shape — a handler that only logs, and
+// leaves the body to a layer above — but the chain is aborted right after, and
+// the status gin has recorded is still the 200 every response starts at, so the
+// request answered 200 with an empty body. The error's own status is the floor;
+// a status the error handler set for itself still wins, and a response it wrote
+// is never touched (the caller checks Written first).
+//
+// On gin's own NoRoute/NoMethod path this changes nothing: gin records 404/405
+// before running the fallback, so the guard below already holds.
+func commitErrorStatus(gc *gin.Context, err error) {
+	if gc.Writer.Written() || gc.Writer.Status() != http.StatusOK {
+		return
+	}
+	_, status, _ := httpx.ClassifyError(err)
+	gc.Status(int(status))
+}
+
 func (r *Router) Use(m ...httpx.Middleware) {
 	r.group.Use(adaptMiddlewares(m, r.errHandler)...)
 }
@@ -174,6 +194,7 @@ func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 			// by a second body.
 			if !gc.IsAborted() && !gc.Writer.Written() {
 				r.errHandler(gc, err)
+				commitErrorStatus(gc, err)
 			}
 			if !gc.IsAborted() {
 				gc.Abort()

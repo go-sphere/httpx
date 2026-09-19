@@ -193,6 +193,10 @@ func routeFallback(errHandler httpx.ErrorHandler) fiber.Handler {
 			return err
 		}
 		errHandler(newFiberContext(ctx), normalizeFiberError(err))
+		// An error handler that rendered nothing still owes the error's status:
+		// fiber would otherwise send the 200 it starts every response with, so
+		// a path no route matched would answer 200. See commitErrorStatus.
+		commitErrorStatus(ctx, err)
 		return nil
 	}
 }
@@ -263,7 +267,11 @@ func (e *Engine) Start() error {
 // still in flight: fasthttp.Server has no Close, and fiber hands out no listener
 // to close behind its back. So a context that expired is reported as success
 // (the listener is down, which is the part a forced stop is asked for) rather
-// than pretending the connections were cut.
+// than pretending the connections were cut — and httpxtest.Caps declares that
+// honestly with ForcedStopCutsConnections = false.
+//
+// A shutdown that genuinely failed is a different answer and keeps its error;
+// see classifyShutdownError.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
 	if ctx == nil {
@@ -273,8 +281,35 @@ func (e *Engine) Stop(ctx context.Context) error {
 	// fall with it. Storing it only on a nil error left IsRunning reporting true
 	// for the rest of the process after a stop that timed out.
 	defer e.running.Store(false)
-	err := e.engine.ShutdownWithContext(ctx)
-	if err != nil && ctx.Err() != nil {
+	return classifyShutdownError(ctx, e.engine.ShutdownWithContext(ctx))
+}
+
+// classifyShutdownError decides which of fasthttp's two failure modes the caller
+// is told about.
+//
+// ShutdownWithContext returns one of exactly two things when it fails: the
+// caller's own context error, because the connections in flight outlived the
+// deadline, or whatever closing the listeners produced. The first is the
+// degraded stop above — the listeners are already closed by then, so the server
+// is down and success is the honest report, the same one httpx.Close gives for
+// the same shape. The second means a listener did not close and the socket may
+// still be bound, which is the one thing Stop must never report as a successful
+// stop, so it is returned unchanged.
+//
+// Testing ctx.Err() alone cannot separate them, which is what this replaces:
+// fasthttp closes the listeners and collects their errors *before* it ever
+// consults the context, so a listener that failed to close while the caller's
+// deadline happened to be spent came back as nil.
+//
+// One case stays out of reach: on the timed-out path fasthttp returns ctx.Err()
+// and drops the listener error it had collected, so a close failure that
+// coincides with an expired deadline cannot be surfaced by anyone. Reporting
+// success there is the same degraded answer the deadline alone earns.
+func classifyShutdownError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		return nil
 	}
 	return err

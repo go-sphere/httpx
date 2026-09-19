@@ -85,6 +85,58 @@ func casesRouteFallback(t *testing.T, r runner) {
 		}
 	})
 
+	// An error handler is allowed to render nothing — logging the failure and
+	// leaving the body to a layer above is a legitimate shape — but the adapter
+	// still owes a status, because nothing runs below it. Three adapters
+	// committed the 200 a response starts at, so a path no route matched
+	// answered 200 with an empty body; caches and monitoring believe that. The
+	// error's own status is the floor.
+	//
+	// The body is deliberately not asserted, and the adapters do not agree on
+	// it: gin and hertz write their framework's plain-text default ("404 page
+	// not found", "Not Found") when a fallback handler leaves the status they
+	// recorded untouched, and neither exposes a way to suppress that without
+	// writing a body of our own — which would overwrite a decision the error
+	// handler made. echox, fiberx and stdx answer with an empty body. Status is
+	// the part that must be uniform, and it is.
+	t.Run("SilentErrorHandlerCommitsTheErrorStatus", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, target string
+			wantStatus   int
+		}{
+			{"unmatched path", "/nope", http.StatusNotFound},
+			{"wrong method", "/items/1", http.StatusMethodNotAllowed},
+		} {
+			got := r.serveWith(t, Options{ErrorHandler: func(ctx httpx.Context, err error) {
+				// Reads the error and renders nothing, the way a logging-only
+				// handler does.
+				_, _, _ = httpx.ClassifyError(err)
+			}}, register, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.target, nil))
+
+			if got.Status != tc.wantStatus {
+				t.Fatalf("%s: status = %d, want %d: an error handler that rendered nothing must not leave the response at 200; body=%q",
+					tc.name, got.Status, tc.wantStatus, got.Body)
+			}
+		}
+	})
+
+	// The same rule one layer in: a handler that only sets a status still owns
+	// the response, and a status it chose is never replaced by the error's.
+	t.Run("StatusOnlyErrorHandlerKeepsItsStatus", func(t *testing.T) {
+		got := r.serveWith(t, Options{ErrorHandler: func(ctx httpx.Context, err error) {
+			ctx.SetHeader("X-Handled", "1")
+			ctx.Status(http.StatusTeapot)
+		}}, register, httptest.NewRequest(http.MethodGet, "http://example.com/nope", nil))
+
+		if got.Status != http.StatusTeapot {
+			t.Fatalf("status = %d, want 418: a status the error handler set must win over the error's; body=%q",
+				got.Status, got.Body)
+		}
+		if got.Headers.Get("X-Handled") != "1" {
+			t.Fatalf("X-Handled = %q, want %q", got.Headers.Get("X-Handled"), "1")
+		}
+	})
+
 	// Engine-wide middleware is the only layer outside every group, so it is
 	// what an access log or a recovery layer is registered on. It has to keep
 	// running for a request no route matched, or those layers go blind exactly

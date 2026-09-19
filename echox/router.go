@@ -29,15 +29,35 @@ type wildcardRoute struct {
 	pattern string
 }
 
-// wildcardNames maps a registered route pattern (with the anonymous "*"
+// wildcardTable maps a normalized route pattern (with the anonymous "*"
 // wildcard) to what it was written as.
-var wildcardNames sync.Map // route pattern -> wildcardRoute
+//
+// One table per engine, never one per process. Normalization is lossy — every
+// named wildcard in a scope collapses onto the same pattern, so /files/*filepath
+// and /files/*path both become /files/* — and a process-wide table would let the
+// engine that registered last own the entry for every engine that shares the
+// normalized form. Running several engines in one process is ordinary (a public
+// and an internal listener, say), and the symptom is silent: FullPath reports
+// another engine's pattern, which is what downstream auth and rate limiting
+// match on. The table is created by New and handed to every Router made from it,
+// so a Group shares its engine's table and two engines share nothing.
+type wildcardTable struct {
+	routes sync.Map // normalized pattern -> wildcardRoute
+}
 
-// lookupWildcardRoute resolves a matched route pattern back to its registered
-// form. The caller checks the pattern ends in "*" first, so a route without a
-// wildcard never pays the map lookup.
-func lookupWildcardRoute(pattern string) (wildcardRoute, bool) {
-	v, ok := wildcardNames.Load(pattern)
+func (t *wildcardTable) store(pattern string, route wildcardRoute) {
+	t.routes.Store(pattern, route)
+}
+
+// lookup resolves a matched route pattern back to its registered form. The
+// caller checks the pattern ends in "*" first, so a route without a wildcard
+// never pays the map lookup. A nil table (a context built by FromEcho, which
+// has no engine behind it) resolves nothing.
+func (t *wildcardTable) lookup(pattern string) (wildcardRoute, bool) {
+	if t == nil {
+		return wildcardRoute{}, false
+	}
+	v, ok := t.routes.Load(pattern)
 	if !ok {
 		return wildcardRoute{}, false
 	}
@@ -50,6 +70,8 @@ type Router struct {
 	basePath     string
 	errHandler   httpx.ErrorHandler
 	interceptors []httpx.Interceptor
+	// wildcards is the engine's table, shared with every Group made from it.
+	wildcards *wildcardTable
 }
 
 // UseInterceptor registers composed middleware, implementing
@@ -71,7 +93,7 @@ func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
 }
 
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(adaptMiddlewares(m, r.errHandler)...)
+	r.group.Use(adaptMiddlewares(m, r.errHandler, r.wildcards)...)
 }
 
 // UseNative registers native echo middleware on this group. Prefer it over
@@ -96,10 +118,11 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
-		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),
+		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errHandler, r.wildcards)...),
 		basePath:     joinPaths(r.basePath, prefix),
 		errHandler:   r.errHandler,
 		interceptors: r.interceptors,
+		wildcards:    r.wildcards,
 	}
 }
 
@@ -116,7 +139,7 @@ func (r *Router) normalizeWildcardPath(path string) string {
 		return path
 	}
 	fixed, _ := httpx.FixWildcardPathIfNeed(r, path)
-	wildcardNames.Store(joinPaths(r.basePath, fixed), wildcardRoute{
+	r.wildcards.store(joinPaths(r.basePath, fixed), wildcardRoute{
 		param:   orig,
 		pattern: joinPaths(r.basePath, path),
 	})
@@ -205,7 +228,7 @@ func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	// Composed once per route, never per request.
 	h = httpx.ComposeInterceptors(h, r.interceptors)
 	return func(ec echo.Context) error {
-		ctx := newEchoContext(ec)
+		ctx := newEchoContext(ec, r.wildcards)
 		if err := h(ctx); err != nil {
 			// Without a framework-neutral handler the error goes to echo's own
 			// path. So does an error after a committed response: nothing may
@@ -214,14 +237,39 @@ func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 				return err
 			}
 			r.errHandler(ctx, err)
+			commitErrorStatus(ec.Response(), err)
+			return nil
 		}
-		// A handler — or an error handler — that only set the status still
-		// owes a response; echo itself would let it fall out as 200.
+		// A handler that only set the status still owes a response; echo itself
+		// would let it fall out as 200.
 		if resp := ec.Response(); !resp.Committed {
 			resp.WriteHeader(resp.Status)
 		}
 		return nil
 	}
+}
+
+// commitErrorStatus commits the response for an error the configured
+// httpx.ErrorHandler rendered nothing for.
+//
+// Rendering nothing is a legitimate shape — a handler that only logs, and
+// leaves the body to a layer above — but nothing runs below this point, and
+// echo's Response.Status is still its initial 200 for a request that reached no
+// handler. Committing that answered an unmatched path with 200, which caches
+// and monitoring believe. The error's own status is the floor; a status the
+// error handler set for itself still wins, and a response it committed is never
+// touched.
+func commitErrorStatus(resp *echo.Response, err error) {
+	if resp.Committed {
+		return
+	}
+	if resp.Status == http.StatusOK {
+		// Classify the normalized error so echo's own 404/405 keeps its status
+		// instead of being reported as an unclassified 500.
+		_, status, _ := httpx.ClassifyError(normalizeEchoError(err))
+		resp.Status = int(status)
+	}
+	resp.WriteHeader(resp.Status)
 }
 
 func joinPaths(absolutePath, relativePath string) string {

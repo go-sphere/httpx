@@ -86,10 +86,12 @@ func (c *stdContext) reset(w http.ResponseWriter, req *http.Request) {
 // only shape net/http has.
 //
 // The returned context is standalone: it belongs to no Engine and no route,
-// so FullPath and Param are empty, Next is a no-op returning nil, and
-// ClientIP falls back to the peer address because there is no configured
-// trusted-proxy policy to consult. It is not pooled — unlike the contexts the
-// Engine hands to handlers — so it costs one allocation per call.
+// so FullPath and Param are empty, Params is nil, Next is a no-op returning
+// nil, ClientIP falls back to the peer address because there is no configured
+// trusted-proxy policy to consult, and the native escape hatch's Engine is nil
+// (see Native, which lists what that does and does not affect). It is not
+// pooled — unlike the contexts the Engine hands to handlers — so it costs one
+// allocation per call.
 func FromStd(w http.ResponseWriter, req *http.Request) httpx.Context {
 	ctx := &stdContext{}
 	ctx.native.c = ctx
@@ -117,6 +119,13 @@ func (c *stdContext) recycle() {
 // pair this adapter runs on. Replacing the request (or the writer) here is
 // visible to the rest of the chain, which is what lets AdaptStdMiddleware
 // forward request mutations and writer wrapping.
+//
+// On a context built by FromStd every method here works on the pair that went
+// in, with one exception: Engine returns nil, because such a context belongs to
+// no Engine. That is the whole of the degradation on this type —
+// Request/SetRequest/ResponseWriter/SetWriter/Written/MarkWritten/Unwrap read and
+// write that pair and consult nothing else. Pinned by
+// TestFromStdNativeDegradation.
 type Native struct {
 	c *stdContext
 }
@@ -129,7 +138,14 @@ func (n *Native) SetWriter(w http.ResponseWriter) {
 	// A wrapping writer may own a different header map.
 	n.c.rw.header = nil
 }
-func (n *Native) Engine() *Engine                              { return n.c.engine }
+
+// Engine returns the Engine serving this request, or nil on a context built by
+// FromStd. Callers must check it: a nil *Engine has no usable methods. Returning
+// nil is deliberate — a stand-in engine would answer for a route table and a
+// trusted-proxy policy that do not exist, which is a worse failure than one the
+// caller can see.
+func (n *Native) Engine() *Engine { return n.c.engine }
+
 func (n *Native) Written() bool                                { return n.c.rw.written }
 func (n *Native) MarkWritten(status int)                       { n.c.rw.markWritten(status) }
 func (n *Native) Unwrap() (http.ResponseWriter, *http.Request) { return &n.c.rw, n.c.req }

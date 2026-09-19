@@ -127,6 +127,77 @@ func TestFromFiber(t *testing.T) {
 	}
 }
 
+// The named-wildcard mapping is recorded on the request by the route this
+// adapter registered, so FromFiber resolves it on a route the adapter owns and
+// degrades — without panicking — on one registered natively, the way FromStd
+// degrades for having no Engine.
+func TestFromFiberNamedWildcardScope(t *testing.T) {
+	app := New()
+	engine, ok := app.(*Engine)
+	if !ok {
+		t.Fatalf("New returned %T, want *Engine", app)
+	}
+	// fiber pools its contexts, so every reading is taken inside the handler
+	// rather than by holding the context past the request.
+	type reading struct{ fullPath, named, anonymous string }
+	var adapterRoute, nativeRoute reading
+	read := func(ctx httpx.Context) reading {
+		return reading{ctx.FullPath(), ctx.Param("filepath"), ctx.Param("*")}
+	}
+
+	// A route the adapter registered: the mapping is on the request, so a
+	// context built from the native one mid-chain resolves the name.
+	app.Group("").GET("/files/*filepath", func(ctx httpx.Context) error {
+		// app.Test serves on its own goroutine, so a failure is recorded here
+		// and asserted after the request.
+		fc, ok := httpx.AsNativeContext[fiber.Ctx](ctx)
+		if !ok {
+			t.Error("native fiber context unavailable")
+			return ctx.NoContent(http.StatusNoContent)
+		}
+		adapterRoute = read(FromFiber(fc))
+		return ctx.NoContent(http.StatusNoContent)
+	})
+	// A route registered straight on fiber, which never went through the
+	// adapter's normalization.
+	engine.engine.Get("/native/*", func(c fiber.Ctx) error {
+		nativeRoute = read(FromFiber(c))
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	requester, ok := httpx.AsTestRequester(app)
+	if !ok {
+		t.Fatal("engine is not a TestRequester")
+	}
+	for _, target := range []string{"/files/a/b.txt", "/native/a/b.txt"} {
+		resp, err := requester.Do(httptest.NewRequest(http.MethodGet, target, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("GET %s: status = %d, want 204", target, resp.StatusCode)
+		}
+	}
+
+	if got := adapterRoute.fullPath; got != "/files/*filepath" {
+		t.Fatalf("FromFiber FullPath on an adapter route = %q, want %q", got, "/files/*filepath")
+	}
+	if got := adapterRoute.named; got != "a/b.txt" {
+		t.Fatalf("FromFiber Param(filepath) on an adapter route = %q, want %q", got, "a/b.txt")
+	}
+	if got := nativeRoute.fullPath; got != "/native/*" {
+		t.Fatalf("FromFiber FullPath on a native route = %q, want fiber's own %q", got, "/native/*")
+	}
+	if got := nativeRoute.named; got != "" {
+		t.Fatalf("FromFiber Param(filepath) on a native route = %q, want empty", got)
+	}
+	// The value is still reachable under the name fiber knows.
+	if got := nativeRoute.anonymous; got != "a/b.txt" {
+		t.Fatalf("FromFiber Param(*) on a native route = %q, want %q", got, "a/b.txt")
+	}
+}
+
 // DefaultErrorHandler is fiber's native shape: the naming rule says it is the
 // value the adapter installs on the framework, so it must stay assignable to
 // the fiber.Config field NewConfig puts it in.
