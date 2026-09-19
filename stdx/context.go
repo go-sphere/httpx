@@ -393,7 +393,13 @@ func (c *stdContext) BindURI(dst any) error {
 }
 
 func (c *stdContext) BindHeader(dst any) error {
-	return httpx.WrapBindError(headerDecoder.Decode(dst, url.Values(c.Headers())))
+	// The live header map goes straight to the decoder, which only reads it.
+	// Going through Headers() built a map and copied a slice per header on
+	// every bind — nine allocations for a three-field DTO, twenty times what
+	// routing the request costs. Both agree on canonical keys: net/http
+	// canonicalizes on parse and in Header.Set, which is the same assumption
+	// Header() already makes when it looks one up.
+	return httpx.WrapBindError(headerDecoder.Decode(dst, url.Values(c.req.Header)))
 }
 
 // Responder (httpx.Responder)

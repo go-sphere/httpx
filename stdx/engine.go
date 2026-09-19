@@ -299,18 +299,29 @@ func (e *Engine) clientIP(req *http.Request) string {
 	if len(e.trustedProxies) == 0 || !ipInAny(remote, e.trustedProxies) {
 		return remote
 	}
-	hops := strings.Split(req.Header.Get("X-Forwarded-For"), ",")
-	for _, raw := range reverse(hops) {
+	// The chain is walked right to left in the header string itself. Splitting
+	// it and reversing the result allocated twice per call, and ClientIP is on
+	// the path of every access log and rate limiter.
+	xff := req.Header.Get("X-Forwarded-For")
+	for rest := xff; rest != ""; {
+		raw := rest
+		if i := strings.LastIndexByte(rest, ','); i >= 0 {
+			raw, rest = rest[i+1:], rest[:i]
+		} else {
+			rest = ""
+		}
 		ip := strings.TrimSpace(raw)
 		if ip == "" {
 			continue
 		}
-		if parsed := net.ParseIP(ip); parsed == nil {
+		// Parsed once and handed to the range check, which used to re-parse it.
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
 			// A malformed entry ends the chain: everything to its left is
 			// unverifiable.
 			return remote
 		}
-		if ipInAny(ip, e.trustedProxies) {
+		if netsContain(e.trustedProxies, parsed) {
 			continue
 		}
 		return ip
@@ -319,7 +330,11 @@ func (e *Engine) clientIP(req *http.Request) string {
 	// leftmost entry is that client. Everything non-blank on the way here parsed
 	// as an IP; the one chain with nothing verifiable left is the one whose left
 	// edge is blank, and the peer still wins there.
-	if first := strings.TrimSpace(hops[0]); first != "" {
+	first := xff
+	if i := strings.IndexByte(first, ','); i >= 0 {
+		first = first[:i]
+	}
+	if first = strings.TrimSpace(first); first != "" {
 		return first
 	}
 	return remote
@@ -338,18 +353,14 @@ func ipInAny(ip string, nets []*net.IPNet) bool {
 	if parsed == nil {
 		return false
 	}
+	return netsContain(nets, parsed)
+}
+
+func netsContain(nets []*net.IPNet, ip net.IP) bool {
 	for _, n := range nets {
-		if n.Contains(parsed) {
+		if n.Contains(ip) {
 			return true
 		}
 	}
 	return false
-}
-
-func reverse(list []string) []string {
-	out := make([]string, len(list))
-	for i, v := range list {
-		out[len(list)-1-i] = v
-	}
-	return out
 }
