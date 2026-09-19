@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-playground/validator/v10 v10.30.4
-	github.com/go-sphere/httpx v0.0.4
+	github.com/go-sphere/httpx v0.0.5
 )
 
 require (

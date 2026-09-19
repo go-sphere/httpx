@@ -2,8 +2,8 @@ github.com/andybalholm/brotli v1.2.3 h1:8H1qwOkl2LPfjf3YezB90JnCliZb6SInJ/OJkEbA
 github.com/andybalholm/brotli v1.2.3/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/fxamacker/cbor/v2 v2.9.3 h1:oQBnFATpNdY8gJHTndDDv5Xl4QqNaz51G5LLEPhng3Q=
 github.com/fxamacker/cbor/v2 v2.9.3/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
-github.com/go-sphere/httpx v0.0.4 h1:mKYhslvujcAFkJo2kvLf1+ukCn1dznGqe3+h6T+v+P4=
-github.com/go-sphere/httpx v0.0.4/go.mod h1:Ax1OSjws2m1bP44KFObMzPrroThH+a/8N6ACU5a2rYg=
+github.com/go-sphere/httpx v0.0.5 h1:HFm1LZpSc1uU9PliahLWHzDjuTz29R77zIbi1Bq3P1U=
+github.com/go-sphere/httpx v0.0.5/go.mod h1:Ax1OSjws2m1bP44KFObMzPrroThH+a/8N6ACU5a2rYg=
 github.com/gofiber/fiber/v3 v3.5.0 h1:dk7TOUH6DXJGtOLsN2XEG+0ZML7cznzHILTVozbNEK8=
 github.com/gofiber/fiber/v3 v3.5.0/go.mod h1:GOVDTW+gjJvfe0iJyVujbQ1Lnx+JUjFySJRI/9/xX/w=
 github.com/gofiber/schema v1.8.5 h1:f5J8jjPH5Q6ZJIb8oJxzRh+K8TxPx9Zm478Xkjj0dMg=

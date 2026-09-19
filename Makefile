@@ -146,7 +146,10 @@ tag:
 	git push origin --tags
 
 # Publication is deliberately staged: root tag, dependency preparation,
-# commit, consumer checks, and only then adapter tags.
+# commit, consumer checks, and only then adapter tags. Dependency preparation
+# bypasses GOPROXY and the module cache, reading the just-pushed root tag
+# straight from GitHub; see the head of scripts/prepare-release.sh for why, and
+# RELEASE_GOPROXY to override it.
 prepare-release:
 	@test -n "$(TAG)" || { echo "TAG is required"; exit 1; }
 	GO="$(GO)" bash scripts/prepare-release.sh "$(TAG)"
