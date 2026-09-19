@@ -3,7 +3,6 @@ package hertzx
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -20,9 +19,8 @@ import (
 var _ httpx.Context = (*hertzContext)(nil)
 
 type hertzContext struct {
-	ctx        *app.RequestContext
-	baseCtx    context.Context
-	nextCalled bool
+	ctx     *app.RequestContext
+	baseCtx context.Context
 }
 
 func newHertzContext(ctx context.Context, rc *app.RequestContext) *hertzContext {
@@ -325,7 +323,7 @@ func (c *hertzContext) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context (context.Context accessor + Next)
+// Context (context.Context accessor)
 
 func (c *hertzContext) Context() context.Context {
 	return c.baseCtx
@@ -333,36 +331,6 @@ func (c *hertzContext) Context() context.Context {
 
 func (c *hertzContext) SetContext(ctx context.Context) {
 	c.baseCtx = ctx
-}
-
-func (c *hertzContext) Next() error {
-	c.nextCalled = true
-	before := len(c.ctx.Errors)
-	c.ctx.Next(c.baseCtx)
-
-	if len(c.ctx.Errors) <= before {
-		return nil
-	}
-
-	errList := make([]error, 0, len(c.ctx.Errors)-before)
-	for _, err := range c.ctx.Errors[before:] {
-		if err != nil {
-			errList = append(errList, err.Err)
-		}
-	}
-
-	return joinErrors(errList)
-}
-
-func joinErrors(errs []error) error {
-	switch len(errs) {
-	case 0:
-		return nil
-	case 1:
-		return errs[0]
-	default:
-		return errors.Join(errs...)
-	}
 }
 
 func (c *hertzContext) StatusCode() int {

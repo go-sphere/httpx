@@ -10,22 +10,20 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// These tests cover the unified option surface: UseNative takes fiber.Handler,
-// and FromFiber builds an httpx.Context from a native fiber.Ctx.
-
-// Unlike gin/echo/hertz, a native layer on fiber always sits outside the
-// middleware registered with Use, because Use composes into the route while
-// UseNative occupies a real fiber stack entry ahead of it. Pinning the order
-// here keeps that documented deviation honest.
+// A native layer on fiber always sits outside the middleware registered with
+// Use, because Use composes into the route while UseNative occupies a real fiber
+// stack entry ahead of it — including a layer registered after it.
 func TestUseNativeRunsOutsideUse(t *testing.T) {
 	var marks []string
 	mark := func(s string) { marks = append(marks, s) }
 	middleware := func(name string) httpx.Middleware {
-		return func(ctx httpx.Context) error {
-			mark(name + "-pre")
-			err := ctx.Next()
-			mark(name + "-post")
-			return err
+		return func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				mark(name + "-pre")
+				err := next(ctx)
+				mark(name + "-post")
+				return err
+			}
 		}
 	}
 
@@ -92,8 +90,8 @@ func TestEngineUseNative(t *testing.T) {
 	}
 }
 
-// FromFiber takes the fiber.Ctx interface and hides the generic context type.
-// Both instantiations must come back as a working httpx.Context.
+// FromFiber takes the fiber.Ctx interface and hides the generic context type;
+// both instantiations must come back as a working httpx.Context.
 func TestFromFiber(t *testing.T) {
 	app := New()
 	engine, ok := app.(*Engine)
@@ -128,9 +126,9 @@ func TestFromFiber(t *testing.T) {
 }
 
 // The named-wildcard mapping is recorded on the request by the route this
-// adapter registered, so FromFiber resolves it on a route the adapter owns and
-// degrades — without panicking — on one registered natively, the way FromStd
-// degrades for having no Engine.
+// adapter registered, so FromFiber resolves it on an adapter route and degrades
+// — without panicking — on one registered natively, the way FromStd degrades for
+// having no Engine.
 func TestFromFiberNamedWildcardScope(t *testing.T) {
 	app := New()
 	engine, ok := app.(*Engine)
@@ -158,8 +156,7 @@ func TestFromFiberNamedWildcardScope(t *testing.T) {
 		adapterRoute = read(FromFiber(fc))
 		return ctx.NoContent(http.StatusNoContent)
 	})
-	// A route registered straight on fiber, which never went through the
-	// adapter's normalization.
+	// A route registered straight on fiber, bypassing the adapter's normalization.
 	engine.engine.Get("/native/*", func(c fiber.Ctx) error {
 		nativeRoute = read(FromFiber(c))
 		return c.SendStatus(http.StatusNoContent)
@@ -200,7 +197,7 @@ func TestFromFiberNamedWildcardScope(t *testing.T) {
 
 // DefaultErrorHandler is fiber's native shape: the naming rule says it is the
 // value the adapter installs on the framework, so it must stay assignable to
-// the fiber.Config field NewConfig puts it in.
+// fiber.Config.ErrorHandler, where NewConfig puts it.
 func TestDefaultErrorHandlerIsNativeShape(t *testing.T) {
 	cfg := fiber.Config{ErrorHandler: DefaultErrorHandler}
 	if cfg.ErrorHandler == nil {

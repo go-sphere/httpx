@@ -8,8 +8,8 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// discardWriter is the cheapest possible ResponseWriter: the point of these
-// benchmarks is the adapter's own per-request work, not response encoding.
+// discardWriter is the cheapest possible ResponseWriter: these benchmarks
+// measure the adapter's own per-request work, not response encoding.
 type discardWriter struct{ header http.Header }
 
 func (w *discardWriter) Header() http.Header         { return w.header }
@@ -28,7 +28,7 @@ func benchEngine(routes ...string) (http.Handler, httpx.Router) {
 }
 
 // BenchmarkServeStatic is the Empty scenario: routing plus the per-request
-// context, with no handler work at all.
+// context, no handler work.
 func BenchmarkServeStatic(b *testing.B) {
 	handler, _ := benchEngine("/scenario")
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/scenario", nil)
@@ -40,8 +40,8 @@ func BenchmarkServeStatic(b *testing.B) {
 	}
 }
 
-// BenchmarkServeParam adds two parameters, which is the shape a generated
-// handler is routed with.
+// BenchmarkServeParam adds two parameters, the shape a generated handler is
+// routed with.
 func BenchmarkServeParam(b *testing.B) {
 	handler, _ := benchEngine("/users/:id/posts/:post")
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/users/42/posts/7", nil)

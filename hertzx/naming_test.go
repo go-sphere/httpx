@@ -12,20 +12,19 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// These tests cover the unified option surface: WithErrorHandler takes
-// httpx.ErrorHandler on every adapter, WithNativeErrorHandler keeps hertz's
-// own shape, UseNative takes app.HandlerFunc, and FromHertz is the escape
-// hatch the httpx-typed handler is built on.
-
-func TestUseNativeKeepsPosition(t *testing.T) {
+// Native hertz middleware keeps its own handler slot, so it wraps the whole
+// composed chain — including a layer registered after it.
+func TestUseNativeWrapsComposedChain(t *testing.T) {
 	var marks []string
 	mark := func(s string) { marks = append(marks, s) }
 	middleware := func(name string) httpx.Middleware {
-		return func(ctx httpx.Context) error {
-			mark(name + "-pre")
-			err := ctx.Next()
-			mark(name + "-post")
-			return err
+		return func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				mark(name + "-pre")
+				err := next(ctx)
+				mark(name + "-post")
+				return err
+			}
 		}
 	}
 
@@ -53,7 +52,7 @@ func TestUseNativeKeepsPosition(t *testing.T) {
 	rc.Request.SetRequestURI("http://example.com/native")
 	h.ServeHTTP(t.Context(), rc)
 
-	want := "a-pre,native-pre,b-pre,handler,b-post,native-post,a-post"
+	want := "native-pre,a-pre,b-pre,handler,b-post,a-post,native-post"
 	if got := strings.Join(marks, ","); got != want {
 		t.Fatalf("order mismatch\n got: %s\nwant: %s", got, want)
 	}
@@ -84,8 +83,8 @@ func TestEngineUseNative(t *testing.T) {
 	}
 }
 
-// WithNativeErrorHandler keeps hertz's own handler shape, and the error
-// handler still aborts the chain the way the httpx-typed one does.
+// WithNativeErrorHandler keeps hertz's own handler shape; it aborts the chain
+// the way the httpx-typed handler does.
 func TestWithNativeErrorHandler(t *testing.T) {
 	// DefaultErrorHandler is hertz's native shape, so it goes through the
 	// native option — that assignability is what the naming rule promises.

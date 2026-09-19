@@ -6,25 +6,22 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
 )
 
-var (
-	_ httpx.Router           = (*Router)(nil)
-	_ httpx.InterceptorScope = (*Router)(nil)
-)
+var _ httpx.Router = (*Router)(nil)
 
 type Router struct {
 	group      *gin.RouterGroup
 	errHandler ErrorHandler
-	// interceptors are composed into each route at registration instead of
-	// occupying a gin handler slot, so they run inside everything registered
-	// through Use/UseNative.
-	interceptors []httpx.Interceptor
+	// chain is composed into each route at registration instead of occupying a
+	// gin handler slot, so httpx middleware runs inside everything registered
+	// through UseNative. It references the engine's chain rather than copying
+	// it; see httpx.MiddlewareChain.
+	chain *httpx.MiddlewareChain
 }
 
 // commitErrorStatus records the error's own status when the configured
@@ -35,10 +32,9 @@ type Router struct {
 // the status gin has recorded is still the 200 every response starts at, so the
 // request answered 200 with an empty body. The error's own status is the floor;
 // a status the error handler set for itself still wins, and a response it wrote
-// is never touched (the caller checks Written first).
-//
-// On gin's own NoRoute/NoMethod path this changes nothing: gin records 404/405
-// before running the fallback, so the guard below already holds.
+// is never touched (the caller checks Written first). On gin's own
+// NoRoute/NoMethod path nothing changes, because gin records 404/405 before
+// running the fallback and the guard below already holds.
 func commitErrorStatus(gc *gin.Context, err error) {
 	if gc.Writer.Written() || gc.Writer.Status() != http.StatusOK {
 		return
@@ -47,33 +43,21 @@ func commitErrorStatus(gc *gin.Context, err error) {
 	gc.Status(int(status))
 }
 
+// Use registers httpx middleware on this scope, implementing
+// httpx.MiddlewareScope. The chain is composed into every route registered
+// afterwards, so it needs no gin handler slot and no per-request object; see
+// httpx.Middleware and httpx.MiddlewareChain for the ordering rules.
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(adaptMiddlewares(m, r.errHandler)...)
+	r.chain.Use(m...)
 }
 
-// UseNative registers native gin middleware on this group. Prefer it over
-// wrapping a gin.HandlerFunc with AdaptGinMiddleware: the handler runs with no
-// adapter in between.
+// UseNative registers native gin middleware on this group, the only way to
+// mount a gin.HandlerFunc: it gets its own gin handler slot, which an
+// httpx.Middleware wrapper could not reproduce — all httpx layers share the
+// route's single slot, so the wrapped handler's c.Next() would advance gin past
+// that slot rather than into the httpx chain.
 func (r *Router) UseNative(handlers ...gin.HandlerFunc) {
 	r.group.Use(handlers...)
-}
-
-// UseInterceptor registers composed middleware, implementing
-// httpx.InterceptorScope.
-//
-// The chain is composed into every route registered afterwards, so it needs no
-// gin handler slot and no per-request object. The ordering rule that follows
-// from that: interceptors always run inside the middleware registered with Use
-// or UseNative on this scope and its parents, whatever order the registration
-// calls were made in. Among themselves, interceptors run in registration
-// order, parent scopes first.
-func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
-	if len(m) == 0 {
-		return
-	}
-	// A fresh slice keeps routes registered earlier bound to the chain they
-	// were registered with, the same rule gin applies to Use.
-	r.interceptors = append(slices.Clone(r.interceptors), m...)
 }
 
 func (r *Router) BasePath() string {
@@ -90,10 +74,12 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	sub := r.chain.Sub()
+	sub.Use(m...)
 	return &Router{
-		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errHandler)...),
-		errHandler:   r.errHandler,
-		interceptors: r.interceptors,
+		group:      r.group.Group(prefix),
+		errHandler: r.errHandler,
+		chain:      sub,
 	}
 }
 
@@ -103,7 +89,7 @@ func (r *Router) Handle(method, path string, h httpx.Handler) {
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
-// It goes through Handle so interceptors registered on this scope also wrap it.
+// It goes through Handle so middleware registered on this scope also wraps it.
 func (r *Router) HandleStd(method, path string, h http.Handler) {
 	r.Handle(method, path, stdLeaf(h))
 }
@@ -126,7 +112,7 @@ func (r *Router) Static(prefix, root string) {
 }
 
 // StaticFS serves fsys through httpx.StaticFileHandler and registers it as an
-// ordinary route, so interceptors on this scope wrap static requests too.
+// ordinary route, so middleware on this scope wraps static requests too.
 func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 	pattern := httpx.StaticRoutePattern(prefix)
 	leaf := stdLeaf(httpx.StaticFileHandler(path.Join(r.group.BasePath(), prefix), fsys))
@@ -135,7 +121,7 @@ func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 }
 
 // stdLeaf serves a plain net/http handler through gin's writer and request, so
-// a std handler can sit at the end of a composed interceptor chain.
+// a std handler can sit at the end of a composed middleware chain.
 func stdLeaf(h http.Handler) httpx.Handler {
 	return func(ctx httpx.Context) error {
 		gc, ok := httpx.AsNativeContext[*gin.Context](ctx)
@@ -184,7 +170,7 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 
 func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 	// Composed once per route, never per request.
-	h = httpx.ComposeInterceptors(h, r.interceptors)
+	h = r.chain.Compose(h)
 	return func(gc *gin.Context) {
 		ctx := newGinContext(gc)
 		if err := h(ctx); err != nil {

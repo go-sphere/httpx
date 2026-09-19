@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"slices"
 	"strings"
 	"sync"
 
@@ -14,10 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-var (
-	_ httpx.Router           = (*Router)(nil)
-	_ httpx.InterceptorScope = (*Router)(nil)
-)
+var _ httpx.Router = (*Router)(nil)
 
 // wildcardRoute remembers what a route looked like before
 // FixWildcardPathIfNeed rewrote its named wildcard to the anonymous form echo
@@ -32,15 +28,13 @@ type wildcardRoute struct {
 // wildcardTable maps a normalized route pattern (with the anonymous "*"
 // wildcard) to what it was written as.
 //
-// One table per engine, never one per process. Normalization is lossy — every
-// named wildcard in a scope collapses onto the same pattern, so /files/*filepath
-// and /files/*path both become /files/* — and a process-wide table would let the
-// engine that registered last own the entry for every engine that shares the
-// normalized form. Running several engines in one process is ordinary (a public
-// and an internal listener, say), and the symptom is silent: FullPath reports
-// another engine's pattern, which is what downstream auth and rate limiting
-// match on. The table is created by New and handed to every Router made from it,
-// so a Group shares its engine's table and two engines share nothing.
+// One table per engine, never one per process. Normalization is lossy — both
+// /files/*filepath and /files/*path become /files/* — so a process-wide table
+// would let the engine that registered last own the entry for every engine
+// sharing the normalized form, and FullPath would silently report another
+// engine's pattern, which is what downstream auth and rate limiting match on.
+// New creates the table and hands it to every Router made from it, so a Group
+// shares its engine's table and two engines share nothing.
 type wildcardTable struct {
 	routes sync.Map // normalized pattern -> wildcardRoute
 }
@@ -66,39 +60,29 @@ func (t *wildcardTable) lookup(pattern string) (wildcardRoute, bool) {
 }
 
 type Router struct {
-	group        *echo.Group
-	basePath     string
-	errHandler   httpx.ErrorHandler
-	interceptors []httpx.Interceptor
+	group      *echo.Group
+	basePath   string
+	errHandler httpx.ErrorHandler
+	// chain references the engine's chain rather than copying it; see
+	// httpx.MiddlewareChain.
+	chain *httpx.MiddlewareChain
 	// wildcards is the engine's table, shared with every Group made from it.
 	wildcards *wildcardTable
 }
 
-// UseInterceptor registers composed middleware, implementing
-// httpx.InterceptorScope.
-//
-// The chain is composed into every route registered afterwards, so it needs no
-// native handler slot and no per-request object. The ordering rule that follows
-// from that: interceptors always run inside the middleware registered with Use
-// on this scope and its parents, whatever order the registration calls were
-// made in. Among themselves, interceptors run in registration order, parent
-// scopes first.
-func (r *Router) UseInterceptor(m ...httpx.Interceptor) {
-	if len(m) == 0 {
-		return
-	}
-	// A fresh slice keeps routes registered earlier bound to the chain they
-	// were registered with.
-	r.interceptors = append(slices.Clone(r.interceptors), m...)
-}
-
+// Use registers httpx middleware on this scope, implementing
+// httpx.MiddlewareScope. The chain is composed into every route registered
+// afterwards, so it needs no native handler slot and no per-request object; see
+// httpx.Middleware and httpx.MiddlewareChain for the ordering rules.
 func (r *Router) Use(m ...httpx.Middleware) {
-	r.group.Use(adaptMiddlewares(m, r.errHandler, r.wildcards)...)
+	r.chain.Use(m...)
 }
 
-// UseNative registers native echo middleware on this group. Prefer it over
-// wrapping an echo.MiddlewareFunc with AdaptEchoMiddleware: the handler runs
-// with no adapter in between.
+// UseNative registers native echo middleware on this group, the only way to
+// mount an echo.MiddlewareFunc: it gets its own echo middleware slot, which an
+// httpx.Middleware wrapper could not reproduce — all httpx layers share the
+// route handler's single slot, so the next echo.HandlerFunc a wrapped
+// middleware calls is the whole composed chain rather than the layer below it.
 func (r *Router) UseNative(middleware ...echo.MiddlewareFunc) {
 	r.group.Use(middleware...)
 }
@@ -117,12 +101,15 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 }
 
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	base := joinPaths(r.basePath, prefix)
+	sub := r.chain.Sub()
+	sub.Use(m...)
 	return &Router{
-		group:        r.group.Group(prefix, adaptMiddlewares(m, r.errHandler, r.wildcards)...),
-		basePath:     joinPaths(r.basePath, prefix),
-		errHandler:   r.errHandler,
-		interceptors: r.interceptors,
-		wildcards:    r.wildcards,
+		group:      r.group.Group(echoGroupPrefix(r.basePath, base)),
+		basePath:   base,
+		errHandler: r.errHandler,
+		chain:      sub,
+		wildcards:  r.wildcards,
 	}
 }
 
@@ -147,17 +134,24 @@ func (r *Router) normalizeWildcardPath(path string) string {
 }
 
 func (r *Router) Handle(method, path string, h httpx.Handler) {
-	r.group.Add(strings.ToUpper(method), r.normalizeWildcardPath(path), r.toEchoHandler(h))
+	r.group.Add(strings.ToUpper(method), r.echoPath(path), r.toEchoHandler(h))
+}
+
+// echoPath is the registration path for this scope: the caller's path with any
+// named wildcard normalized to echo's anonymous form, then rebased so
+// concatenation onto the group prefix reproduces joinPaths(basePath, path).
+func (r *Router) echoPath(path string) string {
+	return echoRoutePath(r.basePath, r.normalizeWildcardPath(path))
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
-// It goes through Handle so interceptors registered on this scope also wrap it.
+// It goes through Handle so middleware registered on this scope also wraps it.
 func (r *Router) HandleStd(method, path string, h http.Handler) {
 	r.Handle(method, path, stdLeaf(h))
 }
 
 func (r *Router) Any(path string, h httpx.Handler) {
-	r.group.Any(r.normalizeWildcardPath(path), r.toEchoHandler(h))
+	r.group.Any(r.echoPath(path), r.toEchoHandler(h))
 }
 
 func (r *Router) Static(prefix, root string) {
@@ -165,7 +159,7 @@ func (r *Router) Static(prefix, root string) {
 }
 
 // StaticFS serves filesystem through httpx.StaticFileHandler and registers it
-// as an ordinary route, so interceptors on this scope wrap static requests
+// as an ordinary route, so middleware on this scope wraps static requests
 // too. The named-wildcard pattern (rather than echo's native prefix+"*")
 // keeps adjacent URLs like /assetshello.txt from matching and keeps HEAD from
 // returning 405.
@@ -177,7 +171,7 @@ func (r *Router) StaticFS(prefix string, filesystem fs.FS) {
 }
 
 // stdLeaf serves a plain net/http handler through echo's response and request,
-// so a std handler can sit at the end of a composed interceptor chain.
+// so a std handler can sit at the end of a composed middleware chain.
 func stdLeaf(h http.Handler) httpx.Handler {
 	return func(ctx httpx.Context) error {
 		ec, ok := httpx.AsNativeContext[echo.Context](ctx)
@@ -226,7 +220,7 @@ func (r *Router) OPTIONS(path string, h httpx.Handler) {
 
 func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	// Composed once per route, never per request.
-	h = httpx.ComposeInterceptors(h, r.interceptors)
+	h = r.chain.Compose(h)
 	return func(ec echo.Context) error {
 		ctx := newEchoContext(ec, r.wildcards)
 		if err := h(ctx); err != nil {
@@ -270,6 +264,44 @@ func commitErrorStatus(resp *echo.Response, err error) {
 		resp.Status = int(status)
 	}
 	resp.WriteHeader(resp.Status)
+}
+
+// echo joins a group prefix and a route path by plain concatenation —
+// Group.Add registers g.prefix+path, Group.Group registers g.prefix+prefix — so
+// a prefix the caller wrote with a trailing slash puts a second slash into every
+// route under it, and Group("/") plus GET("/x") registers "//x". The other four
+// adapters join through path.Join and never see it, and BasePath() reports the
+// right thing either way, so the symptom is a silent 404.
+//
+// The three functions below are why that cannot happen here: basePath stays the
+// caller's string cleaned by joinPaths, exactly as on the other adapters, and
+// what echo is handed is derived from it — never the caller's prefix directly.
+//
+// The invariant: an echo group's prefix is always echoScopePrefix(basePath), so
+// the parent's is a prefix of the child's and a route's registered pattern is
+// always joinPaths(basePath, routePath).
+
+// echoScopePrefix is the prefix an echo group carries for a scope whose base
+// path is base. joinPaths has already made base absolute and free of empty or
+// dotted segments, so the trailing slash is the only thing concatenation cannot
+// survive.
+func echoScopePrefix(base string) string {
+	return strings.TrimSuffix(base, "/")
+}
+
+// echoGroupPrefix is what echo's Group needs for a child scope: the part this
+// scope's prefix adds to its parent's.
+func echoGroupPrefix(parentBase, base string) string {
+	return strings.TrimPrefix(echoScopePrefix(base), echoScopePrefix(parentBase))
+}
+
+// echoRoutePath is what echo's Add needs for a route registered as routePath on
+// a scope whose base path is base: the part the route adds to the group prefix.
+// Deriving it from joinPaths rather than passing routePath through is what keeps
+// the empty route path right — Group("/api/").GET("") answers /api/ on the other
+// four, while concatenating "" onto the trimmed prefix would register /api.
+func echoRoutePath(base, routePath string) string {
+	return strings.TrimPrefix(joinPaths(base, routePath), echoScopePrefix(base))
 }
 
 func joinPaths(absolutePath, relativePath string) string {

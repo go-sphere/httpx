@@ -24,7 +24,6 @@ var (
 
 type echoContext struct {
 	ctx    echo.Context
-	next   echo.HandlerFunc
 	binder echo.DefaultBinder
 	// wildcards is the engine's named-wildcard table, or nil for a context
 	// built by FromEcho. Carrying the pointer here is what scopes the mapping
@@ -43,17 +42,12 @@ func newEchoContext(ctx echo.Context, wildcards *wildcardTable) *echoContext {
 // FromEcho wraps an echo.Context as httpx.Context. Use it from an echo
 // HTTPErrorHandler or native middleware to write through httpx helpers.
 //
-// The returned context carries no downstream handler, so Next is a no-op that
-// returns nil: this is a writing and request-inspection handle, not a place to
-// resume a chain from.
-//
-// It also has no engine behind it, so — like FromStd — it cannot resolve this
-// adapter's named-wildcard normalization: on a route registered as
-// /files/*filepath, FullPath reports echo's own "/files/*", Param("filepath")
-// and BindURI's uri:"filepath" are empty, and Params carries the value under
-// "*". The name lives in the engine's table, which only a context the adapter
-// built holds a pointer to; a process-wide table would make FromEcho resolve
-// names another engine registered. Param("*") reaches the value on any route.
+// It has no engine behind it, so it cannot resolve this adapter's named-wildcard
+// normalization: on a route registered as /files/*filepath, FullPath reports
+// echo's own "/files/*", Param("filepath") and BindURI's uri:"filepath" are
+// empty, and Params carries the value under "*". Param("*") reaches the value on
+// any route. The name lives in the engine's table, which only a context the
+// adapter built holds a pointer to.
 func FromEcho(ctx echo.Context) httpx.Context {
 	return newEchoContext(ctx, nil)
 }
@@ -68,6 +62,13 @@ func (c *echoContext) Path() string {
 	return c.ctx.Request().URL.Path
 }
 
+// unmatchedRouteKey marks a request echo raised its own 404 or 405 for, so
+// FullPath can report no pattern for it. Echo's 405 leaves the registered path
+// of the node whose *method* did not match on the context, and a layer keyed on
+// FullPath — authorization, rate limiting — would read that as a route that
+// handled the request, while the other adapters report nothing.
+const unmatchedRouteKey = "httpx.echox.unmatchedRoute"
+
 // FullPath reports the route pattern as it was registered. When the pattern
 // carried a named wildcard, FixWildcardPathIfNeed rewrote it to echo's
 // anonymous form ("/files/*filepath" -> "/files/*") because echo has no named
@@ -75,7 +76,13 @@ func (c *echoContext) Path() string {
 // here, or a caller matching on FullPath (downstream auth and rate limiting do)
 // would see a different pattern than it registered. The trailing-byte check
 // keeps a route without a wildcard from paying the map lookup.
+//
+// A path no route accepted the request for reports no pattern at all; see
+// unmatchedRouteKey.
 func (c *echoContext) FullPath() string {
+	if unmatched, _ := c.ctx.Get(unmatchedRouteKey).(bool); unmatched {
+		return ""
+	}
 	pattern := c.ctx.Path()
 	if lastCharIs('*', pattern) {
 		if route, ok := c.wildcards.lookup(pattern); ok {
@@ -272,8 +279,6 @@ func (c *echoContext) BodyReader() io.ReadCloser {
 	return http.NoBody
 }
 
-// Request helpers not defined on httpx.Request but kept for compatibility.
-
 // Binder (httpx.Binder)
 
 func (c *echoContext) BindJSON(dst any) error {
@@ -384,7 +389,7 @@ func (c *echoContext) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context (context.Context accessor + Next)
+// Context (context.Context accessor)
 
 func (c *echoContext) Context() context.Context {
 	return c.ctx.Request().Context()
@@ -392,15 +397,6 @@ func (c *echoContext) Context() context.Context {
 
 func (c *echoContext) SetContext(ctx context.Context) {
 	c.ctx.SetRequest(c.ctx.Request().WithContext(ctx))
-}
-
-func (c *echoContext) Next() error {
-	if c.next == nil {
-		return nil
-	}
-	next := c.next
-	c.next = nil
-	return next(c.ctx)
 }
 
 func (c *echoContext) StatusCode() int {

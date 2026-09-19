@@ -10,14 +10,6 @@ import (
 // Handler is the canonical function signature for framework adapters.
 type Handler func(Context) error
 
-// Middleware shares the same signature as Handler and drives the chain via ctx.Next().
-type Middleware func(Context) error
-
-// MiddlewareScope attaches middleware to the current scope.
-type MiddlewareScope interface {
-	Use(...Middleware)
-}
-
 // Registrar registers handlers on a router scope.
 //
 // Method names are case-insensitive: adapters upper-case them before
@@ -77,9 +69,10 @@ type Router interface {
 	RouterFeatureProvider
 
 	BasePath() string
-	Group(prefix string, m ...Middleware) Router
 
-	// HTTP method shortcuts for ergonomic API
+	// Group returns a nested scope under prefix, with m registered on it as if
+	// by Use.
+	Group(prefix string, m ...Middleware) Router
 
 	GET(path string, h Handler)
 	POST(path string, h Handler)
@@ -106,15 +99,17 @@ var ErrEngineClosed = errors.New("httpx: engine closed (engines are single-use; 
 // IsRunning is best-effort: on net/http based adapters it becomes true only
 // after the listener is bound; on fiber/hertz it may become true slightly
 // before binding completes.
+//
+// Middleware registered on the Engine — and only on the Engine — also covers
+// the paths no route matched, so an access log or a recovery layer sees a 404.
+// See Middleware.
 type Engine interface {
 	MiddlewareScope
 	Group(prefix string, m ...Middleware) Router
 
-	// Enhanced lifecycle management
-
 	Start() error
 	Stop(ctx context.Context) error
-	IsRunning() bool // Server status check
+	IsRunning() bool
 }
 
 // TestRequester is an optional Engine capability that serves a request
@@ -131,12 +126,8 @@ func AsTestRequester(e Engine) (TestRequester, bool) {
 	return tr, ok
 }
 
-// The success-envelope wrapper deliberately does not live here. Deciding what
-// a handler's return value looks like on the wire is a convention, not part of
-// the framework-agnostic transport contract, and this package shipped a second,
-// diverging copy of it: a hardcoded 200 and an untyped map. The one callers
-// actually use is sphere/server/httpz.WithJson, which honors a status the
-// handler set via ctx.Status, routes 204/304 through NoContent because those
-// forbid a body, and returns a named DataResponse[T]. Keep the envelope there,
-// where a single definition can evolve without two packages disagreeing about
-// what "success" serializes to.
+// The success-envelope wrapper deliberately does not live here: what a
+// handler's return value looks like on the wire is a convention, not part of
+// the framework-agnostic transport contract. It belongs in
+// sphere/server/httpz.WithJson, where one definition can evolve without two
+// packages disagreeing about what "success" serializes to.

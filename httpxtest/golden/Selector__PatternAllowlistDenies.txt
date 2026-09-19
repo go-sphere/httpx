@@ -1,0 +1,10 @@
+status: 401
+content-type: application/json
+x-trace: full-path="/admin/secret"
+body: json
+---
+{
+  "code": 0,
+  "message": "route not allowed",
+  "success": false
+}

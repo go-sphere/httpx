@@ -9,11 +9,11 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// BindHeader hides the Host from fiber's binder by emptying it for the
-// duration of the bind (fasthttp keeps Host in the header set, where the other
-// four adapters have no Host header at all). The shared suite pins what the
-// binder must not see; this pins the other half — that the request still knows
-// its host afterwards, which only the native context can show.
+// BindHeader hides the Host from fiber's binder by emptying it for the duration
+// of the bind (fasthttp keeps Host in the header set, where the other four
+// adapters have no Host header at all). The shared suite pins what the binder
+// must not see; this pins the other half — that the request still knows its host
+// afterwards, which only the native context can show.
 func TestBindHeaderRestoresHost(t *testing.T) {
 	engine := New()
 	var (
@@ -22,14 +22,16 @@ func TestBindHeaderRestoresHost(t *testing.T) {
 		hostInMW  string
 	)
 	r := engine.Group("")
-	// Registered before the route: Use composes into the routes that follow it.
-	// A layer above the handler must see the host unchanged too.
-	r.Use(func(ctx httpx.Context) error {
-		err := ctx.Next()
-		if fc, ok := httpx.AsNativeContext[fiber.Ctx](ctx); ok {
-			hostInMW = fc.Host()
+	// A layer above the handler must see the host unchanged too; Use composes
+	// into the routes that follow it.
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			err := next(ctx)
+			if fc, ok := httpx.AsNativeContext[fiber.Ctx](ctx); ok {
+				hostInMW = fc.Host()
+			}
+			return err
 		}
-		return err
 	})
 	r.GET("/bind/host", func(ctx httpx.Context) error {
 		var dst struct {

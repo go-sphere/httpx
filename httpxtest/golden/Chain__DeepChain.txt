@@ -1,0 +1,15 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "order": [
+    "root1-pre",
+    "root2-pre",
+    "mid-arg-pre",
+    "mid-use-pre",
+    "leaf1-pre",
+    "leaf2-pre",
+    "handler"
+  ]
+}

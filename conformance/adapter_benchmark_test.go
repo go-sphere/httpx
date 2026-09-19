@@ -24,11 +24,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// BenchmarkAdapter compares native and adapted routes through the same native
-// dispatcher. Each worker owns reusable request/response buffers. Sockets and
-// clients are excluded; native context resets and routing remain in the loop.
-// Responses are validated before timing; both state handlers check their reads.
-// StateParallel measures cross-request contention separately from serial latency.
 func BenchmarkAdapter(b *testing.B) {
 	gin.SetMode(gin.ReleaseMode)
 	hlog.SetLevel(hlog.LevelError)
@@ -58,8 +53,7 @@ func BenchmarkAdapter(b *testing.B) {
 	}
 }
 
-// A compiled test binary doubles as the network target, sharing exactly the
-// same route setup as the allocation benchmarks. Ordinary test runs skip it.
+// Serves the allocation benchmark's routes over a real listener when -httpx-bench-addr is set.
 var benchmarkAddr = flag.String("httpx-bench-addr", "", "serve benchmark routes at this address")
 var benchmarkFramework = flag.String("httpx-bench-framework", "gin", "gin, echo, fiber, or hertz")
 var benchmarkMode = flag.String("httpx-bench-mode", "httpx", "native or httpx")
@@ -92,8 +86,8 @@ func adapterBenchmarkFactory(tb testing.TB, framework, scenario string, adapted 
 	return adapterBenchmarkFactoryWithRegistration(tb, framework, scenario, adapted, nil, addr...)
 }
 
-// A registration override lets API experiments share the exact dispatcher,
-// request reset, and response validation used by the native/current controls.
+// registration overrides route setup so experiments share the dispatcher,
+// request reset, and validation.
 func adapterBenchmarkFactoryWithRegistration(tb testing.TB, framework, scenario string, adapted bool, registration func(httpx.Engine), addr ...string) func() func() {
 	tb.Helper()
 	payload := &benchmarkJSON{ID: 42, Name: "benchmark", Data: strings.Repeat("x", 1024)}
@@ -113,7 +107,9 @@ func adapterBenchmarkFactoryWithRegistration(tb testing.TB, framework, scenario 
 	register := func(e httpx.Engine) {
 		r := e.Group("")
 		for range layers {
-			r.Use(func(c httpx.Context) error { return c.Next() })
+			r.Use(func(next httpx.Handler) httpx.Handler {
+				return func(c httpx.Context) error { return next(c) }
+			})
 		}
 		r.GET("/bench", func(c httpx.Context) error {
 			if state {
@@ -131,7 +127,7 @@ func adapterBenchmarkFactoryWithRegistration(tb testing.TB, framework, scenario 
 	if registration != nil {
 		register = registration
 	}
-	// Validate an actual response once, outside measurement, including JSON bytes.
+	// Validate one real response outside the measurement loop.
 	check := func(status int, body []byte) {
 		tb.Helper()
 		if jsonResponse {
@@ -274,8 +270,8 @@ func adapterBenchmarkFactoryWithRegistration(tb testing.TB, framework, scenario 
 	}
 }
 
-// This writer retains its header capacity but never buffers response bodies.
-// Both sides of each net/http pair use the same writer and request.
+// Retains header capacity, never buffers bodies; both sides of a net/http pair
+// reuse the same writer and request.
 type benchmarkResponseWriter struct {
 	header http.Header
 	status int

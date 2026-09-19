@@ -21,15 +21,17 @@ func TestCustomContextPreserved(t *testing.T) {
 	})
 	engine := New(WithEngine(native))
 	r := engine.Group("")
-	r.Use(func(c httpx.Context) error {
-		if c.Method() != "custom:GET" {
-			t.Errorf("custom Method override lost: %q", c.Method())
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error {
+			if c.Method() != "custom:GET" {
+				t.Errorf("custom Method override lost: %q", c.Method())
+			}
+			if _, ok := httpx.AsNativeContext[*customFiberContext](c); !ok {
+				t.Error("custom native context type lost")
+			}
+			c.Set("from-middleware", true)
+			return next(c)
 		}
-		if _, ok := httpx.AsNativeContext[*customFiberContext](c); !ok {
-			t.Error("custom native context type lost")
-		}
-		c.Set("from-middleware", true)
-		return c.Next()
 	})
 	r.GET("/custom", func(c httpx.Context) error {
 		if c.Method() != "custom:GET" {

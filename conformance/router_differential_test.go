@@ -12,19 +12,10 @@ import (
 	"github.com/go-sphere/httpx/stdx"
 )
 
-// stdx is the only adapter whose router is written in this repository rather
-// than inherited from a framework, so its matching is checked against the ones
-// that are: the same random route table and the same random paths go to all
-// five adapters.
-//
-// The assertion is deliberately "never contradict a unanimous answer" rather
-// than "equal gin": the four frameworks do not agree with each other on
-// overlapping tables (backtracking from a static branch into a parameter one is
-// the usual split), and a case they answer three different ways has no
-// contract to conform to. Those are counted and reported, not failed.
-//
-// The seed is fixed so a failure is reproducible and CI cannot go red on a case
-// nobody can rerun.
+// stdx is the only router written in this repository, so its matching is
+// checked against the frameworks'. The bar is "never contradict a unanimous
+// answer": the four disagree on overlapping tables, and a case without a
+// consensus has no contract to conform to. The seed is fixed for reproducibility.
 func TestRouterMatchesFrameworkConsensus(t *testing.T) {
 	const (
 		tables       = 60
@@ -89,9 +80,7 @@ func TestRouterMatchesFrameworkConsensus(t *testing.T) {
 	}
 }
 
-// randomRouteTable builds a route set out of static segments, parameters and a
-// trailing catch-all. Names are fixed per depth because every router requires
-// one name per parameter position.
+// Names are fixed per depth: every router requires one name per parameter position.
 func randomRouteTable(rng *rand.Rand, n int) []string {
 	staticSegments := []string{"users", "posts", "v1", "files", "a", "b"}
 	seen := make(map[string]bool, n)
@@ -126,9 +115,8 @@ func randomRouteTable(rng *rand.Rand, n int) []string {
 }
 
 func randomPath(rng *rand.Rand, patterns []string) string {
-	// Half the probes follow a registered shape with random values, half are
-	// free-form: the first kind exercises matching, the second the misses and
-	// the backtracking between them.
+	// Half the probes follow a registered shape with random values (matching),
+	// half are free-form (misses and backtracking).
 	if rng.Intn(2) == 0 {
 		pattern := patterns[rng.Intn(len(patterns))]
 		var b strings.Builder
@@ -155,8 +143,7 @@ func randomPath(rng *rand.Rand, patterns []string) string {
 	return b.String()
 }
 
-// buildProbeEngine registers the table on one adapter. Registration panics are
-// a legitimate answer ("this router refuses this table"), not a test failure.
+// Registration panics are a legitimate answer ("this router refuses the table"), not a failure.
 func buildProbeEngine(t *testing.T, framework string, patterns []string) (engine httpx.Engine, ok bool) {
 	t.Helper()
 	defer func() {
@@ -176,8 +163,7 @@ func buildProbeEngine(t *testing.T, framework string, patterns []string) (engine
 	return engine, true
 }
 
-// routeProbe answers with which route matched and everything it captured. The
-// index identifies the route portably: echox and fiberx rewrite a named
+// The index identifies the route portably: echox and fiberx rewrite a named
 // wildcard at registration, so their FullPath is not comparable.
 func routeProbe(index int) httpx.Handler {
 	return func(ctx httpx.Context) error {
@@ -202,8 +188,8 @@ func probeRoute(t *testing.T, engine httpx.Engine, path string) string {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		// A miss must be a miss everywhere, but how it is rendered is each
-		// adapter's business: only the status is comparable.
+		// A miss must be a miss everywhere, but its rendering is each adapter's
+		// business: only the status is comparable.
 		return "status=" + strconv.Itoa(resp.StatusCode)
 	}
 	buf := make([]byte, 512)

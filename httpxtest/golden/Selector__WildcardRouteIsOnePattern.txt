@@ -1,0 +1,9 @@
+status: 200
+content-type: application/json
+x-trace: full-path="/files/*filepath"
+body: json
+---
+{
+  "filepath": "a/b.txt",
+  "fullPath": "/files/*filepath"
+}

@@ -241,8 +241,7 @@ func TestStatusTracking(t *testing.T) {
 				return err
 			}
 			reported = append(reported, ctx.StatusCode())
-			// Already committed: this must neither change the status nor
-			// be reported as the new one.
+			// Already committed: must not change the status or report a new one.
 			if err := ctx.NoContent(http.StatusNoContent); err != nil {
 				return err
 			}
@@ -376,9 +375,8 @@ func TestEmptyCollectionsAreNil(t *testing.T) {
 	}
 }
 
-// Replacing the request through the native context (which is what
-// AdaptStdMiddleware does) must be visible to every accessor, including
-// anything derived from the URL.
+// Replacing the request through the native context (what AdaptStdMiddleware
+// does) must be visible to every accessor, including URL-derived ones.
 func TestQueryFollowsReplacedRequest(t *testing.T) {
 	engine, r := newTestEngine(t)
 	var before, after string
@@ -448,8 +446,8 @@ func TestBodyRaw(t *testing.T) {
 		}
 	})
 
-	// Content-Length is a hint, never a limit: the body is read to EOF
-	// whether the declared size is unknown, too small or too large.
+	// Content-Length is a hint, never a limit: the body is read to EOF whatever
+	// the declared size.
 	for _, tc := range []struct {
 		name          string
 		contentLength int64
@@ -582,8 +580,8 @@ func TestBindQueryURIHeader(t *testing.T) {
 		t.Fatalf("header = %+v", h)
 	}
 
-	// Binding twice on the same context must not see values from the first
-	// (the uri values are rebuilt per call).
+	// Binding twice must not see the first call's values: uri values are rebuilt
+	// per call.
 	req = getReq("/u/1/two")
 	if rec := serve(engine, req); rec.Code != http.StatusOK || u.ID != "1" || u.Slug != "two" {
 		t.Fatalf("second bind: status = %d, uri = %+v", rec.Code, u)
@@ -747,9 +745,11 @@ type ctxKey struct{}
 func TestSetContextPropagates(t *testing.T) {
 	engine, r := newTestEngine(t)
 	var fromCtx, fromReq any
-	r.Use(func(ctx httpx.Context) error {
-		ctx.SetContext(context.WithValue(ctx.Context(), ctxKey{}, "set"))
-		return ctx.Next()
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			ctx.SetContext(context.WithValue(ctx.Context(), ctxKey{}, "set"))
+			return next(ctx)
+		}
 	})
 	r.GET("/c", func(ctx httpx.Context) error {
 		fromCtx = ctx.Context().Value(ctxKey{})
@@ -765,30 +765,15 @@ func TestSetContextPropagates(t *testing.T) {
 
 // Chain control
 
-func TestNext(t *testing.T) {
-	t.Run("SecondNextIsANoop", func(t *testing.T) {
-		var tr trace
-		engine, r := newTestEngine(t)
-		r.Use(func(ctx httpx.Context) error {
-			if err := ctx.Next(); err != nil {
-				return err
-			}
-			tr.steps = append(tr.steps, "between")
-			return ctx.Next()
-		})
-		r.GET("/n", tr.leaf("leaf"))
-		serve(engine, getReq("/n"))
-		if tr.String() != "leaf,between" {
-			t.Fatalf("chain = %q, want the leaf to run exactly once", tr.String())
-		}
-	})
-
+func TestChainControl(t *testing.T) {
 	t.Run("NotCallingNextStopsTheChain", func(t *testing.T) {
 		var tr trace
 		engine, r := newTestEngine(t)
-		r.Use(func(ctx httpx.Context) error {
-			tr.steps = append(tr.steps, "stop")
-			return ctx.Text(http.StatusUnauthorized, "denied")
+		r.Use(func(httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				tr.steps = append(tr.steps, "stop")
+				return ctx.Text(http.StatusUnauthorized, "denied")
+			}
 		})
 		r.Use(tr.mw("never"))
 		r.GET("/n", tr.leaf("leaf"))

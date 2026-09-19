@@ -20,10 +20,9 @@ func init() {
 
 // Scenario is one registration plus one request, used twice: the Scenarios
 // case group records a golden contract for it, and RunBenchmarks measures it.
-// Adding a scenario here therefore adds both a contract and a benchmark.
-//
-// The request is described rather than built so a benchmark can reuse one
-// request object and rewind its body without allocating per iteration.
+// Adding a scenario therefore adds both a contract and a benchmark. The request
+// is described rather than built so a benchmark can reuse one request object
+// and rewind its body without allocating per iteration.
 type Scenario struct {
 	// Name identifies the scenario in test names, golden file names and
 	// benchmark names.
@@ -62,9 +61,8 @@ func (s Scenario) NewRequest() *http.Request {
 
 // RewindableRequest returns a request whose body can be rewound without
 // allocating, plus the rewind function. A benchmark calls rewind before each
-// iteration: reusing the request keeps request construction out of the
-// measurement, and rewinding keeps the handler from reading an exhausted body
-// on every iteration after the first.
+// iteration: reusing the request keeps construction out of the measurement, and
+// rewinding keeps the handler from reading an exhausted body after the first.
 func (s Scenario) RewindableRequest() (*http.Request, func()) {
 	req := s.NewRequest()
 	if s.Body == nil {
@@ -76,10 +74,9 @@ func (s Scenario) RewindableRequest() (*http.Request, func()) {
 	return req, func() {
 		_, _ = reader.Seek(0, io.SeekStart)
 		// Reinstall the body: BodyRaw replaces Request.Body with a reader over
-		// its own copy (that is how ginx/echox keep the body re-readable), so
-		// seeking alone would leave the next iteration reading a different
-		// buffer than the first one did — and a different one than a native
-		// handler reads, which makes the pair incomparable.
+		// its own copy (how ginx/echox keep the body re-readable), so seeking
+		// alone would leave the next iteration reading a different buffer than a
+		// native handler reads.
 		req.Body = body
 	}
 }
@@ -91,8 +88,7 @@ func (rewindBody) Close() error { return nil }
 // Scenarios returns the shared scenario table: the request and response shapes
 // a service actually serves, at the depths it actually registers.
 func Scenarios() []Scenario {
-	pass := func(ctx httpx.Context) error { return ctx.Next() }
-	passInterceptor := func(next httpx.Handler) httpx.Handler {
+	pass := func(next httpx.Handler) httpx.Handler {
 		return func(ctx httpx.Context) error { return next(ctx) }
 	}
 	noContent := func(ctx httpx.Context) error { return ctx.NoContent(http.StatusNoContent) }
@@ -155,7 +151,7 @@ func Scenarios() []Scenario {
 		},
 		{
 			// The most expensive request path a generated handler takes: body,
-			// query, path and header all decoded into separate structs.
+			// query, path and header each decoded into its own struct.
 			Name: "BindFull",
 			Register: func(r httpx.Router) {
 				type body struct {
@@ -246,29 +242,18 @@ func Scenarios() []Scenario {
 				},
 				Target: "/scenario",
 			},
-			Scenario{
-				Name: "Interceptor" + strconv.Itoa(n),
-				Register: func(r httpx.Router) {
-					for range n {
-						httpx.UseInterceptor(r, passInterceptor)
-					}
-					r.GET("/scenario", noContent)
-				},
-				Target: "/scenario",
-			},
 		)
 	}
 
-	// Both forms nested over groups, which is the shape a service ends up with.
+	// Layers nested over groups, the shape a service ends up with.
 	scenarios = append(scenarios, Scenario{
-		Name: "MixedChain",
+		Name: "NestedChain",
 		Register: func(r httpx.Router) {
-			r.Use(pass, pass)
-			httpx.UseInterceptor(r, passInterceptor)
+			r.Use(pass, pass, pass)
 			mid := r.Group("/mid", pass)
-			httpx.UseInterceptor(mid, passInterceptor)
+			mid.Use(pass)
 			leaf := mid.Group("/leaf", pass)
-			httpx.UseInterceptor(leaf, passInterceptor)
+			leaf.Use(pass)
 			leaf.GET("/scenario", noContent)
 		},
 		Target: "/mid/leaf/scenario",
@@ -280,8 +265,8 @@ func Scenarios() []Scenario {
 func multipartScenario() Scenario {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
-	// Writing a multipart body into a bytes.Buffer cannot fail for reasons a
-	// caller could handle; a failure here is a bug in this table.
+	// Writing into a bytes.Buffer cannot fail for a reason a caller could
+	// handle, so a failure here is a bug in this table.
 	if err := writer.WriteField("title", "sample"); err != nil {
 		panic("httpxtest: multipart WriteField: " + err.Error())
 	}
@@ -319,7 +304,7 @@ func multipartScenario() Scenario {
 }
 
 // The static scenario serves from an in-memory filesystem: the point is the
-// adapter's static route and the interceptor chain around it, not disk I/O,
+// adapter's static route and the middleware chain around it, not disk I/O,
 // and it keeps the table free of temporary directories.
 func staticScenario() Scenario {
 	assets := fstest.MapFS{
@@ -346,10 +331,9 @@ func casesScenarios(t *testing.T, r runner) {
 // RunBenchmarks measures every shared scenario against s.
 //
 // With Suite.Dispatch the measurement goes through the framework's own
-// dispatcher and is comparable with the adapter's other benchmarks. Without
-// it the fallback goes through httpx.TestRequester, which builds an
-// *http.Response and reads its body: that costs 20+ allocations and a few
-// microseconds per request, so it measures the harness more than the adapter.
+// dispatcher and is comparable with the adapter's other benchmarks. Without it
+// the fallback goes through httpx.TestRequester, which builds an *http.Response
+// and reads its body, measuring the harness more than the adapter.
 func RunBenchmarks(b *testing.B, s Suite) {
 	b.Helper()
 	if s.NewEngine == nil {

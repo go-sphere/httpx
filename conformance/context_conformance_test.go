@@ -10,25 +10,21 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// Responders, the standard context, the state store and WithJson moved to the
-// shared suite (httpxtest). What remains reaches for each framework's native
-// context type, which is the adapter's own business rather than a portable
-// contract.
-
 func TestOptionalContextCapabilitiesConformance(t *testing.T) {
 	t.Run("ResponseInfoAfterWrite", func(t *testing.T) {
 		results := runAcrossFrameworks(t, func(r httpx.Router) {
-			r.Use(func(ctx httpx.Context) error {
-				err := ctx.Next()
-				if err != nil {
-					return err
+			r.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					err := next(ctx)
+					if err != nil {
+						return err
+					}
+					// Every adapter must report the status set by a downstream handler.
+					if ctx.StatusCode() != http.StatusCreated {
+						return errors.New("unexpected status code")
+					}
+					return nil
 				}
-				// ResponseInfo is part of the Context contract (B6): every
-				// adapter must report the status set by downstream handlers.
-				if ctx.StatusCode() != http.StatusCreated {
-					return errors.New("unexpected status code")
-				}
-				return nil
 			})
 
 			r.GET("/ctx/capabilities/response", func(ctx httpx.Context) error {

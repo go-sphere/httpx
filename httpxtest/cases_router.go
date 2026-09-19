@@ -21,9 +21,11 @@ func init() {
 func casesMiddleware(t *testing.T, r runner) {
 	t.Run("PassThrough", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				ctx.Set("from-middleware", "ok")
-				return ctx.Next()
+			router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.Set("from-middleware", "ok")
+					return next(ctx)
+				}
 			})
 			router.GET("/mw/pass", func(ctx httpx.Context) error {
 				v, _ := ctx.Get("from-middleware")
@@ -34,11 +36,13 @@ func casesMiddleware(t *testing.T, r runner) {
 
 	t.Run("BeforeAfterNext", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				ctx.Set("order", []string{"before"})
-				err := ctx.Next()
-				appendOrder(ctx, "after")
-				return err
+			router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.Set("order", []string{"before"})
+					err := next(ctx)
+					appendOrder(ctx, "after")
+					return err
+				}
 			})
 			router.GET("/mw/around", func(ctx httpx.Context) error {
 				appendOrder(ctx, "handler")
@@ -50,8 +54,10 @@ func casesMiddleware(t *testing.T, r runner) {
 
 	t.Run("MiddlewareError", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				return errors.New("middleware boom")
+			router.Use(func(httpx.Handler) httpx.Handler {
+				return func(httpx.Context) error {
+					return errors.New("middleware boom")
+				}
 			})
 			router.GET("/mw/error", func(ctx httpx.Context) error {
 				return ctx.Text(http.StatusOK, "handler-should-not-run")
@@ -61,8 +67,10 @@ func casesMiddleware(t *testing.T, r runner) {
 
 	t.Run("WriteWithoutNextStopsHandler", func(t *testing.T) {
 		got := r.serve(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				return ctx.Text(http.StatusUnauthorized, "blocked")
+			router.Use(func(httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					return ctx.Text(http.StatusUnauthorized, "blocked")
+				}
 			})
 			router.GET("/mw/blocked", func(ctx httpx.Context) error {
 				return ctx.Text(http.StatusOK, "handler-should-not-run")
@@ -77,43 +85,6 @@ func casesMiddleware(t *testing.T, r runner) {
 		}
 	})
 
-	// Errors from several layers must all reach the middleware that drove the
-	// chain, however the adapter aggregates them.
-	t.Run("NextReturnsJoinedDownstreamErrors", func(t *testing.T) {
-		errA := errors.New("err-a")
-		errB := errors.New("err-b")
-		var outerErr error
-
-		got := r.serve(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				outerErr = ctx.Next()
-				return outerErr
-			})
-			router.Use(func(ctx httpx.Context) error {
-				err := ctx.Next()
-				if err == nil {
-					return errB
-				}
-				return errors.Join(err, errB)
-			})
-			router.GET("/mw/next/join-errors", func(ctx httpx.Context) error {
-				return errA
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/next/join-errors", nil))
-
-		if got.Status != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want %d", got.Status, http.StatusInternalServerError)
-		}
-		if outerErr == nil {
-			t.Fatal("outer ctx.Next() returned nil")
-		}
-		if !errors.Is(outerErr, errA) {
-			t.Fatalf("outer ctx.Next() = %v, want it to contain errA", outerErr)
-		}
-		if !errors.Is(outerErr, errB) {
-			t.Fatalf("outer ctx.Next() = %v, want it to contain errB", outerErr)
-		}
-	})
 }
 
 func casesRouter(t *testing.T, r runner) {
@@ -168,27 +139,34 @@ func casesRouter(t *testing.T, r runner) {
 		}
 	})
 
-	// Engine, group and route middleware must nest in registration order
-	// around the handler.
+	// Engine, group and route middleware must nest in registration order around
+	// the handler.
 	t.Run("GroupUseAnyAndNext", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				ctx.Set("order", []string{"global-before"})
-				err := ctx.Next()
-				appendOrder(ctx, "global-after")
-				return err
+			router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.Set("order", []string{"global-before"})
+					err := next(ctx)
+					appendOrder(ctx, "global-after")
+					return err
+				}
 			})
-			g := router.Group("/api", func(ctx httpx.Context) error {
-				appendOrder(ctx, "group-before")
-				err := ctx.Next()
-				appendOrder(ctx, "group-after")
-				return err
+			g := router.Group("/api")
+			g.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					appendOrder(ctx, "group-before")
+					err := next(ctx)
+					appendOrder(ctx, "group-after")
+					return err
+				}
 			})
-			g.Use(func(ctx httpx.Context) error {
-				appendOrder(ctx, "route-before")
-				err := ctx.Next()
-				appendOrder(ctx, "route-after")
-				return err
+			g.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					appendOrder(ctx, "route-before")
+					err := next(ctx)
+					appendOrder(ctx, "route-after")
+					return err
+				}
 			})
 			g.Any("/ping", func(ctx httpx.Context) error {
 				appendOrder(ctx, "handler")
@@ -218,9 +196,7 @@ func casesStatic(t *testing.T, r runner) {
 	})
 
 	// A directory is served by its index.html, which is how a single-page app
-	// mounted on a prefix is served. This was the one static behavior the four
-	// adapters did not agree on before: gin and echo served the index, hertz
-	// returned 404.
+	// mounted on a prefix is served.
 	t.Run("StaticDirectoryServesIndex", func(t *testing.T) {
 		withIndex := t.TempDir()
 		if err := os.WriteFile(filepath.Join(withIndex, "index.html"), []byte("<h1>index</h1>"), 0o600); err != nil {
@@ -255,14 +231,13 @@ func appendOrder(ctx httpx.Context, s string) {
 }
 
 func init() {
-	register("StaticInterceptors", casesStaticInterceptors)
+	register("StaticMiddleware", casesStaticMiddleware)
 }
 
-// Static mounts and mounted net/http handlers are ordinary routes, so an
-// interceptor registered on their scope wraps them like any other handler.
-// This is what lets an access log or an authorization layer cover a static
-// asset mount.
-func casesStaticInterceptors(t *testing.T, r runner) {
+// Static mounts and mounted net/http handlers are ordinary routes, so middleware
+// on their scope wraps them like any other handler — which is what lets an
+// authorization layer cover a static asset mount.
+func casesStaticMiddleware(t *testing.T, r runner) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("static-content"), 0o600); err != nil {
 		t.Fatalf("write static file: %v", err)
@@ -270,14 +245,14 @@ func casesStaticInterceptors(t *testing.T, r runner) {
 
 	for _, tc := range []struct {
 		name     string
-		register func(httpx.Router, httpx.Interceptor)
+		register func(httpx.Router, httpx.Middleware)
 		path     string
 		want     string
 	}{
 		{
 			name: "Static",
-			register: func(router httpx.Router, i httpx.Interceptor) {
-				httpx.UseInterceptor(router, i)
+			register: func(router httpx.Router, m httpx.Middleware) {
+				router.Use(m)
 				router.Static("/assets", dir)
 			},
 			path: "/assets/hello.txt",
@@ -285,8 +260,8 @@ func casesStaticInterceptors(t *testing.T, r runner) {
 		},
 		{
 			name: "StaticFS",
-			register: func(router httpx.Router, i httpx.Interceptor) {
-				httpx.UseInterceptor(router, i)
+			register: func(router httpx.Router, m httpx.Middleware) {
+				router.Use(m)
 				router.StaticFS("/files", os.DirFS(dir))
 			},
 			path: "/files/hello.txt",
@@ -294,8 +269,8 @@ func casesStaticInterceptors(t *testing.T, r runner) {
 		},
 		{
 			name: "HandleStd",
-			register: func(router httpx.Router, i httpx.Interceptor) {
-				httpx.UseInterceptor(router, i)
+			register: func(router httpx.Router, m httpx.Middleware) {
+				router.Use(m)
 				httpx.MountStd(router, http.MethodGet, "/mounted", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					_, _ = w.Write([]byte("from-std"))
 				}))
@@ -310,7 +285,7 @@ func casesStaticInterceptors(t *testing.T, r runner) {
 				tc.register(router, func(next httpx.Handler) httpx.Handler {
 					return func(ctx httpx.Context) error {
 						ran = true
-						ctx.SetHeader("X-Interceptor", "1")
+						ctx.SetHeader("X-Middleware", "1")
 						return next(ctx)
 					}
 				})
@@ -323,20 +298,19 @@ func casesStaticInterceptors(t *testing.T, r runner) {
 				t.Fatalf("body = %q, want %q", got.Body, tc.want)
 			}
 			if !ran {
-				t.Fatal("the interceptor did not run for this mount")
+				t.Fatal("the middleware did not run for this mount")
 			}
-			if got.Headers.Get("X-Interceptor") != "1" {
-				t.Fatal("the interceptor's header did not reach the response")
+			if got.Headers.Get("X-Middleware") != "1" {
+				t.Fatal("the middleware's header did not reach the response")
 			}
 		})
 	}
 
-	// An interceptor that stops the chain must also stop a static mount —
-	// that is the point of covering it (an authorization layer in front of
-	// private assets).
-	t.Run("InterceptorCanBlockStatic", func(t *testing.T) {
+	// A layer that stops the chain must also stop a static mount: an
+	// authorization layer in front of private assets is the point of covering it.
+	t.Run("MiddlewareCanBlockStatic", func(t *testing.T) {
 		got := r.serve(t, func(router httpx.Router) {
-			httpx.UseInterceptor(router, func(next httpx.Handler) httpx.Handler {
+			router.Use(func(next httpx.Handler) httpx.Handler {
 				return func(ctx httpx.Context) error {
 					return ctx.Text(http.StatusForbidden, "denied")
 				}

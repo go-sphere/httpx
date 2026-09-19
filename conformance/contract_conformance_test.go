@@ -19,9 +19,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// newTrustedProxyEngine builds an engine for the given framework bound to
-// addr with the given trusted-proxy list, using each adapter's
-// WithTrustedProxies option.
 func newTrustedProxyEngine(tb testing.TB, name, addr string, proxies []string) httpx.Engine {
 	tb.Helper()
 	switch name {
@@ -67,15 +64,10 @@ func startEngineAndWait(t *testing.T, engine httpx.Engine, addr string) func() {
 	return nil
 }
 
-// Everything else from this file moved to the shared suite (httpxtest): what
-// remains needs a real listener, because the trusted-proxy policy is about the
-// connection's peer address and the in-process requesters of fiberx/hertzx
-// report 0.0.0.0 for it.
-//
-// TestTrustedProxiesConformance covers B8: with WithTrustedProxies configured,
-// X-Forwarded-For must be honored only when the direct peer is trusted, on
-// every adapter. Requests go over a real loopback connection so the peer IP
-// is 127.0.0.1 everywhere.
+// The trusted-proxy policy depends on the connection's peer address, and the
+// in-process requesters of fiberx/hertzx report 0.0.0.0, so this needs a real
+// listener. WithTrustedProxies: X-Forwarded-For is honored only when the direct
+// peer is trusted, on every adapter.
 func TestTrustedProxiesConformance(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -83,13 +75,10 @@ func TestTrustedProxiesConformance(t *testing.T) {
 		xff     string
 		wantIP  string
 	}{
-		// Empty list: forwarding headers are ignored; the spoofed XFF must not win.
 		{name: "SpoofIgnored", proxies: nil, xff: "203.0.113.9", wantIP: "127.0.0.1"},
-		// Loopback peer is trusted: the forwarded client IP is used.
 		{name: "TrustedPeerHonored", proxies: []string{"127.0.0.1"}, xff: "203.0.113.9", wantIP: "203.0.113.9"},
-		// Multi-hop chain: trusted hops are skipped right-to-left and the raw
-		// joined header must never leak through (fiber requires
-		// EnableIPValidation for this).
+		// Trusted hops are skipped right-to-left and the raw joined header must
+		// never leak (fiber requires EnableIPValidation for this).
 		{name: "MultiHopTrustedTailSkipped", proxies: []string{"127.0.0.1"}, xff: "203.0.113.9, 127.0.0.1", wantIP: "203.0.113.9"},
 	}
 	for _, framework := range conformanceFrameworks {

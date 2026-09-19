@@ -16,8 +16,7 @@ import (
 // every binding.Binding through its process-wide binding.Validator, which ginx
 // must not assign to. These cases pin the seam that keeps httpx.Binder's
 // no-validation contract anyway — the verdict is dropped, the decode error is
-// not — directly against gin's own bindings, so a gin release that changes the
-// error shapes fails here rather than at a 400 nobody expected.
+// not — directly against gin's own bindings.
 
 type dropItem struct {
 	Name string `json:"name" binding:"required"`
@@ -99,9 +98,8 @@ func TestBindRecoveringReportsOtherPanics(t *testing.T) {
 }
 
 // panicItem's UnmarshalJSON panics with exactly the value gin's validator
-// panics with. The shape is what bindRecovering used to match on, so this is
-// the narrowest reproduction of a *decode* panic wearing the validator's
-// signature — a buggy custom unmarshaler is how one arrives in practice.
+// panics with: the narrowest reproduction of a *decode* panic wearing the
+// validator's signature, which is how one arrives in practice.
 type panicItem struct {
 	Name string `json:"name" binding:"required"`
 }
@@ -116,9 +114,8 @@ func (p *panicItem) UnmarshalJSON(b []byte) error {
 }
 
 // A decode panic must not be reported as a successful bind, even when it looks
-// exactly like the validator's. Matching on the panic value alone let this
-// return nil with a half-written destination, so the handler ran on garbage
-// where it should have seen a 400.
+// exactly like the validator's: matching on the panic value alone returned nil
+// with a half-written destination, so the handler ran on garbage.
 func TestBindReportsDecodePanicShapedLikeTheValidators(t *testing.T) {
 	var dst []*panicItem
 	err := bindJSON(t, `[{"name":"ok"},{"boom":true}]`, &dst)
@@ -131,8 +128,8 @@ func TestBindReportsDecodePanicShapedLikeTheValidators(t *testing.T) {
 }
 
 // The frame ginx keys the decision on has to exist, or the typed-nil parity
-// silently turns into a 400 on a gin upgrade. Assert the symbol name directly
-// so the failure names the cause instead of showing up as an unexpected status.
+// silently turns into a 400 on a gin upgrade; asserting the symbol name directly
+// makes the failure name the cause.
 func TestGinValidatorFrameStillExists(t *testing.T) {
 	var dst []*dropItem
 	found := false

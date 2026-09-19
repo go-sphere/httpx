@@ -19,8 +19,6 @@ func TestServeHTTPDispatch(t *testing.T) {
 	if !ok {
 		t.Fatal("New did not return *Engine")
 	}
-	// Engine middleware is snapshotted into groups created afterwards, so it
-	// has to be registered before Group.
 	engine.Use(tr.mw("engine"))
 	r := engine.Group("")
 	r.Use(tr.mw("group"))
@@ -112,12 +110,10 @@ func TestServeHTTPResponseCommit(t *testing.T) {
 		}
 	})
 
-	// An error handler that renders nothing at all — a handler that only logs
-	// — leaves the status to the adapter, and the error's own status is what
-	// that has to be. This used to commit the 200 every response starts at, so
-	// a route that failed and a path no route matched both answered 200 with an
-	// empty body: a status caches and monitoring believe. The body stays empty,
-	// because inventing one would overwrite a decision the handler made.
+	// An error handler that renders nothing — one that only logs — leaves the
+	// status to the adapter, and the error's own status is what that has to be,
+	// not the 200 a response starts at: caches and monitoring believe a status.
+	// The body stays empty, since inventing one overwrites the handler's decision.
 	t.Run("SilentErrorHandlerCommitsTheErrorStatus", func(t *testing.T) {
 		engine, r := newTestEngine(t, WithErrorHandler(func(ctx httpx.Context, err error) {}))
 		r.GET("/e", func(ctx httpx.Context) error { return httpx.NewForbiddenError("ignored") })
@@ -143,14 +139,16 @@ func TestServeHTTPResponseCommit(t *testing.T) {
 		}
 	})
 
-	// A committed response is never overwritten by an error body, but the
-	// error is not lost: the outer layer's Next still returns it.
+	// A committed response is never overwritten by an error body, but the error
+	// is not lost: the outer layer's next(ctx) still returns it.
 	t.Run("ErrorAfterCommitPropagatesWithoutRendering", func(t *testing.T) {
 		engine, r := newTestEngine(t)
 		var seen error
-		r.Use(func(ctx httpx.Context) error {
-			seen = ctx.Next()
-			return seen
+		r.Use(func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				seen = next(ctx)
+				return seen
+			}
 		})
 		r.GET("/late", func(ctx httpx.Context) error {
 			if err := ctx.Text(http.StatusOK, "ok"); err != nil {

@@ -168,11 +168,10 @@ func (s *SSEWriter) flushBuf() error {
 // not be cached) and "X-Accel-Buffering: no" (disables response buffering in
 // nginx-style proxies, which would otherwise defeat streaming).
 //
-// Stream's execution model applies: on buffered adapters (fiber) fn runs
-// after the handler returns and its error cannot reach the caller, so treat
-// fn's error as best-effort cleanup — by the time fn runs, the response is
-// committed. fn should return promptly when a send fails or the request
-// context is done; there is no way to "un-commit" the stream.
+// Streamer.Stream's execution model applies, so fn's error is best-effort
+// cleanup: the response is already committed by the time fn runs, and there is
+// no way to un-commit it. fn should return promptly when a send fails or the
+// request context is done.
 //
 // If ctx does not implement Streamer, ServerSentEvents returns
 // ErrStreamerNotSupported without writing to the response.

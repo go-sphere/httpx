@@ -14,8 +14,7 @@ import (
 )
 
 // upperWriter is the shape of a body-transforming middleware writer (gzip,
-// minify): downstream writes must go through it, and only while it is
-// installed.
+// minify): downstream writes must go through it, and only while installed.
 type upperWriter struct{ http.ResponseWriter }
 
 func (u upperWriter) Write(p []byte) (int, error) {
@@ -59,11 +58,13 @@ func TestAdaptStdMiddleware(t *testing.T) {
 		engine, r := newTestEngine(t)
 		// Outer layer writes after the adapted middleware has returned: by
 		// then the wrapper must be gone again.
-		r.Use(func(ctx httpx.Context) error {
-			if err := ctx.Next(); err != nil {
-				return err
+		r.Use(func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				if err := next(ctx); err != nil {
+					return err
+				}
+				return ctx.Bytes(http.StatusOK, []byte("tail"), "text/plain")
 			}
-			return ctx.Bytes(http.StatusOK, []byte("tail"), "text/plain")
 		})
 		r.Use(AdaptStdMiddleware(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -81,10 +82,12 @@ func TestAdaptStdMiddleware(t *testing.T) {
 		var tr trace
 		engine, r := newTestEngine(t)
 		var status int
-		r.Use(func(ctx httpx.Context) error {
-			err := ctx.Next()
-			status = ctx.StatusCode()
-			return err
+		r.Use(func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				err := next(ctx)
+				status = ctx.StatusCode()
+				return err
+			}
 		})
 		r.Use(AdaptStdMiddleware(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -119,9 +122,11 @@ func TestAdaptStdMiddleware(t *testing.T) {
 	t.Run("DownstreamErrorIsReturnedThroughTheBridge", func(t *testing.T) {
 		engine, r := newTestEngine(t)
 		var seen error
-		r.Use(func(ctx httpx.Context) error {
-			seen = ctx.Next()
-			return seen
+		r.Use(func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				seen = next(ctx)
+				return seen
+			}
 		})
 		r.Use(AdaptStdMiddleware(func(next http.Handler) http.Handler { return next }))
 		r.GET("/x", func(ctx httpx.Context) error { return httpx.NewForbiddenError("no") })
@@ -186,7 +191,8 @@ func TestAdaptStdMiddleware(t *testing.T) {
 
 	t.Run("ForeignContextIsRejected", func(t *testing.T) {
 		mw := AdaptStdMiddleware(func(next http.Handler) http.Handler { return next })
-		if err := mw(foreignContext{}); err == nil {
+		layer := mw(func(httpx.Context) error { return nil })
+		if err := layer(foreignContext{}); err == nil {
 			t.Fatal("a context without this adapter's native hook was accepted")
 		}
 	})

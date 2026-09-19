@@ -13,9 +13,8 @@ func init() {
 }
 
 // A capability declaration is a claim about the adapter, so the suite checks
-// the claim itself rather than trusting it: an adapter that declares a feature
-// must expose it, and one that does not must not. Without this, Caps would be
-// documentation that drifts.
+// the claim itself: an adapter that declares a feature must expose it, and one
+// that does not must not. Without this, Caps would be documentation that drifts.
 func casesCaps(t *testing.T, r runner) {
 	t.Run("NamedWildcardIsDeclaredHonestly", func(t *testing.T) {
 		var reported bool
@@ -34,7 +33,7 @@ func casesCaps(t *testing.T, r runner) {
 
 	// The wildcard *param* works on every adapter regardless of the feature
 	// flag: those without native named wildcards normalize the path at
-	// registration and keep Param(name) working. The flag only reports whether
+	// registration and keep Param(name) working. The flag reports only whether
 	// the framework has them natively.
 	t.Run("NamedWildcardParam", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
@@ -77,24 +76,8 @@ func casesCaps(t *testing.T, r runner) {
 		}
 	})
 
-	t.Run("ComposesInterceptorsIsDeclaredHonestly", func(t *testing.T) {
-		var composed bool
-		r.serve(t, func(router httpx.Router) {
-			composed = httpx.UseInterceptor(router, func(next httpx.Handler) httpx.Handler { return next })
-			router.GET("/caps/interceptor", func(ctx httpx.Context) error {
-				return ctx.NoContent(http.StatusNoContent)
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/caps/interceptor", nil))
-
-		if composed != r.suite.Caps.ComposesInterceptors {
-			t.Fatalf("UseInterceptor composed = %v, but Caps.ComposesInterceptors = %v",
-				composed, r.suite.Caps.ComposesInterceptors)
-		}
-	})
-
-	// The native context escape hatch is part of the contract for every
-	// official adapter, and a case that reaches for it must fail loudly rather
-	// than silently skip when it is missing.
+	// The native context escape hatch is part of the contract for every adapter,
+	// so a case reaching for it must fail loudly rather than silently skip.
 	t.Run("NativeContextIsReachable", func(t *testing.T) {
 		var native any
 		r.serve(t, func(router httpx.Router) {

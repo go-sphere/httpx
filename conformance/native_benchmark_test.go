@@ -17,17 +17,9 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// BenchmarkNativeVsHTTPX answers "what does the abstraction cost" on the
-// complex scenarios: for each framework it runs the shared scenario through
-// httpx and the same scenario written directly against that framework, with
-// the same dispatcher and the same per-iteration reset.
-//
-// The native side is hand-written per framework on purpose — that is what
-// "without httpx" means, and no shared table can produce it. Scenarios with no
-// honest native counterpart are absent: the Interceptor and MixedChain forms
-// exist only in httpx (the native middleware rows are their baseline), and SSE
-// would compare two different framework SSE implementations rather than the
-// abstraction.
+// The native side is hand-written per framework: no shared table can express
+// "the same scenario without httpx". Scenarios with no honest native
+// counterpart (SSE, middleware-chain-only comparisons) are absent.
 func BenchmarkNativeVsHTTPX(b *testing.B) {
 	scenarios := make(map[string]httpxtest.Scenario, 20)
 	for _, sc := range httpxtest.Scenarios() {
@@ -69,7 +61,6 @@ func BenchmarkNativeVsHTTPX(b *testing.B) {
 	}
 }
 
-// The paired subset: every scenario whose native form is unambiguous.
 var nativeScenarioNames = []string{
 	"Empty", "JSON1K", "JSON100K", "State", "BindJSON", "BindFull",
 	"LargeBody", "MultipartUpload", "StaticFile",
@@ -83,8 +74,7 @@ var nativeBuilders = map[string]func(tb testing.TB, scenario string, req *http.R
 	"hertzx": buildNativeHertz,
 }
 
-// The scenario payloads, mirrored so the native handlers return exactly what
-// the httpx ones do.
+// Mirrors the shared scenario payloads so native handlers return identical bytes.
 var (
 	nativePayload1K   = map[string]any{"id": 42, "name": "benchmark", "data": strings.Repeat("x", 1024)}
 	nativePayload100K = map[string]any{"id": 42, "data": strings.Repeat("x", 100*1024)}
@@ -368,8 +358,7 @@ func buildNativeHertz(tb testing.TB, scenario string, req *http.Request) (func()
 			rc.JSON(http.StatusOK, map[string]any{"name": v.Name})
 		})
 	case "BindFull":
-		// hertz binds body, query, path and header from one struct in a single
-		// call, which is the native idiom rather than four separate binds.
+		// hertz binds body, query, path and header in one call, the native idiom.
 		h.POST("/scenario/:id", func(_ context.Context, rc *app.RequestContext) {
 			var in struct {
 				Name   string `json:"name"`
@@ -402,10 +391,8 @@ func buildNativeHertz(tb testing.TB, scenario string, req *http.Request) (func()
 			})
 		})
 	case "StaticFile":
-		// hertz's native static (app.FS) only serves from a directory on
-		// disk, so there is no like-for-like comparison with the in-memory
-		// filesystem the scenario uses. Declining is more honest than
-		// comparing disk I/O with a MapFS.
+		// hertz's native static (app.FS) serves only from disk, so it cannot be
+		// compared like-for-like with the scenario's in-memory FS; decline.
 		return nil, false
 	default:
 		h.GET("/scenario", func(_ context.Context, rc *app.RequestContext) {

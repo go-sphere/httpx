@@ -1,0 +1,8 @@
+status: 200
+content-type: application/json
+x-trace: full-path="/public/open"
+body: json
+---
+{
+  "route": "public"
+}

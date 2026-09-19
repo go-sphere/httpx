@@ -67,11 +67,10 @@ func casesResponse(t *testing.T, r runner) {
 		}, "/bytes"},
 		{"DataFromReader", func(router httpx.Router) {
 			router.GET("/reader", func(ctx httpx.Context) error {
-				// The size is held in a declared int64 rather than written as
-				// an untyped constant on purpose: an untyped 6 satisfies both
-				// int and int64, so it would keep compiling if the parameter
-				// were narrowed back to int. This makes the suite fail to
-				// build instead.
+				// Declared int64 rather than written as an untyped constant on
+				// purpose: an untyped 6 satisfies both int and int64, so it
+				// would keep compiling if the parameter were narrowed back to
+				// int, whereas this makes the suite fail to build.
 				var size int64 = 6
 				return ctx.DataFromReader(http.StatusOK, "text/plain", strings.NewReader("stream"), size)
 			})
@@ -123,13 +122,12 @@ func casesResponse(t *testing.T, r runner) {
 	casesWithJSON(t, r)
 }
 
-// The success-envelope wrapper the generated HTTP layer uses lives downstream
-// (sphere/server/httpz.WithJson), not in this module — an envelope is a
-// convention, not part of the transport contract. What every adapter still owes
-// such a wrapper is pinned here, written out by hand so the cases do not depend
-// on which package defines the envelope: the shape of the success response, and
-// that a panic recovered into an error travels the ordinary Handler error path
-// and reaches the engine's configured error handler with the panic text intact.
+// The success-envelope wrapper generated services use lives downstream
+// (sphere/server/httpz.WithJson), not here — an envelope is a convention, not
+// part of the transport contract. What every adapter still owes such a wrapper
+// is pinned by hand so the cases do not depend on which package defines the
+// envelope: the success shape, and that a recovered panic travels the ordinary
+// Handler error path with its text intact.
 func casesWithJSON(t *testing.T, r runner) {
 	// recovered is the wrapper's panic path: the panic value becomes an httpx
 	// 500 returned to the adapter, never a framework-rendered stack trace.
@@ -163,8 +161,8 @@ func casesWithJSON(t *testing.T, r runner) {
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/panic", nil))
 	})
 
-	// A recovered panic and a returned error must both reach a configured
-	// error handler, carrying the original message.
+	// A recovered panic and a returned error must both reach the configured error
+	// handler with the original message.
 	t.Run("WithJSONPanicThroughCustomErrorHandler", func(t *testing.T) {
 		got := r.serveWith(t, Options{ErrorHandler: teapotErrorHandler}, func(router httpx.Router) {
 			router.GET("/withjson/panic/custom", recovered(func(ctx httpx.Context) error {
@@ -223,9 +221,11 @@ func casesContext(t *testing.T, r runner) {
 	// A value injected by middleware through SetContext must reach the handler.
 	t.Run("SetContextAndRetrieve", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				ctx.SetContext(context.WithValue(ctx.Context(), ctxKey{}, "injected-value"))
-				return ctx.Next()
+			router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.SetContext(context.WithValue(ctx.Context(), ctxKey{}, "injected-value"))
+					return next(ctx)
+				}
 			})
 			router.GET("/ctx/setctx", func(ctx httpx.Context) error {
 				val, _ := ctx.Context().Value(ctxKey{}).(string)
@@ -235,8 +235,8 @@ func casesContext(t *testing.T, r runner) {
 	})
 
 	// The state store is not the context: Set is not visible through
-	// Context().Value, which is why middleware has to use SetContext to pass
-	// values into downstream calls.
+	// Context().Value, which is why middleware must use SetContext to pass values
+	// into downstream calls.
 	t.Run("StateStoreAndContextAreSeparate", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
 			router.GET("/ctx/separate", func(ctx httpx.Context) error {

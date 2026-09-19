@@ -23,18 +23,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// Each adapter declares its capabilities and an engine factory, and runs the
-// shared suite from httpxtest against the golden contracts recorded there.
-//
-// These suites belong in the adapter modules — that is the point of putting the
-// cases in an importable package, and it is what a third-party adapter does.
-// They live here until the root module is released with httpxtest in it: with
-// GOWORK=off (which `make check` uses for its dependency check) ginx and the
-// others resolve github.com/go-sphere/httpx at their declared version, which
-// does not contain the package yet. Adding a replace to an adapter go.mod is
-// not an option — it would ship in ginx/vX.Y.Z. After the next root tag, move
-// each entry below into <adapter>/conformance_test.go unchanged and bump that
-// module's httpx requirement.
 func httpxtestSuites() []httpxtest.Suite {
 	return []httpxtest.Suite{
 		{
@@ -42,8 +30,6 @@ func httpxtestSuites() []httpxtest.Suite {
 			Caps: httpxtest.Caps{
 				NamedWildcard:              true,
 				Flusher:                    true,
-				RendersErrorAtFailingLayer: true,
-				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
@@ -57,8 +43,8 @@ func httpxtestSuites() []httpxtest.Suite {
 			},
 			StdMiddleware: ginx.AdaptStdMiddleware,
 			Dispatch:      ginDispatch,
-			NativeMiddleware: func(mark func(string)) httpx.Middleware {
-				return ginx.AdaptGinMiddleware(func(c *gin.Context) {
+			NativeMiddleware: func(scope any, mark func(string)) {
+				useNative[gin.HandlerFunc](scope, func(c *gin.Context) {
 					mark("native-pre")
 					c.Next()
 					mark("native-post")
@@ -68,9 +54,6 @@ func httpxtestSuites() []httpxtest.Suite {
 		{
 			Name: "fiberx",
 			Caps: httpxtest.Caps{
-				RendersErrorAtFailingLayer: true,
-				ComposesInterceptors:       true,
-				// fasthttp offers no forced connection close; see the field doc.
 				ForcedStopCutsConnections: false,
 			},
 			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
@@ -82,8 +65,8 @@ func httpxtestSuites() []httpxtest.Suite {
 			},
 			StdMiddleware: fiberx.AdaptStdMiddleware,
 			Dispatch:      fiberDispatch,
-			NativeMiddleware: func(mark func(string)) httpx.Middleware {
-				return fiberx.AdaptFiberMiddleware(func(c fiber.Ctx) error {
+			NativeMiddleware: func(scope any, mark func(string)) {
+				useNative[fiber.Handler](scope, func(c fiber.Ctx) error {
 					mark("native-pre")
 					err := c.Next()
 					mark("native-post")
@@ -95,7 +78,6 @@ func httpxtestSuites() []httpxtest.Suite {
 			Name: "echox",
 			Caps: httpxtest.Caps{
 				Flusher:                    true,
-				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
@@ -108,8 +90,8 @@ func httpxtestSuites() []httpxtest.Suite {
 			},
 			StdMiddleware: echox.AdaptStdMiddleware,
 			Dispatch:      echoDispatch,
-			NativeMiddleware: func(mark func(string)) httpx.Middleware {
-				return echox.AdaptEchoMiddleware(func(next echo.HandlerFunc) echo.HandlerFunc {
+			NativeMiddleware: func(scope any, mark func(string)) {
+				useNative[echo.MiddlewareFunc](scope, func(next echo.HandlerFunc) echo.HandlerFunc {
 					return func(c echo.Context) error {
 						mark("native-pre")
 						err := next(c)
@@ -124,12 +106,8 @@ func httpxtestSuites() []httpxtest.Suite {
 			Caps: httpxtest.Caps{
 				NamedWildcard:              true,
 				Flusher:                    true,
-				RendersErrorAtFailingLayer: true,
-				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
-				// hertz's Engine.Close never touches an active connection; see
-				// the field doc.
-				ForcedStopCutsConnections: false,
+				ForcedStopCutsConnections:  false,
 			},
 			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
 				hlog.SetSilentMode(true)
@@ -142,8 +120,8 @@ func httpxtestSuites() []httpxtest.Suite {
 			},
 			StdMiddleware: hertzx.AdaptStdMiddleware,
 			Dispatch:      hertzDispatch,
-			NativeMiddleware: func(mark func(string)) httpx.Middleware {
-				return hertzx.AdaptHertzMiddleware(func(ctx context.Context, rc *app.RequestContext) {
+			NativeMiddleware: func(scope any, mark func(string)) {
+				useNative[app.HandlerFunc](scope, func(ctx context.Context, rc *app.RequestContext) {
 					mark("native-pre")
 					rc.Next(ctx)
 					mark("native-post")
@@ -155,7 +133,6 @@ func httpxtestSuites() []httpxtest.Suite {
 			Caps: httpxtest.Caps{
 				NamedWildcard:              true,
 				Flusher:                    true,
-				ComposesInterceptors:       true,
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
@@ -168,17 +145,18 @@ func httpxtestSuites() []httpxtest.Suite {
 			},
 			StdMiddleware: stdx.AdaptStdMiddleware,
 			Dispatch:      stdDispatch,
-			NativeMiddleware: func(mark func(string)) httpx.Middleware {
-				return stdx.AdaptStdMiddleware(func(next http.Handler) http.Handler {
-					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						mark("native-pre")
-						next.ServeHTTP(w, r)
-						mark("native-post")
-					})
-				})
-			},
 		},
 	}
+}
+
+// useNative is a type assertion because each adapter's UseNative takes its own
+// framework's middleware type.
+func useNative[T any](scope any, middleware T) {
+	user, ok := scope.(interface{ UseNative(...T) })
+	if !ok {
+		panic("conformance: scope does not have UseNative for this framework")
+	}
+	user.UseNative(middleware)
 }
 
 func TestHTTPXTestSuite(t *testing.T) {
@@ -189,12 +167,9 @@ func TestHTTPXTestSuite(t *testing.T) {
 	}
 }
 
-// fiberxOwnEngineSuite runs the whole suite against a fiber.App the caller
-// built, which is the one configuration the adapter cannot fix up at
-// construction time: fiber.Config is immutable after fiber.New, and its
-// defaults differ from what the httpx contract requires (UnescapePath in
-// particular). Only the tests use it — the benchmark table measures adapters,
-// not configurations.
+// fiberxOwnEngineSuite runs the whole suite against a caller-built fiber.App:
+// fiber.Config is immutable after fiber.New, so it is the one configuration the
+// adapter cannot fix up at construction time (UnescapePath in particular).
 func fiberxOwnEngineSuite() httpxtest.Suite {
 	suite := httpxtestSuites()[1]
 	if suite.Name != "fiberx" {
@@ -208,16 +183,11 @@ func fiberxOwnEngineSuite() httpxtest.Suite {
 		}
 		return fiberx.New(engineOpts...)
 	}
-	// Dispatch drives the adapter-built engine; leaving it set would measure
-	// something this suite does not construct.
+	// Dispatch drives the adapter-built engine, which this suite does not construct.
 	suite.Dispatch = nil
 	return suite
 }
 
-// BenchmarkHTTPXTestSuite measures the shared scenario table for every
-// adapter. It goes through the in-process requester, so the numbers compare
-// scenarios within one adapter; BenchmarkAdapter is the native-versus-httpx
-// comparison.
 func BenchmarkHTTPXTestSuite(b *testing.B) {
 	for _, suite := range httpxtestSuites() {
 		b.Run("adapter="+suite.Name, func(b *testing.B) {
@@ -226,15 +196,9 @@ func BenchmarkHTTPXTestSuite(b *testing.B) {
 	}
 }
 
-// The Dispatch hooks below are what make httpxtest.RunBenchmarks measure the
-// adapter instead of the test harness: each drives its framework's own
-// dispatcher with reusable buffers, the way that framework is served in
-// production.
-
-// Each adapter's Dispatch is its framework runner applied to an engine with
-// the httpx routes registered. The runner is split out so the native side of
-// BenchmarkNativeVsHTTPX resets the request exactly the same way — otherwise
-// the pair would measure the harness, not the abstraction.
+// Dispatch drives each framework's own dispatcher with reusable buffers, so
+// RunBenchmarks measures the adapter, not the harness. The runner split keeps
+// the native side of BenchmarkNativeVsHTTPX resetting the request identically.
 
 func ginDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
 	gin.SetMode(gin.ReleaseMode)
@@ -243,7 +207,6 @@ func ginDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) 
 	return ginRunner(tb, "ginx", ge, req)
 }
 
-// stdDispatch needs no bridging at all: the engine is the http.Handler.
 func stdDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
 	engine := stdx.New()
 	register(engine.Group(""))
@@ -276,8 +239,6 @@ func ginRunner(tb testing.TB, name string, ge *gin.Engine, req *http.Request) fu
 	return netHTTPRunner(tb, name, ge, req)
 }
 
-// netHTTPRunner reuses one request and a writer that drops bodies: the only
-// per-iteration work is clearing the response header.
 func netHTTPRunner(tb testing.TB, name string, h http.Handler, req *http.Request) func() {
 	w := &benchmarkResponseWriter{header: make(http.Header), status: http.StatusOK}
 	run := func() {
@@ -291,9 +252,8 @@ func netHTTPRunner(tb testing.TB, name string, h http.Handler, req *http.Request
 	return run
 }
 
-// fiberRunner materializes the fasthttp request once; per iteration it resets
-// the response, the route values and the cached multipart form (without the
-// last one every iteration after the first would reuse fiber's parse).
+// fiberRunner resets the cached multipart form too; without that, every
+// iteration after the first would reuse fiber's parse.
 func fiberRunner(tb testing.TB, name string, f *fiber.App, req *http.Request) func() {
 	handler := f.Handler()
 	ctx := &fasthttp.RequestCtx{}
@@ -312,9 +272,8 @@ func fiberRunner(tb testing.TB, name string, f *fiber.App, req *http.Request) fu
 	return run
 }
 
-// hertzRunner has to refill the request every iteration: hertz has no "reset
-// the response only" API, and ResetWithoutConn clears the request too. That
-// cost is inside every hertz measurement, native and httpx alike.
+// hertzRunner refills the request every iteration: hertz has no "reset the
+// response only" API, and ResetWithoutConn clears the request too.
 func hertzRunner(tb testing.TB, name string, h *server.Hertz, req *http.Request) func() {
 	rc := h.NewContext()
 	ctx := context.Background()

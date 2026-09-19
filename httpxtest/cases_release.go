@@ -12,15 +12,14 @@ import (
 
 func init() { register("ReleaseRegression", casesReleaseRegression) }
 func casesReleaseRegression(t *testing.T, run runner) {
-	t.Run("ConvertedCapabilities", func(t *testing.T) { releaseConvertedCapabilities(t, run) })
+	t.Run("CapabilitiesAtEveryDepth", func(t *testing.T) { releaseConvertedCapabilities(t, run) })
 	t.Run("EmptyCommitMatrix", func(t *testing.T) { releaseEmptyCommitMatrix(t, run) })
 	t.Run("HeaderCase", func(t *testing.T) { releaseHeaderCase(t, run) })
 	t.Run("StatusAfterCommit", func(t *testing.T) { releaseStatusAfterCommit(t, run) })
-	t.Run("ConvertedStdMiddleware", func(t *testing.T) { releaseConvertedStdMiddleware(t, run) })
+	t.Run("StdMiddlewareInChain", func(t *testing.T) { releaseStdMiddlewareInChain(t, run) })
 	t.Run("StatusOnlyShortCircuit", func(t *testing.T) { releaseStatusOnlyShortCircuit(t, run) })
 	t.Run("ErrorAfterEmptyCommitted", func(t *testing.T) { releaseErrorAfterEmptyCommitted(t, run) })
-	t.Run("EngineInterceptorInherited", func(t *testing.T) { releaseEngineInterceptorInherited(t, run) })
-	t.Run("SecondNextAfterStop", func(t *testing.T) { releaseSecondNextAfterStop(t, run) })
+	t.Run("EngineMiddlewareInherited", func(t *testing.T) { releaseEngineMiddlewareInherited(t, run) })
 }
 
 func serveReleaseEngine(t *testing.T, e httpx.Engine, method, target string) (int, string) {
@@ -91,16 +90,16 @@ func releaseStatusAfterCommit(t *testing.T, run runner) {
 	}
 }
 
-func releaseConvertedStdMiddleware(t *testing.T, run runner) {
+func releaseStdMiddlewareInChain(t *testing.T, run runner) {
 	if run.suite.StdMiddleware == nil {
 		t.Skip("no StdMiddleware hook declared")
 	}
 	s := run.suite
 	e := s.NewEngine(t, Options{})
 	r := e.Group("")
-	httpx.UseInterceptor(r, httpx.AsInterceptor(s.StdMiddleware(func(next http.Handler) http.Handler {
+	r.Use(s.StdMiddleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Header().Set("X-Trace", "ok"); next.ServeHTTP(w, r) })
-	})))
+	}))
 	r.GET("/", func(c httpx.Context) error { return c.Text(200, "ok") })
 	status, body := serveReleaseEngine(t, e, "GET", "/")
 	if status != 200 || body != "ok" {
@@ -112,7 +111,9 @@ func releaseStatusOnlyShortCircuit(t *testing.T, run runner) {
 	s := run.suite
 	e := s.NewEngine(t, Options{})
 	r := e.Group("")
-	r.Use(func(c httpx.Context) error { c.Status(401); return nil })
+	r.Use(func(httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error { c.Status(401); return nil }
+	})
 	r.GET("/", func(c httpx.Context) error { return c.Text(200, "unreachable") })
 	status, body := serveReleaseEngine(t, e, "GET", "/")
 	if status != 401 || body != "" {
@@ -135,13 +136,13 @@ func releaseErrorAfterEmptyCommitted(t *testing.T, run runner) {
 	}
 }
 
-func releaseEngineInterceptorInherited(t *testing.T, run runner) {
+func releaseEngineMiddlewareInherited(t *testing.T, run runner) {
 	s := run.suite
 	e := s.NewEngine(t, Options{})
 	ran := false
-	if composed := httpx.UseInterceptor(e, func(next httpx.Handler) httpx.Handler { return func(c httpx.Context) error { return c.NoContent(401) } }); composed != s.Caps.ComposesInterceptors {
-		t.Fatal("engine interceptor capability disagrees with Caps")
-	}
+	e.Use(func(httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error { return c.NoContent(401) }
+	})
 	e.Group("/api").Group("/v1").GET("/secret", func(c httpx.Context) error { ran = true; return c.Text(200, "secret") })
 	status, body := serveReleaseEngine(t, e, "GET", "/api/v1/secret")
 	if ran || status != 401 {
@@ -149,49 +150,38 @@ func releaseEngineInterceptorInherited(t *testing.T, run runner) {
 	}
 }
 
-func releaseSecondNextAfterStop(t *testing.T, run runner) {
-	s := run.suite
-	e := s.NewEngine(t, Options{})
-	r := e.Group("")
-	ran := false
-	r.Use(func(c httpx.Context) error {
-		if err := c.Next(); err != nil {
-			return err
-		}
-		return c.Next()
-	})
-	r.Use(func(c httpx.Context) error { return c.NoContent(401) })
-	r.GET("/", func(c httpx.Context) error { ran = true; return nil })
-	status, body := serveReleaseEngine(t, e, "GET", "/")
-	if ran {
-		t.Errorf("blocked handler ran on second Next: status=%d body=%s", status, body)
-	}
-}
-
+// The optional capabilities a Context exposes must be the same at every depth of
+// the chain: a layer probing for Flusher or Streamer and one running below it
+// must agree, or middleware written against the outer answer breaks when moved
+// inward.
 func releaseConvertedCapabilities(t *testing.T, run runner) {
 	var hasNative, hasStream, hasFlush bool
 	got := run.serve(t, func(router httpx.Router) {
-		router.Use(func(c httpx.Context) error {
-			_, hasNative = c.(httpx.NativeContextProvider)
-			_, hasStream = httpx.AsStreamer(c)
-			_, hasFlush = httpx.AsFlusher(c)
-			return c.Next()
+		router.Use(func(next httpx.Handler) httpx.Handler {
+			return func(c httpx.Context) error {
+				_, hasNative = c.(httpx.NativeContextProvider)
+				_, hasStream = httpx.AsStreamer(c)
+				_, hasFlush = httpx.AsFlusher(c)
+				return next(c)
+			}
 		})
-		httpx.UseInterceptor(router, httpx.AsInterceptor(func(c httpx.Context) error {
-			if _, ok := httpx.AsFlusher(c); ok != hasFlush {
-				t.Error("Flusher capability changed")
+		router.Use(func(httpx.Handler) httpx.Handler {
+			return func(c httpx.Context) error {
+				if _, ok := httpx.AsFlusher(c); ok != hasFlush {
+					t.Error("Flusher capability changed")
+				}
+				if _, ok := c.(httpx.NativeContextProvider); ok != hasNative {
+					t.Error("native context capability changed")
+				}
+				if _, ok := httpx.AsStreamer(c); ok != hasStream {
+					t.Error("Streamer capability changed")
+				}
+				if !hasStream {
+					return c.Text(200, "converted")
+				}
+				return httpx.ServerSentEvents(c, func(w *httpx.SSEWriter) error { return w.SendData("converted") })
 			}
-			if _, ok := c.(httpx.NativeContextProvider); ok != hasNative {
-				t.Error("native context capability changed")
-			}
-			if _, ok := httpx.AsStreamer(c); ok != hasStream {
-				t.Error("Streamer capability changed")
-			}
-			if !hasStream {
-				return c.Text(200, "converted")
-			}
-			return httpx.ServerSentEvents(c, func(w *httpx.SSEWriter) error { return w.SendData("converted") })
-		}))
+		})
 		router.GET("/", func(c httpx.Context) error { t.Error("short-circuited handler ran"); return nil })
 	}, httptest.NewRequest("GET", "/", nil))
 	want := "converted"

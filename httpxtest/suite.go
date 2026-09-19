@@ -13,16 +13,13 @@
 //		})
 //	}
 //
-// Response shape is checked against the golden contracts in this package's
-// golden directory, which every adapter compares against, so the suite states
-// what a response must look like instead of asserting that the adapters agree
-// with each other. Set HTTPX_UPDATE_GOLDEN=1 to rewrite them from a source
-// checkout; after rewriting, run the suite for every adapter without the
-// variable to confirm they all still match the recorded contract.
-//
-// The suite is deliberately usable from outside this repository: a
-// third-party adapter can import it and certify itself against the same
-// contract as the official four.
+// Response shape is checked against the golden contracts embedded in this
+// package, so the suite states what a response must look like instead of
+// asserting that the adapters agree with each other. Set HTTPX_UPDATE_GOLDEN=1
+// to rewrite them from a source checkout, then run the suite for every adapter
+// to confirm they all still match. The package is deliberately importable from
+// outside this repository, so a third-party adapter can certify itself against
+// the same contract as the official four.
 package httpxtest
 
 import (
@@ -40,51 +37,33 @@ type Options struct {
 	ErrorHandler httpx.ErrorHandler
 }
 
-// Caps declares the optional behavior an adapter supports. Cases that depend
-// on a capability skip with a reason when it is absent, so a missing feature
-// stays visible in test output instead of being silently untested.
+// Caps declares the optional behavior an adapter supports. Cases depending on
+// a capability skip with a reason when it is absent, so a missing feature stays
+// visible in test output instead of being silently untested.
 type Caps struct {
 	// NamedWildcard reports httpx.RouterFeatureNamedWildcard.
 	NamedWildcard bool
 	// Flusher reports that Context implements httpx.Flusher.
 	Flusher bool
-	// RendersErrorAtFailingLayer reports that a middleware error is written to
-	// the response where it happens, rather than being handed back to the
-	// framework's own error handler after the chain unwinds.
-	RendersErrorAtFailingLayer bool
-	// ComposesInterceptors reports that the router implements
-	// httpx.InterceptorScope natively instead of falling back to
-	// httpx.AsMiddleware.
-	ComposesInterceptors bool
 	// InProcessUnknownLengthBody reports that the engine's httpx.TestRequester
-	// can deliver a request whose body length is not known in advance.
-	//
-	// This describes the in-process requester, not the serving path: fiber's
-	// app.Test serializes a negative ContentLength as a literal
-	// "Content-Length: -1" header, which fasthttp then rejects, while fiber
-	// itself serves chunked requests over a socket normally. An adapter that
-	// leaves this false is stating that the property cannot be *verified*
-	// in-process, not that it is unsupported.
+	// can deliver a request whose body length is not known in advance. This
+	// describes the in-process requester, not the serving path: fiber's app.Test
+	// serializes a negative ContentLength as a literal "Content-Length: -1"
+	// header, which fasthttp rejects, while fiber serves chunked requests over a
+	// socket normally. False means the property cannot be *verified* in-process,
+	// not that it is unsupported.
 	InProcessUnknownLengthBody bool
 	// ForcedStopCutsConnections reports that when Engine.Stop's context
 	// expires, the adapter also cuts the connections still being served,
-	// instead of only closing the listener and leaving them to finish.
-	//
-	// Closing the listener is the contract and every adapter does it; this is
-	// the part the frameworks genuinely differ on. net/http has Server.Close,
-	// so ginx, echox and stdx cut in-flight connections. fasthttp has no
-	// equivalent — no Server.Close, and fiber hands out no listener to close
-	// behind its back — and hertz's Engine.Close is Shutdown with an
-	// already-expired context, which closes the listener but never touches an
-	// active connection. So fiberx and hertzx let an in-flight request run to
-	// completion, and say so here rather than leaving it as a silent
-	// divergence.
-	//
-	// Unlike the rest of Caps this one is **not** checked by the Caps group:
-	// it needs a real connection to hold open, which no in-process requester
-	// has. conformance.TestEngineForcedStopConformance verifies it against
-	// actual behavior in both directions, so the claim still cannot drift into
-	// documentation.
+	// instead of only closing the listener and leaving them to finish. Closing
+	// the listener is the contract and every adapter does it; the frameworks
+	// differ on the rest. net/http has Server.Close, so ginx, echox and stdx cut
+	// in-flight connections; fasthttp has no equivalent (and fiber hands out no
+	// listener to close behind its back), and hertzx's Engine.Close is Shutdown
+	// with an already-expired context, which never touches an active connection.
+	// Unlike the rest of Caps this is **not** checked by the Caps group — it
+	// needs a real connection to hold open — so the conformance module verifies
+	// it against actual behavior instead.
 	ForcedStopCutsConnections bool
 }
 
@@ -95,36 +74,35 @@ type Suite struct {
 	// Caps declares optional behavior; see Caps.
 	Caps Caps
 	// NewEngine builds a fresh engine for one case. The engine must support
-	// httpx.TestRequester so the suite can serve requests in-process. Register
-	// nothing on it: each case registers what it needs.
+	// httpx.TestRequester so the suite can serve requests in-process; register
+	// nothing on it, each case registers what it needs.
 	NewEngine func(tb testing.TB, opts Options) httpx.Engine
 
 	// Dispatch builds an engine with register applied and returns a function
 	// that serves req through the framework's **own** dispatcher, reusing
-	// whatever buffers that framework needs. RunBenchmarks calls the returned
-	// function once per iteration.
-	//
-	// It exists because the portable path (httpx.TestRequester) allocates an
-	// *http.Response and reads its body, which costs 20+ allocations and a few
-	// microseconds — on an empty request that is 98% of the measurement.
-	// Without this hook the benchmarks still run, they just measure the
-	// harness. About twenty lines per adapter; see the suites in
+	// whatever buffers that framework needs. It exists because the portable
+	// path (httpx.TestRequester) allocates an *http.Response and reads its
+	// body, which on an empty request dominates the measurement; without this
+	// hook the benchmarks measure the harness. See the suites in
 	// conformance/httpxtest_suite_test.go.
 	Dispatch func(tb testing.TB, register func(httpx.Router), req *http.Request) func()
 
 	// StdMiddleware wraps a plain net/http middleware as an httpx.Middleware,
 	// which is the adapter's AdaptStdMiddleware. It is a hook rather than part
-	// of the Router interface, so the suite has to be handed it; the cases that
-	// mount net/http middleware skip when it is nil.
+	// of the Router interface, so the cases that mount net/http middleware skip
+	// when it is nil.
 	StdMiddleware func(func(http.Handler) http.Handler) httpx.Middleware
 
-	// NativeMiddleware wraps the adapter's own framework middleware as an
-	// httpx.Middleware: it must record mark("native-pre"), continue the chain
-	// the *native* way (gin's c.Next, echo's next(c), fiber's c.Next, hertz's
-	// rc.Next) and then record mark("native-post"). The cases that mix native
-	// and httpx middleware skip when it is nil, which is the right answer for
-	// an adapter that has no native bridge.
-	NativeMiddleware func(mark func(string)) httpx.Middleware
+	// NativeMiddleware registers the framework's own middleware on scope — an
+	// httpx.Router or httpx.Engine — through the adapter's UseNative. The layer
+	// must record mark("native-pre"), continue the chain the *native* way (gin's
+	// c.Next, echo's next(c), fiber's c.Next, hertz's rc.Next) and then record
+	// mark("native-post"). It is a hook because UseNative takes the framework's
+	// own middleware type, which the shared interface cannot name and no
+	// httpx.Middleware can stand in for, since every httpx layer shares one
+	// native handler slot. stdx leaves it nil and the cases mixing native and
+	// httpx layers skip there.
+	NativeMiddleware func(scope any, mark func(string))
 }
 
 // Run executes every shared case against s.
@@ -157,7 +135,6 @@ func register(name string, run func(t *testing.T, r runner)) {
 	groups = append(groups, caseGroup{name: name, run: run})
 }
 
-// runner gives the cases access to the adapter under test.
 type runner struct {
 	suite Suite
 	root  string
@@ -170,8 +147,6 @@ type response struct {
 	Headers http.Header
 }
 
-// serve builds an engine, lets register add routes, and dispatches req
-// in-process.
 func (r runner) serve(t *testing.T, register func(httpx.Router), req *http.Request) response {
 	t.Helper()
 	return r.serveWith(t, Options{}, register, req)
@@ -179,12 +154,28 @@ func (r runner) serve(t *testing.T, register func(httpx.Router), req *http.Reque
 
 func (r runner) serveWith(t *testing.T, opts Options, register func(httpx.Router), req *http.Request) response {
 	t.Helper()
+	return r.serveEngine(t, opts, func(engine httpx.Engine) {
+		register(engine.Group(""))
+	}, req)
+}
+
+// serveEngine is serveWith one level out: register is handed the Engine itself,
+// for cases whose subject is Engine.Group or an engine-scope registration
+// rather than anything a Router reaches.
+func (r runner) serveEngine(t *testing.T, opts Options, register func(httpx.Engine), req *http.Request) response {
+	t.Helper()
 	engine := r.suite.NewEngine(t, opts)
 	if engine == nil {
 		t.Fatalf("%s: NewEngine returned nil", r.suite.Name)
 	}
-	register(engine.Group(""))
+	register(engine)
+	return r.serveOn(t, engine, req)
+}
 
+// serveOn dispatches one request against an engine that is already built and
+// registered, for the cases whose subject is what a second request sees.
+func (r runner) serveOn(t *testing.T, engine httpx.Engine, req *http.Request) response {
+	t.Helper()
 	requester, ok := httpx.AsTestRequester(engine)
 	if !ok {
 		t.Fatalf("%s: engine does not support httpx.TestRequester", r.suite.Name)
@@ -205,8 +196,6 @@ func (r runner) serveWith(t *testing.T, opts Options, register func(httpx.Router
 	return response{Status: resp.StatusCode, Body: string(body), Headers: headers}
 }
 
-// assertGolden serves the request and compares the response contract with the
-// golden file recorded for this case.
 func (r runner) assertGolden(t *testing.T, register func(httpx.Router), req *http.Request) {
 	t.Helper()
 	r.assertGoldenWith(t, Options{}, register, req)

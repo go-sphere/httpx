@@ -11,10 +11,9 @@ A unified HTTP framework abstraction layer for Go that provides a consistent int
 - **Echo** (`echox`) - High performance, minimalist framework
 - **Hertz** (`hertzx`) - High-performance HTTP framework by CloudWego
 - **net/http** (`stdx`) - No web framework at all: the standard library plus a
-  small route tree written for this contract. Pulls in no framework, serves
-  `Static`/`HandleStd`/std middleware with nothing to bridge, and composes
-  `Middleware` at registration like `Interceptor`, so a 10-layer chain costs
-  ~61 ns with zero allocations
+  small route tree written for this contract. Pulls in no framework and serves
+  `Static`/`HandleStd`/std middleware with nothing to bridge; a 10-layer chain
+  costs ~35 ns with zero allocations
 
 ## Adapter options
 
@@ -63,8 +62,8 @@ func TestConformance(t *testing.T) {
 
 A third-party adapter can import `httpxtest` and certify itself against the
 same contract as the official four: registration and routing, chain control
-flow (including mixing `Middleware`, `Interceptor` and the framework's own
-middleware), request bodies and binders, forms and uploads, and the edges —
+flow (including how httpx layers nest inside the framework's own middleware),
+request bodies and binders, forms and uploads, and the edges —
 repeated query/header keys, unknown-length bodies, encoded paths, large
 bodies. Every capability an adapter declares in `Caps` is also checked against
 what it actually does. The four official suites are wired in
@@ -89,8 +88,8 @@ go test ./conformance -run '^$' -bench '^BenchmarkHTTPXTestSuite$/ginx' -benchme
 process: the cross-framework benchmark tables and the cases that reach for
 each framework's native middleware. Adapter-specific behavior is tested in the
 adapter's own module (for example `ginx/middleware_test.go` for how ginx
-registers middleware on gin, and `ginx/interceptor_test.go` for composed
-chains).
+composes chains into gin routes, and `ginx/middleware_alloc_test.go` for the
+allocation guards).
 
 ## Streaming and Server-Sent Events
 
@@ -151,50 +150,12 @@ use a real HTTP connection when testing incremental delivery or disconnects.
 
 ## Middleware
 
-`Router.Use` and `Router.Group` take `httpx.Middleware` (`func(httpx.Context) error`).
-A middleware continues the chain with `ctx.Next()` and stops it by returning
-without calling `Next` — either after writing a response, or by returning an
-error for the adapter's error handler to render.
-
-Each middleware is registered as one native handler, so it interleaves with
-native middleware in registration order and `Next` behaves exactly as the
-framework's own does. That costs one wrapper allocation and two calls per layer
-per request; `Interceptor` below is the cheap path for chains where that
-matters.
-
-Native middleware needs no special handling — it occupies its own handler slot
-like every other layer — but `UseNative` skips the adapter entirely:
+There is one middleware form. A `httpx.Middleware` receives the rest of the
+chain and returns the handler that runs in its place:
 
 ```go
-// Preferred: no adapter in between, and the position is explicit.
-router.(*ginx.Router).UseNative(gin.Recovery())
+type Middleware func(next httpx.Handler) httpx.Handler
 
-// Equivalent behavior, one adapter layer more.
-router.Use(ginx.AdaptGinMiddleware(gin.Recovery()))
-```
-
-`UseNative` is on both `Engine` and `Router` in `ginx` (`gin.HandlerFunc`),
-`echox` (`echo.MiddlewareFunc`), `fiberx` (`fiber.Handler`) and `hertzx`
-(`app.HandlerFunc`). On `fiberx` it has two framework-specific rules: register
-it before the routes it should wrap, and it always runs *outside* anything
-registered with `Use` on the same scope, because `Use` composes into the route
-while `UseNative` takes a real fiber stack entry ahead of it.
-
-`stdx` has no `UseNative`, deliberately. There is no framework chain to hand a
-middleware to — routes are composed at registration — so the only possible
-implementation would be `Use(AdaptStdMiddleware(mw))`, spelled differently.
-`AdaptStdMiddleware` is not a bridge there; it is what keeps `ctx.Next()` wired
-across the `net/http` handler boundary.
-
-`AdaptStdMiddleware` (`func(http.Handler) http.Handler`) drives the chain
-through `ctx.Next()` and works the same way on every adapter.
-
-### Interceptors (experimental)
-
-`httpx.Interceptor` is an additive second form that takes the rest of the
-chain instead of driving it through `ctx.Next()`:
-
-```go
 func RequestID(next httpx.Handler) httpx.Handler {
     return func(ctx httpx.Context) error {
         ctx.SetContext(withRequestID(ctx.Context()))
@@ -202,34 +163,78 @@ func RequestID(next httpx.Handler) httpx.Handler {
     }
 }
 
-httpx.UseInterceptor(router, RequestID)   // reports whether the scope composed them
+engine.Use(RequestID)              // engine scope
+needAuth := api.Group("/", auth)   // group scope, in one call
 ```
 
-Because the chain is composed into each route at registration, it needs no
-per-request object: one call per layer, zero allocations, and no depth at
-which cost stops growing linearly. `ginx` composes natively; the other
-adapters fall back to adapting each layer, which behaves identically and costs
-what `Use` costs. `httpx.AsMiddleware` and `httpx.AsInterceptor` convert
-between the two forms. `AsInterceptor` allocates continuation state per request
-and an additional wrapper when the context exposes optional capabilities such
-as streaming, flushing, or native context access; those capabilities are
-preserved by the conversion.
+`Use` is on both `httpx.Engine` and `httpx.Router` (through
+`httpx.MiddlewareScope`), and `Group`'s variadic takes the same type.
 
-Three things to know about:
+Until v0.0.5 there were two forms: this one, then called `Interceptor`, and a
+`func(httpx.Context) error` that drove the chain with `ctx.Next()`. The
+Next-driven form is gone, `Context.Next()` with it, and the composed form took
+the `Middleware` name. See the CHANGELOG for the migration.
 
-- Interceptors always run inside anything registered with `Use`/`UseNative` on
-  the same scope, regardless of call order.
-- They are composed into **registered routes**, which includes `Static`,
-  `StaticFS` and `HandleStd` — an interceptor wraps a static mount and can
-  block it — but not unmatched paths. An engine-wide concern that must also
-  cover 404s (access log, panic recovery) belongs on `Use`.
-- An error from an inner layer is rendered at the route rather than at the
-  layer that produced it, so a layer that logs the outcome should use the error
+Four things to know about:
+
+- **Stopping the chain** is returning without calling `next` — after writing a
+  response, or by returning an error for the adapter's error handler to render.
+  There is no Abort to reason about and no layer index.
+- **No per-request state.** The chain is composed into each route at
+  registration: one call per layer, zero allocations, and no depth at which cost
+  stops growing linearly.
+- **What a chain covers.** Every registered route, `Static`, `StaticFS` and
+  `HandleStd` included — a layer wraps a static mount and can block it. Plus,
+  for an **engine-scope** chain only, the paths no route matched: the adapter's
+  404/405 fallback composes the engine's own layers in front of the handler that
+  renders the error, so an access log, a panic recovery layer or a CORS layer
+  sees a request for `/nope` and may answer it instead. A **group's** layers
+  never cover an unmatched path — a 404 belongs to no group.
+- **A route's chain is resolved when the route is registered**, not when its
+  scope was created, so `engine.Use` after a group exists still reaches the
+  routes that group registers afterwards. Routes already registered keep the
+  chain they were registered with — the rule every framework applies to its own
+  `Use`, and what makes a registered route immutable.
+- **An error from an inner layer is rendered at the route**, not at the layer
+  that produced it, so a layer that logs the outcome should use the error
   returned by `next`, not only `Context.StatusCode`.
 
-On a bare chain the form is worth 2x versus `Middleware` (see the benchmarks);
-over real middleware it is worth a few percent, because the middlewares' own
-work dominates.
+### Native middleware
+
+The framework's own middleware is registered with `UseNative`, on both `Engine`
+and `Router` in `ginx` (`gin.HandlerFunc`), `echox` (`echo.MiddlewareFunc`),
+`fiberx` (`fiber.Handler`) and `hertzx` (`app.HandlerFunc`):
+
+```go
+router.(*ginx.Router).UseNative(gin.Recovery())
+```
+
+There is no `Adapt<Framework>Middleware` any more, and there cannot be: every
+httpx layer on a scope shares a single native handler slot, so a native
+middleware wrapped as an `httpx.Middleware` would advance the framework's own
+index past that slot instead of into the httpx chain. `UseNative` was already
+the documented preference; it is now the only way.
+
+A `UseNative` layer therefore always runs *outside* everything registered with
+`Use` on the same scope, whatever the call order. On `fiberx` one extra rule
+applies: register it before the routes it should wrap, because fiber matches its
+route stack in registration order.
+
+`stdx` has no `UseNative`, deliberately. There is no framework chain to hand a
+middleware to, and net/http has no middleware type but the one
+`AdaptStdMiddleware` already takes.
+
+### Plain net/http middleware
+
+`AdaptStdMiddleware(func(http.Handler) http.Handler) httpx.Middleware` is on all
+five adapters and works the same way on each: request mutation (including
+context values), response-writer wrapping and short-circuiting all propagate.
+`func(http.Handler) http.Handler` is framework-neutral, so unlike a native
+middleware it maps directly onto the composed form.
+
+```go
+router.Use(ginx.AdaptStdMiddleware(otelhttp.NewMiddleware("api")))
+```
 
 ## Router Feature Detection
 

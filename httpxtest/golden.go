@@ -24,9 +24,8 @@ import (
 //go:embed golden
 var goldenFS embed.FS
 
-// Update mode is an environment variable rather than a flag: this is a normal
-// package, and registering a flag here would add it to every binary that
-// imports httpxtest.
+// Update mode is an environment variable rather than a flag: registering a flag
+// here would add it to every binary that imports httpxtest.
 const updateGoldenEnv = "HTTPX_UPDATE_GOLDEN"
 
 // responseContract is the part of a response that is contractual across
@@ -75,9 +74,9 @@ func contractOf(t *testing.T, resp response) responseContract {
 	}
 
 	// Content-Type describes a body, so it is contractual exactly where the
-	// body is. Hertz labels every bodyless response text/plain (native hertz
-	// does the same) and the other three label none of them; on a redirect gin
-	// labels its HTML body and fiber has none to label.
+	// body is: hertz labels every bodyless response text/plain and the other
+	// three label none, and on a redirect gin labels its HTML body while fiber
+	// has none to label.
 	if c.BodyMode == "json" || c.BodyMode == "text" {
 		c.ContentType = contentType
 	} else {
@@ -102,8 +101,8 @@ func canonicalJSON(t *testing.T, body string) string {
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected exactly one JSON value, got trailing data: %q", body)
 	}
-	// Re-encoding sorts object keys, so formatting and key order stop being
-	// part of the comparison while values stay exact.
+	// Re-encoding sorts object keys, so formatting and key order stop being part
+	// of the comparison while values stay exact.
 	out, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		t.Fatalf("cannot re-encode json body: %v", err)
@@ -181,8 +180,8 @@ func (r runner) compareGolden(t *testing.T, resp response) {
 }
 
 // writeGolden writes into the package source directory, which only exists when
-// the suite runs from a checkout. Running update mode against a module in the
-// build cache is a mistake worth reporting rather than ignoring.
+// the suite runs from a checkout; update mode against a module in the build
+// cache is a mistake worth reporting rather than ignoring.
 func writeGolden(t *testing.T, name, content string) {
 	t.Helper()
 	dir, ok := goldenSourceDir()

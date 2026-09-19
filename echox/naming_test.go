@@ -10,11 +10,9 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// These tests cover the unified option surface: WithErrorHandler takes
-// httpx.ErrorHandler on every adapter, UseNative takes the framework's own
-// middleware type, and FromEcho builds an httpx.Context from a native one.
-
-func TestUseNativeKeepsPosition(t *testing.T) {
+// Native echo middleware keeps its own slot in echo's chain, so it wraps the
+// whole composed chain — including a layer registered after it.
+func TestUseNativeWrapsComposedChain(t *testing.T) {
 	var marks []string
 	mark := func(s string) { marks = append(marks, s) }
 	native := func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -26,11 +24,13 @@ func TestUseNativeKeepsPosition(t *testing.T) {
 		}
 	}
 	middleware := func(name string) httpx.Middleware {
-		return func(ctx httpx.Context) error {
-			mark(name + "-pre")
-			err := ctx.Next()
-			mark(name + "-post")
-			return err
+		return func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				mark(name + "-pre")
+				err := next(ctx)
+				mark(name + "-post")
+				return err
+			}
 		}
 	}
 
@@ -54,7 +54,7 @@ func TestUseNativeKeepsPosition(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d", rr.Code)
 	}
-	want := "a-pre,native-pre,b-pre,handler,b-post,native-post,a-post"
+	want := "native-pre,a-pre,b-pre,handler,b-post,a-post,native-post"
 	if got := strings.Join(marks, ","); got != want {
 		t.Fatalf("order mismatch\n got: %s\nwant: %s", got, want)
 	}
@@ -100,9 +100,6 @@ func TestFromEcho(t *testing.T) {
 	if ctx.Query("a") != "1" {
 		t.Fatalf("Query(a) = %q", ctx.Query("a"))
 	}
-	if err := ctx.Next(); err != nil {
-		t.Fatalf("Next on a detached context = %v, want nil", err)
-	}
 	if err := ctx.Text(http.StatusTeapot, "from-echo"); err != nil {
 		t.Fatalf("Text: %v", err)
 	}
@@ -114,16 +111,14 @@ func TestFromEcho(t *testing.T) {
 // A context built by FromEcho has no engine behind it, so it cannot resolve
 // this adapter's named-wildcard normalization — the same degradation FromStd
 // documents for having no Engine. It must degrade, not panic: the name lives in
-// the engine's table, and the only thing that would let a detached context
-// reach one is a process-wide table, which is what scoping the mapping per
-// engine exists to avoid.
+// the engine's table, and scoping the mapping per engine is what avoids a
+// process-wide table.
 func TestFromEchoDegradesNamedWildcard(t *testing.T) {
 	e := echo.New()
 	app := New(WithEngine(e))
 
 	var detached httpx.Context
 	app.Group("").GET("/files/*filepath", func(ctx httpx.Context) error {
-		// The adapter's own context resolves the name.
 		if got := ctx.FullPath(); got != "/files/*filepath" {
 			t.Errorf("adapter context FullPath = %q, want %q", got, "/files/*filepath")
 		}
@@ -165,8 +160,6 @@ func TestFromEchoDegradesNamedWildcard(t *testing.T) {
 // stay assignable to it: that is what NewConfig installs on the engine.
 func TestDefaultErrorHandlerIsNativeShape(t *testing.T) {
 	e := echo.New()
-	// Assignable to echo's own handler slot — which is what NewConfig relies
-	// on when it installs the default.
 	e.HTTPErrorHandler = DefaultErrorHandler
 
 	e = echo.New()

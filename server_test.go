@@ -17,9 +17,6 @@ func TestStartAndCloseNilServer(t *testing.T) {
 	}
 }
 
-// TestStartAndCloseNilServerConcurrent verifies that Start(nil), Close(ctx, nil),
-// and Close(nil, nil) are completely safe against data races and panics
-// when invoked concurrently across 100 goroutines.
 func TestStartAndCloseNilServerConcurrent(t *testing.T) {
 	const goroutines = 100
 	const iterations = 50
@@ -30,13 +27,11 @@ func TestStartAndCloseNilServerConcurrent(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			for i := 0; i < iterations; i++ {
-				// 1. Concurrent Start(nil)
 				if err := Start(nil); err != nil {
 					errCh <- err
 					return
 				}
 
-				// 2. Concurrent Close with background context
 				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 				if err := Close(ctx, nil); err != nil {
 					cancel()
@@ -45,7 +40,6 @@ func TestStartAndCloseNilServerConcurrent(t *testing.T) {
 				}
 				cancel()
 
-				// 3. Concurrent Close with cancelled context
 				cancelledCtx, cancelNow := context.WithCancel(context.Background())
 				cancelNow()
 				if err := Close(cancelledCtx, nil); err != nil {
@@ -53,10 +47,9 @@ func TestStartAndCloseNilServerConcurrent(t *testing.T) {
 					return
 				}
 
-				// 4. Concurrent Close with nil context. The nil server short-circuits
-				// before the context is used, so the nil context is never dereferenced.
-				// Note: Close(nil, srv) with a live server and active connections would
-				// panic inside net/http's Shutdown polling; only the nil-server path is safe.
+				// The nil server short-circuits before the context is used, so this
+				// nil context is never dereferenced; Close(nil, srv) with a live
+				// server and active connections would panic in net/http's Shutdown.
 				if err := Close(nil, nil); err != nil { //nolint:staticcheck // Intentionally verifies the nil-server short-circuit.
 					errCh <- err
 					return

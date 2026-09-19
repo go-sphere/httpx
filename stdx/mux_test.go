@@ -6,10 +6,9 @@ import (
 	"testing"
 )
 
-// The route tree is this adapter's only hand-written piece of routing, so its
-// rules are pinned directly rather than only through the shared suite: what
-// matches, what backtracks, what is a 405 instead of a 404, and which
-// conveniences net/http's ServeMux has that this tree deliberately does not.
+// The route tree is this adapter's only hand-written routing, so its rules are
+// pinned directly: what matches, what backtracks, what is a 405 instead of a
+// 404, and which ServeMux conveniences this tree deliberately does not have.
 func TestTreeMatch(t *testing.T) {
 	patterns := []struct{ method, pattern string }{
 		{http.MethodGet, "/"},
@@ -99,9 +98,8 @@ func TestTreeMatchDoesNotAllocate(t *testing.T) {
 	root.add(http.MethodGet, "/users/:id/posts/:post", &route{pattern: "/users/:id/posts/:post"})
 	root.add(http.MethodGet, "/assets/*filepath", &route{pattern: "/assets/*filepath"})
 
-	// The buffer lives outside the measured closure because that is where it
-	// lives in production too: inside the request context, not on the stack of
-	// whoever calls match.
+	// The buffer lives outside the measured closure, as it does in production:
+	// inside the request context, not on match's caller stack.
 	var buf [8]string
 	if n := testing.AllocsPerRun(100, func() {
 		values := buf[:0]

@@ -9,15 +9,8 @@ import (
 
 // RequestInfo exposes a stable, read-only view of an incoming HTTP request.
 //
-// All methods on RequestInfo are side-effect-free:
-// calling them MUST NOT consume the request body, trigger form parsing,
-// or mutate any internal request state.
-//
-// This interface is intended to be safely used by middleware and handlers
-// that only need to request metadata such as routing, headers, queries, and cookies.
-//
-// Implementations should provide best-effort, framework-independent behavior
-// across supported HTTP frameworks.
+// All methods are side-effect-free: they MUST NOT consume the request body,
+// trigger form parsing, or mutate any internal request state.
 type RequestInfo interface {
 	Method() string
 	Path() string     // Always returns the decoded request path
@@ -51,53 +44,34 @@ type RequestInfo interface {
 
 // BodyAccess provides access to the raw request body.
 //
-// Methods on BodyAccess MAY consume the request body.
-// Implementations SHOULD ensure the body can be read multiple times
-// when possible, so that BodyAccess and Binder can coexist safely.
-//
-// Callers must assume that reading from the body has consumption semantics
-// and should avoid invoking these methods unless necessary.
+// Methods on BodyAccess MAY consume the request body. Implementations SHOULD
+// keep the body readable afterwards so BodyAccess and Binder can coexist.
 type BodyAccess interface {
 	// BodyRaw returns the full request body as a byte slice.
 	//
-	// Calling this method may consume the underlying request body.
-	// Implementations should make best-effort to allow subsequent reads.
-	//
 	// The returned slice belongs to the caller: it stays valid and unchanged
 	// after the handler returns, so it can be retained, sent to another
-	// goroutine or cached. Implementations on frameworks that keep the body in
-	// a pooled buffer (fasthttp-based ones) therefore copy it, which costs one
-	// allocation the size of the body. Handlers that only need the bytes during
-	// the request — and large uploads in particular — should prefer
-	// BodyReader, or reach for the native context to read the framework's own
-	// buffer without a copy.
+	// goroutine or cached. Adapters that keep the body in a pooled buffer
+	// (the fasthttp-based ones) therefore copy it, one allocation the size of
+	// the body. Handlers that only need the bytes during the request — large
+	// uploads in particular — should prefer BodyReader or the native context,
+	// which are the zero-copy paths.
 	BodyRaw() ([]byte, error)
 
-	// BodyReader returns a reader for the request body.
-	//
-	// The returned reader may be consumed by the caller.
-	// Implementations should document whether the reader is reusable.
+	// BodyReader returns a reader for the request body, which the caller may
+	// consume. Whether the reader is reusable is implementation-defined.
 	BodyReader() io.ReadCloser
 }
 
 // FormAccess provides access to form and multipart form data.
 //
-// Methods on FormAccess MAY trigger form or multipart parsing.
-// Parsing form data can have observable side effects, including:
-//   - consuming the request body
-//   - allocating memory
-//   - creating temporary files on disk
-//
-// Callers should treat these methods as potentially expensive and
-// avoid calling them unless form data is required.
-//
-// Implementations should ensure that form parsing is performed at most once
-// per request and that parsed results are reused across calls.
+// Methods on FormAccess MAY trigger form or multipart parsing, which consumes
+// the request body, allocates, and can create temporary files on disk. Treat
+// them as expensive. Implementations parse at most once per request and reuse
+// the result.
 type FormAccess interface {
-	// FormValue returns the first value associated with the given key.
-	//
-	// Calling this method may trigger form parsing.
-	// If the key does not exist, an empty string is returned.
+	// FormValue returns the first value associated with the given key, or an
+	// empty string when the key is absent.
 	//
 	// When the same key appears in both the URL query and the form body,
 	// which value wins is framework-dependent (gin/echo prefer the body,
@@ -105,223 +79,128 @@ type FormAccess interface {
 	// Query and the form explicitly when both may be present.
 	FormValue(key string) string
 
-	// MultipartForm returns the parsed multipart form.
-	//
-	// Calling this method may trigger multipart parsing and cause
-	// temporary files to be created on disk.
-	//
-	// The returned *multipart.Form is owned by the request context and
-	// must not be modified by the caller.
+	// MultipartForm returns the parsed multipart form. The returned form is
+	// owned by the request context and must not be modified by the caller.
 	MultipartForm() (*multipart.Form, error)
 
-	// FormFile returns the first file for the provided form field name.
-	//
-	// Calling this method may trigger multipart parsing.
-	// If no file is associated with the given name, an error is returned.
+	// FormFile returns the first file for the provided form field name, or an
+	// error when no file is associated with that name.
 	FormFile(name string) (*multipart.FileHeader, error)
 }
 
-// Request aggregates request inspection and request data access capabilities.
+// Request aggregates request inspection and request data access.
 //
-// Request is a composite interface that combines side-effect-free request
-// metadata access with request body and form access.
-//
-// Callers should be aware that while RequestInfo methods are guaranteed
-// to be side-effect free, methods provided by BodyAccess and FormAccess
-// MAY consume the request body or trigger request parsing.
+// RequestInfo methods are side-effect free; BodyAccess and FormAccess methods
+// MAY consume the request body or trigger parsing.
 type Request interface {
-	// RequestInfo provides read-only access to request metadata.
 	RequestInfo
-
-	// BodyAccess provides access to the raw request body and may
-	// have consumption semantics.
 	BodyAccess
-
-	// FormAccess provides access to form and multipart form data and
-	// may trigger parsing with observable side effects.
 	FormAccess
 }
 
-// Binder standardizes payload decoding across HTTP frameworks.
-//
-// Binder methods decode data from different parts of the request
-// into the provided destination structure. Decoding behavior is
-// based on struct tags and follows framework-independent conventions.
+// Binder decodes parts of the request into a destination struct, driven by
+// struct tags.
 //
 // Bind* decodes and does **not** validate. A `binding` struct tag means
-// nothing to httpx, and no adapter runs go-playground/validator (or any other
-// rule engine) on the decoded value; deciding whether a request is acceptable
-// belongs to the caller — protovalidate in generated sphere handlers, or
-// whatever check the handler writes for itself.
-//
-// This is not merely a simplification. "Validate after every successful
-// decode" cannot hold for multi-source binding, which is the shape generated
-// code uses: given
-//
-//	struct {
-//		Name string `json:"name"`
-//		ID   string `uri:"id" binding:"required"`
-//	}
-//
-// and the sequence BindJSON → BindHeader → BindQuery → BindURI, validating
-// inside BindJSON rejects the request for an empty ID that only BindURI is
-// going to fill. A binder cannot know it is the last one to run, so it cannot
-// know when validation would be meaningful.
+// nothing to httpx; deciding whether a request is acceptable belongs to the
+// caller — protovalidate in generated sphere handlers, or whatever check the
+// handler writes for itself. Validating inside the binder cannot be
+// reintroduced: a struct bound from several sources (BindJSON, BindHeader,
+// BindQuery, BindURI) is incomplete until the last call, and no binder can know
+// it is the last one to run.
 //
 // A decode failure is still an error, reported as HTTP 400 via WrapBindError
 // on every adapter.
 //
-// Binder methods MAY consume the request body or trigger parsing
-// of request data. Implementations SHOULD ensure that decoding can
-// coexist safely with BodyAccess and FormAccess when possible.
+// Binder methods MAY consume the request body or trigger parsing.
 type Binder interface {
-	// BindJSON decodes the JSON request body into dst.
+	// BindJSON decodes the JSON request body into dst using `json` tags.
 	//
-	// Decoding is performed based on `json` struct tags.
 	// Handling of trailing data after the first JSON value is
 	// framework-dependent (streaming decoders ignore it, whole-body
 	// decoders reject it); do not rely on either behavior.
-	//
-	// Calling this method may consume the request body.
-	// Implementations should make best-effort to allow the body
-	// to be read again after binding.
 	BindJSON(dst any) error
 
-	// BindQuery decodes URL query parameters into dst.
-	//
-	// Decoding is performed based on `query` struct tags.
+	// BindQuery decodes URL query parameters into dst using `query` tags.
 	BindQuery(dst any) error
 
-	// BindForm decodes form and multipart form fields into dst.
-	//
-	// Decoding is performed based on `form` struct tags.
-	// Calling this method may trigger form or multipart parsing.
+	// BindForm decodes form and multipart form fields into dst using `form`
+	// tags, and may trigger form or multipart parsing.
 	BindForm(dst any) error
 
-	// BindURI decodes route parameters into dst.
+	// BindURI decodes route parameters into dst using `uri` tags.
 	//
-	// Decoding is performed based on `uri` struct tags. A field tagged
-	// `uri:"x"` receives exactly what RequestInfo.Param("x") returns —
-	// same string, same percent-decoding — for every route parameter,
-	// **including a named wildcard**: /files/*path binding "a/b.txt", not
-	// "/a/b.txt" and not "". Adapters that rewrite named wildcards for a
+	// A field tagged `uri:"x"` receives exactly what RequestInfo.Param("x")
+	// returns — same string, same percent-decoding — for every route
+	// parameter, **including a named wildcard**: /files/*path binds "a/b.txt",
+	// not "/a/b.txt" and not "". Adapters that rewrite named wildcards for a
 	// router without them (see RouterFeatureNamedWildcard) must resolve the
 	// name here too; binding straight off the framework's parameter set
 	// fails silently, since an unmatched tag is not an error.
 	BindURI(dst any) error
 
-	// BindHeader decodes HTTP headers into dst.
-	//
-	// Decoding is performed based on `header` struct tags.
-	// Header field names should be treated in a case-insensitive manner.
+	// BindHeader decodes HTTP headers into dst using `header` tags. Header
+	// names are matched case-insensitively.
 	BindHeader(dst any) error
 }
 
 // Responder writes HTTP responses in a framework-independent manner.
 //
-// Methods on Responder mutate the outgoing response and return errors
-// to indicate success or failure of response operations.
-// Once a response body is written, the response is considered committed.
-// Committed-response detection is framework-dependent: implementations
-// SHOULD leave a committed response untouched and MAY either return an
-// error or silently no-op when a body-writing method is called again.
-// Callers must not rely on a second write being reported as an error.
-//
-// Implementations should ensure consistent behavior across frameworks
-// where possible.
+// Once a response body is written the response is committed. Committed-response
+// detection is framework-dependent: implementations SHOULD leave a committed
+// response untouched and MAY either return an error or silently no-op when a
+// body-writing method is called again. Callers must not rely on a second write
+// being reported as an error.
 type Responder interface {
-	// Status sets the HTTP status code for the response.
-	//
-	// Calling this method does not write the response body.
-	// Calling it after the response has been committed has no effect
-	// and is not reported as an error.
+	// Status sets the HTTP status code. It does not write a body, and has no
+	// effect — and reports no error — once the response is committed.
 	Status(code int)
 
 	// SetHeader sets a response header.
-	//
-	// This method does not write the response body.
 	SetHeader(key, value string)
 
 	// SetCookie adds a Set-Cookie header to the response.
-	//
-	// This method does not write the response body.
 	SetCookie(cookie *http.Cookie)
 
-	// JSON writes the given value as a JSON response with the provided status code.
-	//
-	// The Content-Type header should be set to "application/json".
-	// Calling this method commits the response.
-	// Returns nil on success, error on failure (e.g., JSON marshaling error,
-	// response already committed).
+	// JSON writes v as an "application/json" response and commits it.
 	JSON(code int, v any) error
 
-	// Text writes the given string as a plain text response with the provided status code.
-	//
-	// The Content-Type header should be set to "text/plain; charset=utf-8".
-	// Calling this method commits the response.
-	// Returns nil on success, error on failure (e.g., response already committed).
+	// Text writes s as a "text/plain; charset=utf-8" response and commits it.
 	Text(code int, s string) error
 
-	// NoContent writes a response with no body and the provided status code.
-	//
-	// This method commits the response without writing a body.
-	// Returns nil on success, error on failure (e.g., response already committed).
+	// NoContent commits the response without writing a body.
 	NoContent(code int) error
 
-	// Bytes writes raw bytes to the response with the provided status code
-	// and Content-Type. An empty contentType is replaced by
-	// http.DetectContentType sniffing, matching net/http behavior.
-	//
-	// Calling this method commits the response.
-	// Returns nil on success, error on failure (e.g., response already committed).
+	// Bytes writes raw bytes with the given Content-Type and commits the
+	// response. An empty contentType is replaced by http.DetectContentType
+	// sniffing, matching net/http behavior.
 	Bytes(code int, b []byte, contentType string) error
 
-	// DataFromReader streams data from the provided reader to the response.
+	// DataFromReader streams data from r to the response and commits it.
 	//
-	// The size parameter specifies the total number of bytes to be written.
-	// A size of -1 indicates that the size is unknown. It is an int64 to
-	// match Content-Length and every framework's own stream-size type, so a
-	// caller holding an int64 length (a file size, an object-store metadata
-	// field) can pass it through without a truncating conversion.
+	// size is the total number of bytes to write, or -1 when unknown. It is an
+	// int64 so a caller holding a file size or object-store length can pass it
+	// through without a truncating conversion.
 	//
-	// Reader lifecycle: implementations either consume r synchronously
-	// before returning (net/http based adapters) or hand it to the
-	// framework and consume it after the handler returns (fasthttp/hertz
-	// based adapters). If r implements io.Closer it will be closed, but
-	// possibly only after the handler has returned. Callers must not
-	// reuse or close r themselves after calling this method.
-	//
-	// Calling this method commits the response.
-	// Returns nil on success, error on failure (e.g., IO error, response already committed).
+	// Reader lifecycle: implementations either consume r synchronously before
+	// returning (net/http based adapters) or hand it to the framework and
+	// consume it after the handler returns (fasthttp/hertz based adapters). If
+	// r implements io.Closer it will be closed, but possibly only after the
+	// handler has returned. Callers must not reuse or close r themselves.
 	DataFromReader(code int, contentType string, r io.Reader, size int64) error
 
-	// File writes the contents of the specified file to the response.
-	//
-	// Implementations may use optimized file transfer mechanisms
-	// provided by the underlying framework.
-	// Calling this method commits the response.
-	// Returns nil on success, error on failure (e.g., file not found, response already committed).
+	// File writes the contents of the named file to the response and commits
+	// it, using the framework's optimized transfer where available.
 	File(path string) error
 
-	// Redirect sends a redirect response to the client with the provided
-	// status code and target location.
-	//
-	// The code must be a valid redirect status (300-308).
-	// Implementations return an error for other codes without writing
-	// the response.
-	//
-	// Calling this method commits the response.
-	// Returns nil on success, error on failure (e.g., invalid status code, response already committed).
+	// Redirect commits a redirect to location. The code must be a valid
+	// redirect status (300-308); implementations return an error for other
+	// codes without writing the response.
 	Redirect(code int, location string) error
 }
 
-// ResponseInfo exposes a read-only response state.
-//
-// It is part of the Context contract and can be used by middleware and
-// handlers that need to inspect the response after downstream handlers
-// have run.
-//
-// Implementations should provide best-effort behavior across frameworks.
+// ResponseInfo exposes read-only response state, so middleware can inspect the
+// response after downstream handlers have run.
 type ResponseInfo interface {
 	// StatusCode returns the current response status code.
 	StatusCode() int
@@ -337,99 +216,56 @@ type NativeContextProvider interface {
 
 // StateStore carries request-scoped values shared across the handler chain.
 //
-// StateStore provides a simple key-value storage that is scoped to the
-// lifetime of a single request. Values stored in StateStore are intended
-// to be shared between middleware and handlers handling the same request,
-// within the same handler chain execution.
-//
-// IMPORTANT: Values stored via Set are NOT propagated through the standard
+// IMPORTANT: values stored via Set are NOT propagated through the standard
 // context.Context returned by Context.Context(). They are visible only to
-// middleware and handlers that share the same httpx.Context instance for
-// the current request. To propagate values through context.Context (e.g.
-// into downstream business logic, goroutines, or RPC calls), use
-// SetContext with context.WithValue instead.
+// middleware and handlers sharing the same httpx.Context instance. To
+// propagate a value into downstream business logic, goroutines or RPC calls,
+// use SetContext with context.WithValue instead.
 //
 // Stored values MUST NOT be accessed concurrently without external
-// synchronization unless the implementation explicitly guarantees
-// concurrency safety.
+// synchronization unless the implementation guarantees concurrency safety.
 type StateStore interface {
-	// Set associates the given value with the provided key for the
-	// lifetime of the current request.
-	//
-	// The value is accessible only within the current handler chain
-	// (i.e., by subsequent middleware and the final handler). It is
-	// NOT propagated through context.Context.
-	//
-	// Setting a value with an existing key replaces the previous value.
-	// Storing a nil value is indistinguishable from absence: Get reports
-	// ok=false for it on every adapter.
+	// Set associates val with key for the lifetime of the current request,
+	// replacing any previous value. Storing a nil value is indistinguishable
+	// from absence: Get reports ok=false for it on every adapter.
 	Set(key string, val any)
 
-	// Get retrieves the value associated with the given key.
-	//
-	// The returned boolean indicates whether the key was present with a
-	// non-nil value; a stored nil is reported as absent.
-	// Only values set via Set on the same httpx.Context instance
-	// are visible; values stored in context.Context are not accessible here.
+	// Get retrieves the value associated with key. The boolean reports whether
+	// the key was present with a non-nil value. Values stored in
+	// context.Context are not visible here.
 	Get(key string) (any, bool)
 }
 
 // Context is the cross-framework surface passed into handlers and middleware.
 //
-// Context aggregates request inspection, request data binding, response
-// writing, request-scoped state, and handler chain control into a single
-// interface.
-//
-// Context is valid only for the lifetime of a single request and MUST NOT
-// be retained or accessed after the request has completed.
-//
-// To pass request-scoped metadata (such as trace IDs or deadlines) into
-// business logic, middleware, or background goroutines, always use the
-// standard context.Context obtained via the Context() method. Do NOT pass
-// the httpx.Context itself across goroutine boundaries — it may be backed
-// by a pooled object whose lifetime ends when the HTTP response is sent.
-//
-// Implementations should provide consistent behavior across supported
-// HTTP frameworks while respecting their underlying execution models.
+// A Context is valid only for the lifetime of a single request and MUST NOT be
+// retained or accessed after the request completes. Do not pass it across
+// goroutine boundaries — it may be backed by a pooled object whose lifetime
+// ends when the response is sent; pass the standard context.Context from
+// Context() instead.
 type Context interface {
-	// Request provides access to incoming request data.
 	Request
-
-	// Responder provides methods to write the outgoing response.
 	Responder
-
-	// Binder provides standardized request data decoding.
 	Binder
-
-	// StateStore provides request-scoped key-value storage.
 	StateStore
-
-	// ResponseInfo exposes read-only response state (e.g. the current
-	// status code) after downstream handlers have run. All official
-	// adapters implement it natively.
 	ResponseInfo
 
-	// Context returns the standard Go context.Context for the current request.
+	// Context returns the standard context.Context for the current request,
+	// derived from the underlying framework context. It is safe to hand to
+	// downstream business logic, database calls or RPC clients.
 	//
-	// The returned context is derived from the underlying framework context.
-	// It is safe to pass this value to downstream business logic, database
-	// calls, or RPC clients.
+	// Cancellation is best-effort: on net/http based adapters (gin, echo) the
+	// context respects request cancellation and deadlines; on fasthttp/hertz
+	// based adapters it may be connection-scoped or context.Background() and
+	// may not be canceled when the client disconnects. Do not rely on Done()
+	// firing per-request across all frameworks.
 	//
-	// Cancellation is best-effort: on net/http based adapters (gin, echo)
-	// the context respects request cancellation and deadlines; on
-	// fasthttp/hertz based adapters the context may be connection-scoped
-	// or context.Background() and may not be canceled when the client
-	// disconnects. Do not rely on Done() firing per-request across all
-	// frameworks.
-	//
-	// Values stored via StateStore.Set are NOT visible through the returned
-	// context.Context. Use SetContext with context.WithValue to propagate
-	// values through the standard context chain.
+	// Values stored via StateStore.Set are NOT visible here; use SetContext
+	// with context.WithValue to propagate through the standard context chain.
 	Context() context.Context
 
-	// SetContext replaces the standard Go context.Context for the current request.
-	//
-	// This is typically used by middleware to inject request-scoped metadata:
+	// SetContext replaces the standard context.Context for the current
+	// request, typically to inject request-scoped metadata:
 	//
 	//   ctx.SetContext(context.WithValue(ctx.Context(), traceIDKey, id))
 	//
@@ -437,23 +273,9 @@ type Context interface {
 	// cancellation and deadline propagation.
 	SetContext(ctx context.Context)
 
-	// Next executes the remaining downstream handlers in the chain.
-	//
-	// Next is intended to be called from middleware. All adapters run the
-	// entire remaining chain on the first call. Calling Next from a leaf
-	// handler (not middleware) is framework-dependent and should be
-	// avoided: it is a silent no-op on echo, while fiber continues route
-	// matching and may execute a different route or the 404 handler.
-	// A second call after the chain has completed returns nil.
-	//
-	// It returns nil if no error occurred downstream.
-	// If one or more errors occurred downstream, it returns a non-nil error.
-	// Implementations may aggregate multiple errors (for example, via errors.Join)
-	// and are not required to preserve framework-specific ordering semantics.
-	//
-	// If an error is returned, the middleware chain should be interrupted
-	// and the error should be handled appropriately.
-	Next() error
+	// Next is deliberately absent. A Middleware receives the rest of the chain
+	// as a Handler and calls it — next(ctx) — so there is nothing for the
+	// context to drive, and no per-request layer index for an adapter to carry.
 }
 
 // ValidRedirectCode reports whether code is acceptable for Responder.Redirect:

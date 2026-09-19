@@ -11,26 +11,12 @@ import (
 	"github.com/go-sphere/httpx/httpxtest"
 )
 
-// Named wildcards are not native to echo or fiber: those adapters rewrite
-// /files/*filepath to the anonymous /files/* their router understands and
-// remember the name, so Param, Params, FullPath and BindURI keep reading what
-// the caller registered. The rewrite is lossy — every named wildcard in a scope
-// collapses onto the same pattern — so the remembered name has to be scoped to
-// one engine. It was not: both adapters kept it in a package-level map keyed by
-// the rewritten pattern, and two engines in one process silently overwrote each
-// other, last registration winning for both.
-//
-// Several engines in one process is ordinary (a public and an internal
-// listener), and the symptom is invisible from inside one engine: FullPath
-// reports the other engine's pattern, which is what downstream auth and rate
-// limiting match on, so a policy stops applying without anything failing.
-//
-// This cannot live in httpxtest: the shared suite builds one engine per case,
-// and one engine is exactly what does not reproduce it.
+// Echo and fiber lack named wildcards: those adapters rewrite /*name and
+// remember the name per engine, because the rewrite is lossy — every named
+// wildcard in a scope collapses to one pattern. Cannot live in httpxtest: the
+// shared suite builds one engine per case, which is what does not reproduce it.
 func TestWildcardNamesAreScopedToOneEngine(t *testing.T) {
-	// Both patterns normalize to the same thing on echox and fiberx. The names
-	// are the pair sphere-layout actually runs: a file server mounts
-	// /*filename, static mounts use /*filepath.
+	// Both patterns normalize to the same thing on echox and fiberx.
 	const (
 		patternA = "/files/*filename"
 		patternB = "/files/*path"
@@ -38,8 +24,7 @@ func TestWildcardNamesAreScopedToOneEngine(t *testing.T) {
 
 	for _, suite := range append(httpxtestSuites(), fiberxOwnEngineSuite()) {
 		t.Run(suite.Name, func(t *testing.T) {
-			// Registered in this order so the second engine is the one a
-			// process-wide table would let win.
+			// This order makes the second engine the one a process-wide table would let win.
 			engineA := newWildcardEngine(t, suite, "", patternA, "filename")
 			engineB := newWildcardEngine(t, suite, "", patternB, "path")
 
@@ -73,8 +58,8 @@ func TestWildcardNamesAreScopedToOneEngine(t *testing.T) {
 				}
 			}
 
-			// Registering on A again after B must not disturb B either: the
-			// tables are separate in both directions, not merely ordered.
+			// Registering on A again after B must not disturb B: the tables are
+			// separate in both directions, not merely ordered.
 			engineA2 := newWildcardEngine(t, suite, "", patternA, "filename")
 			if got := serveWildcard(t, engineB, "/files/c.txt"); got.FullPath != patternB {
 				t.Errorf("engine B after a later registration elsewhere: FullPath() = %q, want %q",
@@ -87,8 +72,6 @@ func TestWildcardNamesAreScopedToOneEngine(t *testing.T) {
 	}
 }
 
-// wildcardReading is every reading of the wildcard parameter the adapters have
-// to keep agreeing on, reported from one request.
 type wildcardReading struct {
 	FullPath string `json:"fullPath"`
 	Param    string `json:"param"`
@@ -96,10 +79,8 @@ type wildcardReading struct {
 	Bound    string `json:"bound"`
 }
 
-// uriBinders binds the wildcard into a struct whose uri tag carries the name
-// under test. A map destination would need no table, but it is not portable —
-// gin's binder writes straight into the map it is handed — and the tagged
-// struct is the shape generated code uses anyway.
+// A tagged struct, not a map: gin's binder writes straight into a map it is
+// handed, so a map destination is not portable. Generated code uses structs anyway.
 var uriBinders = map[string]func(httpx.Context) (string, error){
 	"filename": func(ctx httpx.Context) (string, error) {
 		var dst struct {
@@ -117,8 +98,6 @@ var uriBinders = map[string]func(httpx.Context) (string, error){
 	},
 }
 
-// newWildcardEngine registers pattern under prefix on a fresh engine from
-// suite. name is the wildcard's parameter name, read back four ways.
 func newWildcardEngine(t *testing.T, suite httpxtest.Suite, prefix, pattern, name string) httpx.Engine {
 	t.Helper()
 	bindURI, ok := uriBinders[name]

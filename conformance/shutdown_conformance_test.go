@@ -22,14 +22,12 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// shutdownFrameworks includes stdx, unlike conformanceFrameworks: the stop
-// semantic is the engine's, not the framework's, and stdx has an Engine like
-// the rest.
+// Unlike conformanceFrameworks, includes stdx: the stop semantics belong to the
+// Engine, which stdx has too.
 var shutdownFrameworks = []string{"ginx", "fiberx", "echox", "hertzx", "stdx"}
 
-// capsFor reads the capability an adapter declares in its shared suite, so the
-// force-close claim is verified against the same declaration third-party
-// adapters publish rather than against a second list kept here.
+// Reads the force-close capability from the adapter's shared suite, so the claim
+// is checked against the declaration third-party adapters publish.
 func capsFor(tb testing.TB, name string) httpxtest.Caps {
 	tb.Helper()
 	for _, suite := range httpxtestSuites() {
@@ -63,16 +61,10 @@ func newShutdownEngine(tb testing.TB, name, addr string) httpx.Engine {
 	}
 }
 
-// TestEngineForcedStopConformance pins the other half of the lifecycle
-// contract: Stop(ctx) is not just "ask nicely". A graceful drain the caller's
-// context cuts short must still leave the server down — the listener closed and
-// IsRunning false — instead of reporting a timeout and leaving connections
-// serving with no way for the caller to force them shut.
-//
-// It needs a real listener: the point is whether the socket is still accepting,
-// which no in-process requester can answer. A request is held open across the
-// stop so the graceful drain has something to wait for and cannot finish inside
-// the deadline.
+// Stop(ctx) is not "ask nicely": a drain the caller's context cuts short must
+// still leave the listener closed and IsRunning false, with no timeout error.
+// Needs a real listener, and a request held open across Stop so the drain has
+// something to wait for.
 func TestEngineForcedStopConformance(t *testing.T) {
 	for _, name := range shutdownFrameworks {
 		t.Run(name, func(t *testing.T) {
@@ -97,7 +89,6 @@ func TestEngineForcedStopConformance(t *testing.T) {
 			go func() { _ = engine.Start() }()
 			waitReachable(t, addr)
 
-			// Hold a request inside the handler so the drain has work in flight.
 			holdCtx, cancelHold := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancelHold()
 			held := make(chan struct{})
@@ -119,8 +110,7 @@ func TestEngineForcedStopConformance(t *testing.T) {
 				t.Fatal("the held request never reached the handler")
 			}
 
-			// A context that has already expired: nothing can be drained inside
-			// it, so this exercises the forced path and nothing else.
+			// Already-expired context: nothing can be drained, so only the forced path runs.
 			stopCtx, cancelStop := context.WithTimeout(context.Background(), time.Nanosecond)
 			defer cancelStop()
 			<-stopCtx.Done()
@@ -144,14 +134,9 @@ func TestEngineForcedStopConformance(t *testing.T) {
 				t.Fatalf("%s is still accepting connections on %s after Stop", name, addr)
 			}
 
-			// Closing the listener is the contract, and it has now been
-			// checked. What the adapters genuinely differ on is the connection
-			// still being served, which is why that difference is declared as a
-			// capability instead of left silent — see httpxtest.Caps.
-			// ForcedStopCutsConnections. Both directions are checked, so an
-			// adapter cannot claim the easier answer: the handler is parked on
-			// a gate nothing has opened, so the held request can only finish if
-			// its connection was cut.
+			// Whether a connection in flight is cut is a declared capability,
+			// and both directions are checked: the handler is parked on a gate
+			// nothing opens, so the held request can only finish by being cut.
 			if capsFor(t, name).ForcedStopCutsConnections {
 				select {
 				case <-held:
@@ -172,9 +157,8 @@ func TestEngineForcedStopConformance(t *testing.T) {
 	}
 }
 
-// failCloseListener is a real TCP listener whose Close fails. The failure is
-// held until the test releases it, so the moment fasthttp collects it is fixed
-// rather than raced for: see TestFiberxStopReportsListenerCloseFailure.
+// A real TCP listener whose Close fails, held until released so the moment
+// fasthttp collects the error is fixed rather than raced for.
 type failCloseListener struct {
 	net.Listener
 	closing chan struct{}
@@ -192,21 +176,12 @@ func (l *failCloseListener) Close() error {
 	return l.err
 }
 
-// A listener that fails to close means the socket may still be bound, and that
-// must never be reported as a successful stop — the whole point of the forced-stop
-// work is not telling a caller the server is down when it is not.
-//
-// fiberx is the adapter that could get this wrong, because fasthttp closes its
-// listeners and collects their errors *before* it consults the context: testing
-// ctx.Err() alone turned a genuine close failure into nil for every caller who
-// passed a context.WithTimeout, which is every caller doing a graceful drain.
-//
-// This is fiberx-only and lives here rather than in the shared suite because it
-// needs a real listener and a fiber-specific injection point (WithListener);
-// no other adapter routes a caller's net.Listener into its shutdown path.
+// A listener close failure must never be reported as a successful stop: the
+// socket may still be bound. fiberx is where that could go wrong — fasthttp
+// collects listener errors before consulting the context, so a ctx.Err() check
+// alone turned a close failure into nil. Needs a real listener and WithListener.
 func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
-	// A deadline that is already spent, so ctx.Err() is set when Stop inspects
-	// it. That is the state in which the old check returned nil.
+	// Already-spent deadline, so ctx.Err() is set when Stop inspects it.
 	stopCtx, cancelStop := context.WithCancel(context.Background())
 	cancelStop()
 
@@ -221,10 +196,9 @@ func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
 		err:      errors.New("fiberx test: listener close failed"),
 	}
 
-	// Wait for the listener to be handed to fasthttp without dialing it: an
-	// accepted connection counts as open, and fasthttp only reports the listener
-	// error while nothing is. The settle covers the gap between this hook and
-	// fasthttp registering the listener, before which Shutdown is a no-op.
+	// Waits for the listener to reach fasthttp without dialing it: an accepted
+	// connection counts as open, and fasthttp reports the listener error only
+	// while none is. The settle covers the gap when Shutdown is still a no-op.
 	serving := make(chan struct{})
 	engine := fiberx.New(fiberx.WithListener(ln, fiber.ListenConfig{
 		DisableStartupMessage: true,
@@ -242,9 +216,8 @@ func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- engine.Stop(stopCtx) }()
 
-	// Let the close failure land only once fasthttp's accept loop has exited, so
-	// it sees no connection open and returns the listener error instead of the
-	// context's. Without this the two are chosen between by a 100ms ticker race.
+	// Let the close failure land only once the accept loop has exited; otherwise
+	// the listener error and the context's are chosen between by a ticker race.
 	select {
 	case <-ln.closing:
 	case <-time.After(5 * time.Second):
@@ -266,8 +239,7 @@ func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
 		t.Fatal("Stop did not return")
 	}
 
-	// Still the rest of the contract: the flag falls and the engine is single-use
-	// whatever shutdown reported.
+	// The flag still falls and the engine stays single-use whatever shutdown reported.
 	if engine.IsRunning() {
 		t.Fatal("IsRunning() is true after Stop returned")
 	}
@@ -288,9 +260,8 @@ func waitReachable(t *testing.T, addr string) {
 	t.Fatalf("engine on %s did not become reachable", addr)
 }
 
-// stillAccepting reports whether the address is still taking connections.
 // Closing a listener is not instantaneous on every transport, so a refusal is
-// given a short window to appear rather than being sampled once.
+// given a window to appear rather than sampled once.
 func stillAccepting(addr string) bool {
 	deadline := time.Now().Add(2 * time.Second)
 	for {

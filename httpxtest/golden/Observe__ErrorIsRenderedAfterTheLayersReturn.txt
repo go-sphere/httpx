@@ -1,0 +1,10 @@
+status: 403
+content-type: application/json
+x-trace: before=200 after=200 error=403
+body: json
+---
+{
+  "code": 0,
+  "message": "observe-denied",
+  "success": false
+}

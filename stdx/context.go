@@ -38,10 +38,6 @@ type stdContext struct {
 	values   []string
 	valueBuf [8]string
 
-	chain []httpx.Middleware
-	leaf  httpx.Handler
-	index int
-
 	// keys survives across requests: it is cleared, not dropped, when the
 	// context is recycled, so a request that stores state does not allocate
 	// the map again.
@@ -72,26 +68,17 @@ func (c *stdContext) reset(w http.ResponseWriter, req *http.Request) {
 	c.req = req
 	c.route = nil
 	c.values = c.valueBuf[:0]
-	c.chain = nil
-	c.leaf = nil
-	c.index = 0
 }
 
 // FromStd wraps a plain net/http request pair as httpx.Context. Use it to
 // call httpx helpers from an ordinary http.Handler, or from an http.Server's
 // own error paths, without mounting a stdx Engine.
 //
-// The net/http pair is this adapter's native context — there is no framework
-// object to reach for — so this is the FromGin/FromHertz escape hatch in the
-// only shape net/http has.
-//
-// The returned context is standalone: it belongs to no Engine and no route,
-// so FullPath and Param are empty, Params is nil, Next is a no-op returning
-// nil, ClientIP falls back to the peer address because there is no configured
-// trusted-proxy policy to consult, and the native escape hatch's Engine is nil
-// (see Native, which lists what that does and does not affect). It is not
-// pooled — unlike the contexts the Engine hands to handlers — so it costs one
-// allocation per call.
+// The returned context is standalone: it belongs to no Engine and no route, so
+// FullPath and Param are empty, Params is nil, ClientIP falls back to the peer
+// address because there is no configured trusted-proxy policy to consult, and
+// Native().Engine() is nil (see Native). It is not pooled — unlike the contexts
+// the Engine hands to handlers — so it costs one allocation per call.
 func FromStd(w http.ResponseWriter, req *http.Request) httpx.Context {
 	ctx := &stdContext{}
 	ctx.native.c = ctx
@@ -124,8 +111,7 @@ func (c *stdContext) recycle() {
 // in, with one exception: Engine returns nil, because such a context belongs to
 // no Engine. That is the whole of the degradation on this type —
 // Request/SetRequest/ResponseWriter/SetWriter/Written/MarkWritten/Unwrap read and
-// write that pair and consult nothing else. Pinned by
-// TestFromStdNativeDegradation.
+// write that pair and consult nothing else.
 type Native struct {
 	c *stdContext
 }
@@ -557,33 +543,12 @@ func (c *stdContext) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context (context.Context accessor + Next)
+// Context (context.Context accessor)
 
 func (c *stdContext) Context() context.Context { return c.req.Context() }
 
 func (c *stdContext) SetContext(ctx context.Context) {
 	c.req = c.req.WithContext(ctx)
-}
-
-// Next runs the next layer of the chain and returns its error. A layer that
-// returns without calling Next stops the chain, which is how a middleware
-// short-circuits a request.
-func (c *stdContext) Next() error {
-	if c.index < len(c.chain) {
-		mw := c.chain[c.index]
-		c.index++
-		err := mw(c)
-		// A returned middleware has finished its continuation, including a short circuit.
-		c.index = len(c.chain) + 1
-		return err
-	}
-	if c.index == len(c.chain) {
-		c.index++
-		if c.leaf != nil {
-			return c.leaf(c)
-		}
-	}
-	return nil
 }
 
 func (c *stdContext) StatusCode() int { return c.rw.status }

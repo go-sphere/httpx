@@ -75,11 +75,9 @@ func TestClassifyError(t *testing.T) {
 	}
 }
 
-// ParseError is the default ErrorParser in sphere/server/httpz, so a nil error
-// reaching it must classify like any other error carrying no information
-// rather than panic: 500, and no message, exactly as for an unclassified
-// error. Turning that into renderable text is ClassifyError's job, so the two
-// deliberately disagree on the message and agree on everything else.
+// ParseError is the default ErrorParser in sphere/httpz, so nil must classify
+// like any other error carrying no information — 500, no message — rather than
+// panic. ClassifyError substitutes the status text, hence the deliberate gap.
 func TestParseErrorNil(t *testing.T) {
 	t.Parallel()
 	code, status, message := ParseError(nil)
@@ -118,11 +116,10 @@ type messageOnlyError struct {
 
 func (e messageOnlyError) GetMessage() string { return e.message }
 
-// ParseError feeds an HTTP response body through sphere/httpz, so an error
-// that carries no MessageError must yield no message at all rather than
-// err.Error(). ClassifyError is the rendering path and keeps substituting the
-// status text; its output — which adapter error bodies and the golden files
-// depend on — must not move for any of these shapes.
+// ParseError feeds an HTTP response body through sphere/httpz, so an error with
+// no MessageError must yield no message rather than err.Error(). ClassifyError
+// is the rendering path and substitutes the status text; its output — which
+// adapter error bodies and the golden files depend on — must not move.
 func TestParseErrorDoesNotLeakErrorString(t *testing.T) {
 	t.Parallel()
 	const raw = "pq: password authentication failed for user \"admin\""

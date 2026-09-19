@@ -6,12 +6,10 @@ import (
 	"testing"
 )
 
-// The classification is what keeps a failed shutdown from being reported as a
-// successful one. It is pinned directly as well as through the real listener in
-// conformance/shutdown_conformance_test.go, because only one of its three inputs
-// can be produced on demand from a live server: fasthttp decides between
-// returning the context error and returning the listener error, and the caller
-// does not get to choose.
+// The classification keeps a failed shutdown from being reported as a successful
+// one. It is pinned here because only one of its three inputs can be produced on
+// demand from a live server: fasthttp decides between the context error and the
+// listener error, and the caller does not get to choose.
 func TestClassifyShutdownError(t *testing.T) {
 	lnErr := errors.New("close tcp 127.0.0.1:0: boom")
 
@@ -27,9 +25,9 @@ func TestClassifyShutdownError(t *testing.T) {
 		{"clean stop", context.Background(), nil, nil},
 		{"clean stop, deadline already spent", expired, nil, nil},
 		{"listener close failed", context.Background(), lnErr, lnErr},
-		// The one the old ctx.Err()-only test got wrong: fasthttp closes the
-		// listeners and collects their errors before it consults the context, so
-		// a real close failure can arrive with the deadline already spent.
+		// fasthttp closes the listeners and collects their errors before
+		// consulting the context, so a real close failure can arrive with the
+		// deadline already spent — the case a ctx.Err()-only classifier misses.
 		{"listener close failed, deadline already spent", expired, lnErr, lnErr},
 		// The drain outlived the caller's deadline: degraded, but the listeners
 		// are down, so httpx.Close's semantic is success.

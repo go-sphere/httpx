@@ -4,8 +4,8 @@ body: json
 ---
 {
   "order": [
-    "a-pre",
     "native-pre",
+    "a-pre",
     "b-pre",
     "handler"
   ]

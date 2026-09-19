@@ -46,9 +46,9 @@ func TestJoinPaths(t *testing.T) {
 	}
 }
 
-// Use is snapshotted into each route at registration: the same rule every
-// framework-backed adapter has, pinned here because this router implements it
-// by hand.
+// Use is snapshotted into each route at registration — the rule every
+// framework-backed adapter follows, pinned here because this router is
+// hand-written.
 func TestUseSnapshotsAtRegistration(t *testing.T) {
 	var tr trace
 	engine, r := newTestEngine(t)
@@ -63,73 +63,103 @@ func TestUseSnapshotsAtRegistration(t *testing.T) {
 	}
 }
 
-func TestGroupInheritsParentMiddlewareAtCreation(t *testing.T) {
+// A group holds a reference to its parent's chain, not a copy, so a layer
+// registered on the parent after the group exists still reaches the routes the
+// group registers afterwards.
+func TestGroupInheritsParentChainByReference(t *testing.T) {
 	var tr trace
 	engine, r := newTestEngine(t)
 	r.Use(tr.mw("parent-before"))
-	child := r.Group("/c", tr.mw("child-arg"))
+	child := r.Group("/c")
+	child.Use(tr.mw("child-arg"))
 	r.Use(tr.mw("parent-after"))
 	child.Use(tr.mw("child-use"))
 	child.GET("/x", tr.leaf("leaf"))
 
 	serve(engine, getReq("/c/x"))
-	if tr.String() != "parent-before,child-arg,child-use,leaf" {
+	if tr.String() != "parent-before,parent-after,child-arg,child-use,leaf" {
 		t.Fatalf("chain = %q", tr.String())
 	}
 }
 
-// Interceptors are composed into the leaf: they always run inside every Use
-// layer of the scope and its parents, whatever the registration order, and
-// among themselves parent-first in registration order.
-func TestInterceptorOrdering(t *testing.T) {
+// Layers run parent scope first, in registration order within a scope, and a
+// layer registered after a route must not reach that route.
+func TestChainOrdering(t *testing.T) {
 	var tr trace
 	engine, r := newTestEngine(t)
-	r.UseInterceptor(tr.interceptor("i-root"))
-	r.Use(tr.mw("m-root"))
-	child := r.Group("/c", tr.mw("m-child-arg"))
-	httpx.UseInterceptor(child, tr.interceptor("i-child"))
-	child.Use(tr.mw("m-child"))
+	r.Use(tr.mw("root"))
+	child := r.Group("/c", tr.mw("child-arg"))
+	child.Use(tr.mw("child-use"))
 	child.GET("/x", tr.leaf("leaf"))
 	// Registered after the route: must not affect it.
-	httpx.UseInterceptor(child, tr.interceptor("i-late"))
+	child.Use(tr.mw("late"))
 	child.GET("/y", tr.leaf("leaf-y"))
 
 	serve(engine, getReq("/c/x"))
-	if tr.String() != "m-root,m-child-arg,m-child,i-root,i-child,leaf" {
+	if tr.String() != "root,child-arg,child-use,leaf" {
 		t.Fatalf("chain = %q", tr.String())
 	}
 	tr.reset()
 	serve(engine, getReq("/c/y"))
-	if tr.String() != "m-root,m-child-arg,m-child,i-root,i-child,i-late,leaf-y" {
+	if tr.String() != "root,child-arg,child-use,late,leaf-y" {
 		t.Fatalf("chain = %q", tr.String())
 	}
 }
 
-func TestEngineInterceptorWrapsEveryRoute(t *testing.T) {
+func TestEngineMiddlewareWrapsEveryRoute(t *testing.T) {
 	var tr trace
 	engine, ok := New().(*Engine)
 	if !ok {
 		t.Fatal("New did not return *Engine")
 	}
-	engine.UseInterceptor(tr.interceptor("engine-i"))
-	engine.UseInterceptor() // a no-op call must not disturb the chain
+	engine.Use(tr.mw("engine-mw"))
+	engine.Use() // a no-op call must not disturb the chain
 	r := engine.Group("")
 	r.GET("/x", tr.leaf("leaf"))
 	serve(engine, getReq("/x"))
-	if tr.String() != "engine-i,leaf" {
+	if tr.String() != "engine-mw,leaf" {
 		t.Fatalf("chain = %q", tr.String())
 	}
-	// Unmatched paths are outside any interceptor.
+	// An engine-scope layer also covers a path no route matched, because the
+	// fallback leaf is composed like a route's — what lets an access log or a
+	// recovery layer see a 404.
 	tr.reset()
-	serve(engine, getReq("/nope"))
-	if tr.String() != "" {
-		t.Fatalf("interceptor ran for an unmatched path: %q", tr.String())
+	if rec := serve(engine, getReq("/nope")); rec.Code != http.StatusNotFound {
+		t.Fatalf("unmatched path status = %d", rec.Code)
+	}
+	if tr.String() != "engine-mw" {
+		t.Fatalf("engine middleware did not cover an unmatched path: %q", tr.String())
 	}
 }
 
-func TestInterceptorErrorIsRenderedAtTheRoute(t *testing.T) {
+// The other half of the rule: a group's layers must not cover an unmatched path,
+// because a 404 belongs to no group. Only the engine scope does.
+func TestGroupMiddlewareSkipsUnmatchedPath(t *testing.T) {
+	var tr trace
+	engine, ok := New().(*Engine)
+	if !ok {
+		t.Fatal("New did not return *Engine")
+	}
+	engine.Use(tr.mw("engine-mw"))
+	g := engine.Group("/api", tr.mw("group-mw"))
+	g.GET("/x", tr.leaf("leaf"))
+
+	serve(engine, getReq("/api/x"))
+	if tr.String() != "engine-mw,group-mw,leaf" {
+		t.Fatalf("matched chain = %q", tr.String())
+	}
+	// Unmatched, and under the group's own prefix, which is the case that would
+	// tempt an implementation to pick a scope.
+	tr.reset()
+	serve(engine, getReq("/api/nope"))
+	if tr.String() != "engine-mw" {
+		t.Fatalf("unmatched chain = %q, want only the engine scope", tr.String())
+	}
+}
+
+func TestMiddlewareErrorIsRenderedAtTheRoute(t *testing.T) {
 	engine, r := newTestEngine(t)
-	r.UseInterceptor(func(next httpx.Handler) httpx.Handler {
+	r.Use(func(next httpx.Handler) httpx.Handler {
 		return func(ctx httpx.Context) error { return httpx.NewUnauthorizedError("nope") }
 	})
 	r.GET("/x", func(ctx httpx.Context) error { return ctx.Text(http.StatusOK, "never") })
@@ -228,7 +258,7 @@ func TestHandleStdAndStatic(t *testing.T) {
 		"unrelated/x.json": &fstest.MapFile{Data: []byte("{}")},
 	}
 	engine, r := newTestEngine(t)
-	r.UseInterceptor(tr.interceptor("i"))
+	r.Use(tr.mw("i"))
 	r.HandleStd(http.MethodGet, "/std/:id", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("std " + req.URL.Path))
@@ -240,7 +270,7 @@ func TestHandleStdAndStatic(t *testing.T) {
 	}
 	r.StaticFS("/assets", assets)
 
-	t.Run("StdHandlerRunsOnTheRealWriterInsideInterceptors", func(t *testing.T) {
+	t.Run("StdHandlerRunsOnTheRealWriterInsideTheChain", func(t *testing.T) {
 		tr.reset()
 		rec := serve(engine, getReq("/std/7"))
 		if rec.Code != http.StatusAccepted || rec.Body.String() != "std /std/7" || tr.String() != "i" {
@@ -279,7 +309,7 @@ func TestHandleStdAndStatic(t *testing.T) {
 				t.Fatalf("%s %s body = %q, want %q", tc.method, tc.path, rec.Body.String(), tc.body)
 			}
 			if tc.status == http.StatusOK && tr.String() != "i" {
-				t.Fatalf("%s %s ran outside the interceptor chain: %q", tc.method, tc.path, tr.String())
+				t.Fatalf("%s %s ran outside the middleware chain: %q", tc.method, tc.path, tr.String())
 			}
 		}
 	})
@@ -287,9 +317,11 @@ func TestHandleStdAndStatic(t *testing.T) {
 	t.Run("StaticRouteIsAWildcard", func(t *testing.T) {
 		var fullPath, param string
 		engine2, r2 := newTestEngine(t)
-		r2.Use(func(ctx httpx.Context) error {
-			fullPath, param = ctx.FullPath(), ctx.Param(httpx.WildcardParamName(ctx.FullPath()))
-			return ctx.Next()
+		r2.Use(func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				fullPath, param = ctx.FullPath(), ctx.Param(httpx.WildcardParamName(ctx.FullPath()))
+				return next(ctx)
+			}
 		})
 		r2.StaticFS("/assets", assets)
 		serve(engine2, getReq("/assets/sub/deep/b.txt"))

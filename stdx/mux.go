@@ -48,8 +48,8 @@ type route struct {
 	// the adapters with a native router.
 	pattern string
 	// params names the captured values in match order.
-	params  []string
-	chain   []httpx.Middleware
+	params []string
+	// handler is the route's composed chain, built once at registration.
 	handler httpx.Handler
 }
 

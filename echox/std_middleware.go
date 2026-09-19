@@ -18,30 +18,30 @@ import (
 // short-circuited.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
-		return func(ctx httpx.Context) error {
-			return ctx.Next()
-		}
+		return func(next httpx.Handler) httpx.Handler { return next }
 	}
-	return func(ctx httpx.Context) error {
-		ec, ok := httpx.AsNativeContext[echo.Context](ctx)
-		if !ok {
-			return errors.New("AdaptStdMiddleware: invalid context type")
-		}
-		resp := ec.Response()
-		origWriter := resp.Writer
-		// Track writes that bypass echo.Response, including short circuits.
-		writer := &commitRecorder{ResponseWriter: origWriter, resp: resp}
-		var nextErr error
-		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ec.SetRequest(r)
-			if w != http.ResponseWriter(writer) {
-				resp.Writer = w
-				defer func() { resp.Writer = origWriter }()
+	return func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			ec, ok := httpx.AsNativeContext[echo.Context](ctx)
+			if !ok {
+				return errors.New("AdaptStdMiddleware: invalid context type")
 			}
-			nextErr = ctx.Next()
-		})
-		middleware(inner).ServeHTTP(writer, ec.Request())
-		return nextErr
+			resp := ec.Response()
+			origWriter := resp.Writer
+			// Track writes that bypass echo.Response, including short circuits.
+			writer := &commitRecorder{ResponseWriter: origWriter, resp: resp}
+			var nextErr error
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ec.SetRequest(r)
+				if w != http.ResponseWriter(writer) {
+					resp.Writer = w
+					defer func() { resp.Writer = origWriter }()
+				}
+				nextErr = next(ctx)
+			})
+			middleware(inner).ServeHTTP(writer, ec.Request())
+			return nextErr
+		}
 	}
 }
 

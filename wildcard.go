@@ -13,13 +13,10 @@ import (
 // calls this from every registration entry point, so all five fail loudly and
 // identically — with this error, not a framework's — at registration time.
 //
-// The anonymous wildcard ("/files/*") is rejected for the same reason, since
-// v0.0.5. It used to pass, which made the promise above false: gin and hertz
-// panicked on it natively ("wildcards must be named with a non-empty name")
-// while echo, fiber and stdx registered it, and among those three the parameter
-// was keyed "*" on echo and fiber but "" on stdx. Naming the wildcard is what
-// protoc-gen-sphere and sphere/storage/fileserver emit anyway, and it is the
-// form for which Param, Params and BindURI agree on all five.
+// The anonymous wildcard ("/files/*") is rejected for the same reason: gin and
+// hertz panic on it natively while echo, fiber and stdx register it, and among
+// those three the parameter is keyed "*" on echo and fiber but "" on stdx. The
+// named form is the one for which Param, Params and BindURI agree on all five.
 func ValidateWildcardPath(path string) error {
 	star := strings.IndexByte(path, '*')
 	if star == -1 {
@@ -43,23 +40,16 @@ func ValidateWildcardPath(path string) error {
 
 // FixWildcardPathIfNeed normalizes wildcard path syntax based on router capability.
 //
-// It is **adapter-internal in practice**: every adapter applies it inside its
-// own registration path, so a caller should hand Router.Handle the named form
-// ("/files/*name") and read Param("name"), on all five. Do not register the
-// result of this function — for a router without named wildcards it is the
-// anonymous form, which ValidateWildcardPath now rejects, so Handle would panic
-// on it. The signature stays exported because third-party adapters implement
-// the same rewrite against it.
+// It is adapter-internal in practice — every adapter applies it inside its own
+// registration path, so a caller hands Router.Handle the named form
+// ("/files/*name") and reads Param("name") on all five. Do not register the
+// result: for a router without named wildcards it is the anonymous form, which
+// ValidateWildcardPath rejects. It stays exported for third-party adapters.
 //
-// It returns:
-//   - path: the path to register
-//   - param: the wildcard param key to read from Context.Param
-//
-// Rules:
-//   - If path has no wildcard, param is "" and path is returned unchanged.
-//   - If router supports named wildcards, path is returned unchanged and param is wildcard name.
-//   - If router does not support named wildcards, named wildcard segments are rewritten to "*"
-//     and param is "*".
+// It returns the path to register and the wildcard param key to read from
+// Context.Param: both unchanged when path has no wildcard (param "") or the
+// router supports named wildcards, otherwise the path rewritten to the
+// anonymous form with param "*".
 func FixWildcardPathIfNeed(r RouterFeatureProvider, path string) (fixedPath string, param string) {
 	param = WildcardParamName(path)
 	if param == "" {

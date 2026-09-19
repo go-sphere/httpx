@@ -41,20 +41,18 @@ func newFiberContext(ctx fiber.Ctx) httpx.Context {
 //
 // It takes the fiber.Ctx interface and returns httpx.Context rather than
 // exposing the generic fiberContext[T]. The type parameter exists only to let
-// the common *fiber.DefaultCtx case fit in an interface without a heap
-// wrapper; it is an implementation detail, and the two instantiations that
-// exist are the two this package checks against httpx.Context. A generic
-// FromFiber[T fiber.Ctx] would make callers name a type parameter for no gain
-// and would let them instantiate a third, unverified variant.
+// the common *fiber.DefaultCtx case fit in an interface without a heap wrapper;
+// the two instantiations that exist are the two this package checks against
+// httpx.Context, and a generic FromFiber[T fiber.Ctx] would let callers
+// instantiate a third, unverified one.
 //
 // On a request this adapter did not route it cannot resolve the adapter's
-// named-wildcard normalization, the same degradation FromStd documents: the
-// mapping is recorded on the request by the route the adapter registered, so
-// for a route registered natively as /files/* FullPath reports "/files/*",
-// Param("filepath") and BindURI's uri:"filepath" are empty, and Params carries
-// the value under "*". Param("*") reaches the value on any route. A route this
-// adapter registered keeps resolving normally, from whatever layer FromFiber is
-// called.
+// named-wildcard normalization, since the mapping is recorded on the request by
+// the route the adapter registered: for a route registered natively as /files/*,
+// FullPath reports "/files/*", Param("filepath") and BindURI's uri:"filepath"
+// are empty, and Params carries the value under "*". Param("*") reaches the
+// value on any route. A route this adapter registered keeps resolving normally,
+// from whatever layer FromFiber is called.
 func FromFiber(ctx fiber.Ctx) httpx.Context {
 	return newFiberContext(ctx)
 }
@@ -72,6 +70,20 @@ func (c fiberContext[T]) Path() string {
 	return string(c.ctx.Request().URI().Path())
 }
 
+// unmatchedRouteKey names the Locals slot marking a request whose path no
+// route matched. Fiber reports the engine's fallback middleware — registered
+// with Use, so it lives at "/" — as the matched route, and FullPath would
+// otherwise hand a layer that "/" for a 404, which a selector keyed on the
+// pattern (authorization, rate limiting) would read as a route.
+type unmatchedRouteKey struct{}
+
+func markUnmatchedRoute(native fiber.Ctx) { native.Locals(unmatchedRouteKey{}, true) }
+
+func unmatchedRoute(native fiber.Ctx) bool {
+	unmatched, _ := native.Locals(unmatchedRouteKey{}).(bool)
+	return unmatched
+}
+
 // FullPath reports the route pattern as it was registered. When the pattern
 // carried a named wildcard, FixWildcardPathIfNeed rewrote it to fiber's
 // anonymous form ("/files/*filepath" -> "/files/*") because fiber has no named
@@ -79,7 +91,13 @@ func (c fiberContext[T]) Path() string {
 // here, or a caller matching on FullPath (downstream auth and rate limiting do)
 // would see a different pattern than it registered. The trailing-byte check
 // keeps a route without a wildcard from paying the map lookup.
+//
+// A path no route matched reports no pattern at all, like the other adapters;
+// see unmatchedRouteKey.
 func (c fiberContext[T]) FullPath() string {
+	if unmatchedRoute(c.ctx) {
+		return ""
+	}
 	pattern := c.ctx.FullPath()
 	if lastCharIs('*', pattern) {
 		if route := wildcardRouteOf(c.ctx); route != nil {
@@ -311,8 +329,8 @@ func (c fiberContext[T]) BindURI(dst any) error {
 // Bind().URI, and both would otherwise make BindURI contradict Param:
 //
 //   - a named wildcard reaches fiber as "*" ("*1" in Route().Params), so a field
-//     tagged uri:"filepath" on a /files/*filepath route matched nothing and bound
-//     "" — silently, since an absent parameter is not an error;
+//     tagged uri:"filepath" on a /files/*filepath route would match nothing and
+//     bind "" — silently, since an absent parameter is not an error;
 //   - values arrive percent-encoded when the app left UnescapePath off, so a
 //     generated handler would bind "a%20b" where the other adapters bind "a b".
 //
@@ -365,9 +383,9 @@ func (c fiberContext[T]) BindHeader(dst any) error {
 //
 // Host travels outside the header map on net/http, so the other four adapters
 // have no Host header to bind at all, and Header/Headers here already skip it
-// (see Header). fasthttp keeps it in the header set, so fiber's binder filled a
-// field tagged header:"Host" with the host — leaving BindHeader answering where
-// Header on the same context does not.
+// (see Header). fasthttp keeps it in the header set, so fiber's binder would
+// fill a field tagged header:"Host", leaving BindHeader answering where Header
+// on the same context does not.
 //
 // fasthttp yields Host from the header iteration only while it is non-empty, so
 // emptying it for the duration of the bind is what takes it out of the binder's
@@ -491,7 +509,7 @@ func (c fiberContext[T]) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context (context.Context accessor + Next)
+// Context (context.Context accessor)
 
 func (c fiberContext[T]) Context() context.Context {
 	return c.ctx.Context()
@@ -499,17 +517,6 @@ func (c fiberContext[T]) Context() context.Context {
 
 func (c fiberContext[T]) SetContext(ctx context.Context) {
 	c.ctx.SetContext(ctx)
-}
-
-func (c fiberContext[T]) Next() error {
-	if err := c.ctx.Next(); err != nil {
-		return err
-	}
-	// An inner layer's error is not returned through fiber once the adapter
-	// has dealt with it (fiber would render it a second time, over a response
-	// that is already written), so it is parked on the context; surface it
-	// here to keep it visible to the layers above.
-	return handledError(c.ctx)
 }
 
 func (c fiberContext[T]) StatusCode() int {

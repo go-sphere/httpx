@@ -96,8 +96,8 @@ func TestWildcardParamName(t *testing.T) {
 		{name: "no wildcard", in: "/users/:id", want: ""},
 		{name: "named wildcard", in: "/files/*filepath", want: "filepath"},
 		{name: "anonymous wildcard", in: "/files/*", want: "*"},
-		// Current implementation only extracts the first wildcard when multiple are present.
-		// This does not mean multiple wildcard params are supported by routers.
+		// Only the first wildcard is extracted; multiple wildcard params are not
+		// a shape routers support.
 		{name: "multiple wildcards uses first one", in: "/a/*x/b/*y", want: "x"},
 		{name: "wildcard in middle segment", in: "/a/*name/detail", want: "name"},
 	}

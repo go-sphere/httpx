@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
-	"slices"
 	"sync/atomic"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -16,10 +15,7 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-var (
-	_ httpx.Engine           = (*Engine)(nil)
-	_ httpx.InterceptorScope = (*Engine)(nil)
-)
+var _ httpx.Engine = (*Engine)(nil)
 
 type ErrorHandler func(ctx context.Context, rc *app.RequestContext, err error)
 
@@ -133,12 +129,16 @@ func WithTrustedProxies(proxies ...string) Option {
 type Engine struct {
 	engine     *server.Hertz
 	errHandler ErrorHandler
-	// interceptors are inherited by every group created from this engine; see
-	// Router.UseInterceptor.
-	interceptors []httpx.Interceptor
-	clientIP     app.ClientIP
-	running      atomic.Bool
-	closed       atomic.Bool
+	// chain is the engine scope, referenced by every group created from this
+	// engine; see Router.Use.
+	chain *httpx.MiddlewareChain
+	// notFound and notAllowed carry the engine chain into the unmatched-path
+	// answers; see installRouteFallback.
+	notFound   *httpx.MiddlewareFallback
+	notAllowed *httpx.MiddlewareFallback
+	clientIP   app.ClientIP
+	running    atomic.Bool
+	closed     atomic.Bool
 }
 
 func New(opts ...Option) httpx.Engine {
@@ -149,75 +149,100 @@ func New(opts ...Option) httpx.Engine {
 	if conf.clientIP != nil {
 		conf.engine.SetClientIPFunc(conf.clientIP)
 	}
-	installRouteFallback(conf.engine, conf.errHandler)
 	engine := &Engine{
 		engine:     conf.engine,
 		errHandler: conf.errHandler,
 		clientIP:   conf.clientIP,
+		chain:      httpx.NewMiddlewareChain(),
 	}
+	engine.installRouteFallback()
 	engine.running.Store(false)
 	return engine
 }
 
 // installRouteFallback makes hertz answer a request no route handled through
 // the configured error handler instead of its own plain-text bodies, so 404 and
-// 405 read the same on every adapter. hertz also has to be told to look for a
-// 405 at all: with HandleMethodNotAllowed off (its default) a path that exists
-// under another method is reported as 404. The flag lives in the options struct
-// GetOptions hands back by pointer, which is the only way to reach it on an
-// engine supplied through WithEngine — server.WithHandleMethodNotAllowed can
-// only be passed to server.New. It is read per request, so setting it here is
-// in time for every request the engine will ever serve.
+// 405 read the same on every adapter.
 //
-// Engine middleware keeps running for these requests — hertz composes NoRoute
-// and NoMethod on top of the engine's own handler chain — which is what an
-// access log or a recovery layer registered with Use depends on.
+// hertz also has to be told to look for a 405 at all: with its default
+// HandleMethodNotAllowed off, a path that exists under another method is
+// reported as 404. The flag lives in the options struct GetOptions hands back
+// by pointer, the only way to reach it on an engine supplied through WithEngine
+// (server.WithHandleMethodNotAllowed is a server.New option), and hertz reads it
+// per request, so setting it here is in time.
 //
-// Precedence is ginx's rule, for ginx's reasons: both handlers are installed
-// unconditionally, so a NoRoute or NoMethod set on an engine *before* it is
-// passed to WithEngine is replaced, and the override point is after New —
-// hertz's setters replace rather than append, so server.Hertz.NoRoute called
-// once hertzx.New has returned wins outright. Keeping the two adapters on the
-// same rule is the point; a precedence that differed between them would be
-// another 404 divergence of exactly the kind this function exists to remove.
-func installRouteFallback(h *server.Hertz, errHandler ErrorHandler) {
-	h.GetOptions().HandleMethodNotAllowed = true
-	h.NoRoute(func(ctx context.Context, rc *app.RequestContext) {
-		errHandler(ctx, rc, httpx.NewNotFoundError(http.StatusText(http.StatusNotFound)))
-	})
-	h.NoMethod(func(ctx context.Context, rc *app.RequestContext) {
-		// Unlike gin, hertz does not write the Allow header RFC 7231 requires,
-		// and it does not expose which methods it matched, so there is nothing
-		// to write it from here.
-		errHandler(ctx, rc, httpx.NewError(http.StatusMethodNotAllowed, 0,
-			http.StatusText(http.StatusMethodNotAllowed), nil))
-	})
+// Native middleware keeps running for these requests, since hertz composes
+// NoRoute and NoMethod on top of the engine's own handler chain, and engine-scope
+// httpx middleware reaches them through the fallbacks built here. A group's
+// layers are deliberately absent.
+//
+// Precedence follows ginx: both handlers are installed unconditionally, so a
+// NoRoute or NoMethod set before WithEngine is replaced and one set after
+// hertzx.New wins, because hertz's setters replace rather than append.
+func (e *Engine) installRouteFallback() {
+	e.engine.GetOptions().HandleMethodNotAllowed = true
+	e.notFound = httpx.NewMiddlewareFallback(e.chain,
+		staticLeaf(httpx.NewNotFoundError(http.StatusText(http.StatusNotFound))))
+	// Unlike gin, hertz does not write the Allow header RFC 7231 requires, and it
+	// does not expose which methods it matched, so there is nothing to write it
+	// from here.
+	e.notAllowed = httpx.NewMiddlewareFallback(e.chain,
+		staticLeaf(httpx.NewError(http.StatusMethodNotAllowed, 0,
+			http.StatusText(http.StatusMethodNotAllowed), nil)))
+	e.engine.NoRoute(e.fallbackHandler(e.notFound))
+	e.engine.NoMethod(e.fallbackHandler(e.notAllowed))
 }
 
-func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.engine.Use(adaptMiddlewares(middleware, e.errHandler)...)
+// staticLeaf is the innermost handler of an unmatched-path chain: it reports the
+// error the adapter would have rendered had no middleware been registered. One
+// value per Engine, built in New, which is what lets the composition around it be
+// cached.
+func staticLeaf(err error) httpx.Handler {
+	return func(httpx.Context) error { return err }
 }
 
-// UseInterceptor registers composed middleware on the engine, implementing
-// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
-func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
-	if len(m) == 0 {
-		return
+// fallbackHandler runs the engine chain and renders whatever comes back out of
+// it. A layer that answers the request itself — a CORS preflight for a path no
+// route matched, a single-page-app rewrite — returns nil and no error is
+// rendered, which is the same rule a route's chain follows.
+//
+// The error is deliberately not added to hertz's error list here, unlike on the
+// route path: hertz has already recorded 404/405 and the fallback is the last
+// handler in the chain, so the only effect would be to make a native middleware
+// that inspects hertz's errors report a failure for every unmatched path.
+func (e *Engine) fallbackHandler(fb *httpx.MiddlewareFallback) app.HandlerFunc {
+	return func(ctx context.Context, rc *app.RequestContext) {
+		err := fb.Handler()(newHertzContext(ctx, rc))
+		if err == nil {
+			return
+		}
+		e.errHandler(ctx, rc, err)
+		commitErrorStatus(rc, err)
 	}
-	e.interceptors = append(slices.Clone(e.interceptors), m...)
+}
+
+// Use registers httpx middleware on the engine, implementing
+// httpx.MiddlewareScope. See Router.Use for the ordering rules.
+//
+// Engine scope is the one scope whose middleware also covers the paths no route
+// matched; see installRouteFallback.
+func (e *Engine) Use(m ...httpx.Middleware) {
+	e.chain.Use(m...)
 }
 
 // UseNative registers native hertz middleware on the engine. See
-// Router.UseNative for why it is preferred over AdaptHertzMiddleware.
+// Router.UseNative for why an app.HandlerFunc can only be mounted this way.
 func (e *Engine) UseNative(handlers ...app.HandlerFunc) {
 	e.engine.Use(handlers...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	sub := e.chain.Sub()
+	sub.Use(m...)
 	return &Router{
-		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
-		interceptors: e.interceptors,
-		errHandler:   e.errHandler,
+		group:      e.engine.Group(prefix),
+		chain:      sub,
+		errHandler: e.errHandler,
 	}
 }
 

@@ -1,0 +1,10 @@
+status: 405
+content-type: application/json
+x-trace: full-path=""
+body: json
+---
+{
+  "code": 0,
+  "message": "Method Not Allowed",
+  "success": false
+}

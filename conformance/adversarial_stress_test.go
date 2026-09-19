@@ -15,7 +15,6 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// countOpenFDs counts open file descriptors by inspecting /dev/fd on Darwin/Linux.
 func countOpenFDs(t *testing.T) int {
 	t.Helper()
 	entries, err := os.ReadDir("/dev/fd")
@@ -25,9 +24,6 @@ func countOpenFDs(t *testing.T) int {
 	return len(entries)
 }
 
-// TestAdversarialConcurrentRequestsAllAdapters stress tests concurrent GET, HEAD, POST,
-// and static file requests across all 4 adapters (ginx, fiberx, echox, hertzx)
-// under -race with 60 concurrent goroutines sending thousands of requests.
 func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 	tmpDir := t.TempDir()
 	staticFile := filepath.Join(tmpDir, "sample.txt")
@@ -40,7 +36,6 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, name)
 
-			// Register routes
 			h.Router.GET("/api/ping", func(ctx httpx.Context) error {
 				q := ctx.Query("q")
 				return ctx.JSON(http.StatusOK, map[string]string{
@@ -77,7 +72,6 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 					for i := 0; i < reqsPerWorker; i++ {
 						switch i % 5 {
 						case 0:
-							// GET /api/ping
 							req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://example.com/api/ping?q=w%d-i%d", workerID, i), nil)
 							resp := h.Do(t, req)
 							if resp.Status != http.StatusOK {
@@ -85,7 +79,6 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 								return
 							}
 						case 1:
-							// HEAD /api/head
 							req := httptest.NewRequest(http.MethodHead, "http://example.com/api/head", nil)
 							resp := h.Do(t, req)
 							if resp.Status != http.StatusOK && resp.Status != http.StatusNoContent {
@@ -97,7 +90,6 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 								return
 							}
 						case 2:
-							// POST /api/echo
 							payload := fmt.Sprintf("echo-payload-w%d-i%d", workerID, i)
 							req := httptest.NewRequest(http.MethodPost, "http://example.com/api/echo", bytes.NewBufferString(payload))
 							resp := h.Do(t, req)
@@ -110,7 +102,6 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 								return
 							}
 						case 3:
-							// GET static file
 							req := httptest.NewRequest(http.MethodGet, "http://example.com/static/sample.txt", nil)
 							resp := h.Do(t, req)
 							if resp.Status != http.StatusOK {
@@ -122,7 +113,7 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 								return
 							}
 						case 4:
-							// HEAD static file: every adapter must serve HEAD with 200 and an empty body.
+							// HEAD static: 200 with an empty body on every adapter.
 							req := httptest.NewRequest(http.MethodHead, "http://example.com/static/sample.txt", nil)
 							resp := h.Do(t, req)
 							if resp.Status != http.StatusOK {
@@ -148,8 +139,6 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 	}
 }
 
-// TestAdversarialStaticHEADZeroFDLeaks verifies zero file descriptor leaks
-// when issuing hundreds of HEAD requests on static file routes.
 func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
 	tmpDir := t.TempDir()
 	staticFile := filepath.Join(tmpDir, "leak_check.txt")
@@ -166,9 +155,8 @@ func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
 			method := http.MethodHead
 			expectedStatus := http.StatusOK
 
-			// Warm up the handler at the same concurrency as the measurement so
-			// lazily-initialized runtime FDs (fasthttp workers, pollers) are
-			// created before the baseline count.
+			// Warm up at the measurement concurrency so lazily created runtime FDs
+			// (fasthttp workers, pollers) exist before the baseline count.
 			var warmWg sync.WaitGroup
 			warmupFailures := make(chan int, 50*5)
 			warmWg.Add(50)
@@ -228,9 +216,8 @@ func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
 				t.Fatalf("error during HEAD stress: %v", err)
 			}
 
-			// If file descriptors were leaked on each request, diff would be ~500.
-			// Allow at most 5 for transient runtime noise (e.g., fasthttp internal
-			// workers/timers), re-counting a few times to let transient FDs settle.
+			// A per-request leak would show ~500; allow 5 for transient runtime FDs
+			// (fasthttp workers/timers), re-counting until they settle.
 			var diff int
 			for attempt := 0; attempt < 5; attempt++ {
 				runtime.GC()

@@ -22,29 +22,35 @@ import (
 // the next handler, the chain is short-circuited.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
-		return func(ctx httpx.Context) error {
-			return ctx.Next()
-		}
+		return func(next httpx.Handler) httpx.Handler { return next }
 	}
-	return func(ctx httpx.Context) error {
-		fc, ok := httpx.AsNativeContext[fiber.Ctx](ctx)
-		if !ok {
-			return errors.New("AdaptStdMiddleware: fiber context type error")
+	return func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			fc, ok := httpx.AsNativeContext[fiber.Ctx](ctx)
+			if !ok {
+				return errors.New("AdaptStdMiddleware: fiber context type error")
+			}
+			req, err := adaptor.ConvertRequest(fc, true)
+			if err != nil {
+				return err
+			}
+			// ConvertRequest builds a fresh request, so without this the
+			// middleware — and the chain below, via ctx.SetContext(r.Context())
+			// — would see context.Background() instead of the context the
+			// layers above set, which is the discontinuity the other four
+			// adapters do not have.
+			req = req.WithContext(fc.Context())
+			var nextErr error
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx.SetContext(r.Context())
+				nextErr = next(ctx)
+				replayFiberResponse(fc, w)
+			})
+			w := &fiberResponseWriter{fc: fc}
+			middleware(inner).ServeHTTP(w, req)
+			w.finish()
+			return nextErr
 		}
-		req, err := adaptor.ConvertRequest(fc, true)
-		if err != nil {
-			return err
-		}
-		var nextErr error
-		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx.SetContext(r.Context())
-			nextErr = ctx.Next()
-			replayFiberResponse(fc, w)
-		})
-		w := &fiberResponseWriter{fc: fc}
-		middleware(inner).ServeHTTP(w, req)
-		w.finish()
-		return nextErr
 	}
 }
 

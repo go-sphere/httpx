@@ -202,8 +202,7 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 		}
 		return harnessBundle{harness: h}
 	case "fiberx":
-		// Default mode uses the adapter's exported default handler so the
-		// suite exercises the real default behavior instead of an inline copy.
+		// Default mode keeps the adapter's exported default handler, not an inline copy.
 		errorHandler := fiberx.DefaultErrorHandler
 		if opts.errorMode == harnessErrorTeapot {
 			errorHandler = func(ctx fiber.Ctx, err error) error {
@@ -257,9 +256,7 @@ func newFrameworkHarnessTB(tb testing.TB, name string, opts harnessOptions) harn
 				_ = c.JSON(http.StatusTeapot, echo.Map{"error": err.Error()})
 			}
 		}
-		// In default mode the engine keeps echo's default handler, which
-		// echox.New replaces with the adapter default — the suite therefore
-		// exercises the real default behavior instead of an inline copy.
+		// echox.New replaces echo's default handler, so default mode exercises the adapter default.
 
 		addr := ginLikeAddrForMode(tb, opts.mode)
 		engine := echox.New(echox.WithEngine(e), echox.WithAddr(addr))
@@ -376,14 +373,13 @@ func doHertzRequest(t *testing.T, h *server.Hertz, req *http.Request) responseSn
 	hdr := make(http.Header)
 	hctx.Response.Header.VisitAll(func(k, v []byte) {
 		if textproto.CanonicalMIMEHeaderKey(string(k)) == "Set-Cookie" {
-			// Collected below: VisitAll yields only one Set-Cookie line.
+			// VisitAll yields only one Set-Cookie line; the rest are collected below.
 			return
 		}
 		hdr.Add(textproto.CanonicalMIMEHeaderKey(string(k)), string(v))
 	})
 	for _, setCookie := range hctx.Response.Header.GetAll("Set-Cookie") {
-		// Hertz returns a single empty string for an absent key, which would
-		// otherwise become a bogus "Set-Cookie:" line in the snapshot.
+		// Hertz yields one empty string for an absent key, which would become a bogus snapshot line.
 		if setCookie == "" {
 			continue
 		}

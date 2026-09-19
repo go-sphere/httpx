@@ -6,31 +6,26 @@ import (
 	"strings"
 )
 
-// StatusError represents an error that carries an HTTP status code.
-// This interface allows errors to be categorized by their HTTP semantics.
+// StatusError is an error carrying an HTTP status code.
 type StatusError interface {
 	error
-	// GetStatus returns the HTTP status code associated with this error.
 	GetStatus() int32
 }
 
-// CodeError represents an error that carries a custom error code.
-// This is useful for application-specific error classification beyond HTTP status.
+// CodeError is an error carrying an application-specific error code.
 type CodeError interface {
 	error
-	// GetCode returns the custom error code associated with this error.
 	GetCode() int32
 }
 
-// MessageError represents an error that carries a user-friendly message.
-// This allows separation between technical error details and user-facing messages.
+// MessageError is an error carrying a user-facing message, separate from the
+// technical detail in Error().
 type MessageError interface {
 	error
-	// GetMessage returns the user-friendly message associated with this error.
 	GetMessage() string
 }
 
-// Error is a comprehensive error type that includes HTTP status, custom code, and user message.
+// Error carries an HTTP status, an application code and a user message.
 type Error interface {
 	error
 	StatusError
@@ -38,9 +33,8 @@ type Error interface {
 	MessageError
 }
 
-// httpError is an unexported concrete implementation of Error.
-// Keeping it unexported prevents external code from depending on the
-// concrete type, preserving flexibility to change internals.
+// httpError implements Error. It stays unexported so callers depend on the
+// interface rather than the concrete type.
 type httpError struct {
 	error
 	status  int32
@@ -68,10 +62,8 @@ func (e *httpError) Unwrap() error {
 	return e.error
 }
 
-// NewError creates a new error with HTTP status, custom code, and user message.
-// It returns the broader Error interface to avoid exposing the concrete type
-// and keep the API surface stable. If err is nil, a default HTTP error based on the
-// status is used.
+// NewError creates an error with an HTTP status, an application code and a user
+// message. If err is nil, a default error derived from the status is used.
 func NewError(status, code int32, message string, err error) Error {
 	if err == nil {
 		err = httpStatusError(status)
@@ -200,26 +192,18 @@ func httpStatusError(status int32) error {
 	return errors.New(msg)
 }
 
-// ParseError extracts error information from various error types.
-// It recognizes StatusError, CodeError, and MessageError interfaces and falls back
-// to defaults for unknown error types.
-// code is 0 unless err implements CodeError, matching ClassifyError.
+// ParseError extracts status, code and message from StatusError, CodeError and
+// MessageError, falling back to defaults for unknown error types.
 //
-// message is empty unless err carries one through MessageError. It is never
+// message is empty unless err carries one through MessageError, and is never
 // err.Error(): ParseError is the default ErrorParser of sphere/httpz, so its
-// message goes straight into an HTTP response body, and err.Error() there is
-// raw internal detail — driver strings, SQL, panic text. Empty is the honest
-// answer, and it is more useful than a substitute: it says "this error has no
-// user-facing message", which a caller can distinguish from a message that
-// merely happens to equal the status text. Callers that need something to
-// render should use ClassifyError (or RenderError), which degrades an
-// unclassified error to http.StatusText(status) for exactly that purpose.
+// message goes straight into a response body, where err.Error() would leak raw
+// internal detail — driver strings, SQL, panic text. Callers that need
+// something to render should use ClassifyError or RenderError, which substitute
+// http.StatusText(status).
 func ParseError(err error) (code int32, status int32, message string) {
-	// A nil error is a caller mistake that must not take the process down:
-	// this is the default ErrorParser in sphere/httpz. It classifies like any
-	// other error carrying no information — 500, and no user-facing message,
-	// because nil implements MessageError no more than errors.New does.
-	// ClassifyError(nil) is where that becomes renderable status text.
+	// A nil error is a caller mistake that must not take the process down; it
+	// classifies like any other error carrying no information.
 	if err == nil {
 		return 0, http.StatusInternalServerError, ""
 	}

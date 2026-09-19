@@ -13,15 +13,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// BodyRaw returns a slice the caller owns (httpx.BodyAccess): it must stay
-// valid after the handler returns. The adapters over fasthttp-based frameworks
-// have to copy for that, because the framework serves the body out of a pooled
-// buffer that the next request on the same connection refills.
-//
-// This cannot be asserted from httpxtest: every in-process requester builds a
-// fresh native context per request, so nothing is ever reused and an aliasing
-// adapter passes. Forcing the reuse needs the framework's own types, which is
-// why these two live here.
+// BodyRaw must return a caller-owned slice that stays valid after the handler
+// returns, so the fasthttp-based adapters copy out of a pooled request buffer.
+// httpxtest cannot catch an adapter that aliases: its in-process requesters
+// build a fresh native context per request, so reuse has to be driven here.
 
 const (
 	firstBody  = "body-of-the-first-request"
@@ -63,8 +58,7 @@ func TestFiberxBodyRawSurvivesRequestCtxReuse(t *testing.T) {
 	}
 
 	serve("/body/capture", firstBody)
-	// Same RequestCtx, second request: fasthttp refills the very buffer the
-	// first BodyRaw read from, which is what a keep-alive connection does.
+	// Second request on the same RequestCtx refills what the first BodyRaw read.
 	ctx.Response.Reset()
 	ctx.ResetUserValues()
 	serve("/body", secondBody)
@@ -110,8 +104,7 @@ func TestHertzxBodyRawSurvivesRequestContextReuse(t *testing.T) {
 	}
 
 	serve("/body/capture", firstBody)
-	// Same RequestContext, second request: hertz refills the very buffer the
-	// first BodyRaw read from.
+	// Second request on the same RequestContext refills what the first BodyRaw read.
 	rc.ResetWithoutConn()
 	serve("/body", secondBody)
 

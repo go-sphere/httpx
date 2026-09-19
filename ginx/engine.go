@@ -6,17 +6,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
 )
 
-var (
-	_ httpx.Engine           = (*Engine)(nil)
-	_ httpx.InterceptorScope = (*Engine)(nil)
-)
+var _ httpx.Engine = (*Engine)(nil)
 
 type ErrorHandler func(ctx *gin.Context, err error)
 
@@ -140,11 +136,15 @@ type Engine struct {
 	engine     *gin.Engine
 	server     *http.Server
 	errHandler ErrorHandler
-	// interceptors are inherited by every group created from this engine; see
-	// Router.UseInterceptor.
-	interceptors []httpx.Interceptor
-	running      atomic.Bool
-	closed       atomic.Bool
+	// chain is the engine scope, referenced by every group created from this
+	// engine; see Router.Use.
+	chain *httpx.MiddlewareChain
+	// notFound and notAllowed carry the engine chain into the unmatched-path
+	// answers; see installRouteFallback.
+	notFound   *httpx.MiddlewareFallback
+	notAllowed *httpx.MiddlewareFallback
+	running    atomic.Bool
+	closed     atomic.Bool
 }
 
 // New constructs a gin-backed Engine using core options.
@@ -163,12 +163,14 @@ func New(opts ...Option) httpx.Engine {
 		}
 	}
 	conf.server.Handler = conf.engine
-	installRouteFallback(conf.engine, conf.errHandler)
-	return &Engine{
+	engine := &Engine{
 		engine:     conf.engine,
 		server:     conf.server,
 		errHandler: conf.errHandler,
+		chain:      httpx.NewMiddlewareChain(),
 	}
+	engine.installRouteFallback()
+	return engine
 }
 
 // installRouteFallback makes gin answer a request no route handled through the
@@ -177,56 +179,77 @@ func New(opts ...Option) httpx.Engine {
 // all: with HandleMethodNotAllowed off (its default) a path that exists under
 // another method is reported as 404.
 //
-// Engine middleware keeps running for these requests — gin composes NoRoute and
-// NoMethod on top of engine.Handlers — which is what an access log or a recovery
-// layer registered with Use depends on.
+// Native middleware keeps running for these requests — gin composes NoRoute and
+// NoMethod on top of engine.Handlers — and engine-scope httpx middleware reaches
+// them through the fallbacks built here, since an unmatched request never
+// reaches a route's chain. A group's layers are deliberately absent.
 //
-// Precedence: both handlers are installed unconditionally, so a NoRoute or
-// NoMethod set on an engine *before* it is passed to WithEngine is replaced.
-// The override point is after New — gin's setters replace rather than append, so
-// gin.Engine.NoRoute called once ginx.New has returned wins outright, and that is
-// the supported way to keep your own fallback.
-//
-// Detecting a pre-existing handler is possible (gin keeps both slices unexported
-// with no getter, so it takes reflection over a third-party private field) but
-// not worth it: it would buy only the set-it-before-New case, and it would change
-// behavior silently the day gin renames the field. Unconditional is predictable.
-func installRouteFallback(ge *gin.Engine, errHandler ErrorHandler) {
-	ge.HandleMethodNotAllowed = true
-	ge.NoRoute(func(gc *gin.Context) {
-		errHandler(gc, httpx.NewNotFoundError(http.StatusText(http.StatusNotFound)))
-	})
-	ge.NoMethod(func(gc *gin.Context) {
-		// gin has already written the Allow header required by RFC 7231.
-		errHandler(gc, httpx.NewError(http.StatusMethodNotAllowed, 0,
-			http.StatusText(http.StatusMethodNotAllowed), nil))
-	})
+// Both handlers are installed unconditionally, so a NoRoute or NoMethod set on
+// an engine before it is passed to WithEngine is replaced. Installing your own
+// after ginx.New has returned wins outright, because gin's setters replace
+// rather than append; that is the supported way to keep a custom fallback.
+func (e *Engine) installRouteFallback() {
+	e.engine.HandleMethodNotAllowed = true
+	e.notFound = httpx.NewMiddlewareFallback(e.chain,
+		staticLeaf(httpx.NewNotFoundError(http.StatusText(http.StatusNotFound))))
+	// gin has already written the Allow header required by RFC 7231.
+	e.notAllowed = httpx.NewMiddlewareFallback(e.chain,
+		staticLeaf(httpx.NewError(http.StatusMethodNotAllowed, 0,
+			http.StatusText(http.StatusMethodNotAllowed), nil)))
+	e.engine.NoRoute(e.fallbackHandler(e.notFound))
+	e.engine.NoMethod(e.fallbackHandler(e.notAllowed))
 }
 
-func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.engine.Use(adaptMiddlewares(middleware, e.errHandler)...)
+// staticLeaf is the innermost handler of an unmatched-path chain: it reports the
+// error the adapter would have rendered had no middleware been registered. One
+// value per Engine, built in New, which is what lets the composition around it be
+// cached.
+func staticLeaf(err error) httpx.Handler {
+	return func(httpx.Context) error { return err }
 }
 
-// UseInterceptor registers composed middleware on the engine, implementing
-// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
-func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
-	if len(m) == 0 {
-		return
+// fallbackHandler runs the engine chain and renders whatever comes back out of
+// it. A layer that answers the request itself — a CORS preflight for a path no
+// route matched, a single-page-app rewrite — returns nil and no error is
+// rendered, which is the same rule a route's chain follows.
+//
+// The error is deliberately not added to gin's error list here, unlike on the
+// route path: gin has already recorded 404/405 and the fallback is the last
+// handler in the chain, so the only effect would be to make a native middleware
+// that inspects gin's errors report a failure for every unmatched path.
+func (e *Engine) fallbackHandler(fb *httpx.MiddlewareFallback) gin.HandlerFunc {
+	return func(gc *gin.Context) {
+		err := fb.Handler()(newGinContext(gc))
+		if err == nil {
+			return
+		}
+		e.errHandler(gc, err)
+		commitErrorStatus(gc, err)
 	}
-	e.interceptors = append(slices.Clone(e.interceptors), m...)
 }
 
-// UseNative registers native gin middleware on the engine. See
-// Router.UseNative for why it is preferred over AdaptGinMiddleware.
+// Use registers httpx middleware on the engine, implementing
+// httpx.MiddlewareScope. See Router.Use for the ordering rules.
+//
+// Engine scope is the one scope whose middleware also covers the paths no route
+// matched; see installRouteFallback.
+func (e *Engine) Use(m ...httpx.Middleware) {
+	e.chain.Use(m...)
+}
+
+// UseNative registers native gin middleware on the engine. See Router.UseNative
+// for why a gin.HandlerFunc can only be mounted this way.
 func (e *Engine) UseNative(handlers ...gin.HandlerFunc) {
 	e.engine.Use(handlers...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	sub := e.chain.Sub()
+	sub.Use(m...)
 	return &Router{
-		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler)...),
-		errHandler:   e.errHandler,
-		interceptors: e.interceptors,
+		group:      e.engine.Group(prefix),
+		errHandler: e.errHandler,
+		chain:      sub,
 	}
 }
 

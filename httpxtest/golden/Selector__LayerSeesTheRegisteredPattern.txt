@@ -1,0 +1,8 @@
+status: 200
+content-type: application/json
+x-trace: full-path="/api/v1/thing"
+body: json
+---
+{
+  "route": "thing"
+}

@@ -9,11 +9,9 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// Two places write echo.Echo.HTTPErrorHandler — NewConfig and New — and they
-// used to disagree: NewConfig preserved a handler the caller had set on their own
-// echo.Echo, and New then replaced it anyway whenever WithErrorHandler was given,
-// so the guard never decided anything in that combination. These pin the single
-// precedence list both now read, documented on NewConfig.
+// NewConfig preserves a caller's HTTPErrorHandler while New replaces it whenever
+// WithErrorHandler is given, so the two can disagree. These pin the single
+// precedence list both read, documented on NewConfig.
 
 // markerHandler answers with a status nothing else in this file uses, so which
 // handler ran is readable off the response alone.
@@ -40,9 +38,8 @@ func unmatchedResponse(t *testing.T, engine httpx.Engine) *http.Response {
 }
 
 // 1. WithErrorHandler is the portable surface, so it wins over a handler the
-// caller installed on their own engine. Anything else would split the answers:
-// the framework-neutral handler would render routed errors while echo's own
-// 404/405 went somewhere different.
+// caller installed on their own engine: otherwise the framework-neutral handler
+// would render routed errors while echo's own 404/405 went somewhere different.
 func TestWithErrorHandlerOutranksTheEnginesOwn(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = markerHandler(http.StatusTeapot)
@@ -58,8 +55,7 @@ func TestWithErrorHandlerOutranksTheEnginesOwn(t *testing.T) {
 }
 
 // 2. Without WithErrorHandler, a handler the caller set on their own engine is
-// left alone — that is what the isEchoDefaultErrorHandler guard is for, and it
-// now actually decides the slot instead of being overwritten below.
+// left alone — that is what the isEchoDefaultErrorHandler guard is for.
 func TestEnginesOwnErrorHandlerSurvivesWithoutWithErrorHandler(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = markerHandler(http.StatusTeapot)

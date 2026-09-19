@@ -6,10 +6,9 @@ import (
 	"net/http"
 )
 
-// Start begins serving HTTP requests on the configured address.
-// It handles nil server gracefully and returns nil.
-// It ignores http.ErrServerClosed which is expected during graceful shutdown.
-// Returns any other error that occurs during server startup.
+// Start serves on the configured address until shutdown. A nil server is a
+// no-op, and http.ErrServerClosed — expected during a graceful shutdown — is
+// reported as success.
 func Start(server *http.Server) error {
 	if server == nil {
 		return nil
@@ -30,13 +29,6 @@ func Start(server *http.Server) error {
 // A nil result therefore does not by itself mean every in-flight request
 // finished. A Shutdown that failed for some other reason is force-closed too,
 // but that cause is what Close returns.
-//
-// This lives here rather than in each adapter because ginx, echox and stdx all
-// stop the same *http.Server, and "graceful, then forced" is a property of
-// net/http, not of any one framework; putting it here also keeps the exported
-// helper from being the one shutdown path in the repository that leaves
-// connections serving. It matches sphere/httpz.StopServer, which had to
-// reimplement exactly this downstream.
 //
 // A nil server is a no-op.
 func Close(ctx context.Context, server *http.Server) error {

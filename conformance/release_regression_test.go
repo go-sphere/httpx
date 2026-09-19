@@ -55,7 +55,7 @@ func TestReleaseRegressionRouterBacktracking(t *testing.T) {
 	}
 }
 
-// The custom writer models middleware that buffers headers independently.
+// Models middleware that buffers headers independently.
 type regressionHeaderWriter struct {
 	http.ResponseWriter
 	header http.Header
@@ -71,7 +71,9 @@ func (w *regressionHeaderWriter) WriteHeader(status int) {
 func TestReleaseRegressionStdWriterHeaderCache(t *testing.T) {
 	e := stdx.New()
 	r := e.Group("")
-	r.Use(func(c httpx.Context) error { c.SetHeader("X-Before", "before"); return c.Next() })
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error { c.SetHeader("X-Before", "before"); return next(c) }
+	})
 	r.Use(stdx.AdaptStdMiddleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			next.ServeHTTP(&regressionHeaderWriter{ResponseWriter: w, header: make(http.Header)}, req)
@@ -87,7 +89,6 @@ func TestReleaseRegressionStdWriterHeaderCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// A stricter check is in the companion test that captures the wrapping Header map.
 	if resp.Header.Get("X-Downstream") != "value" {
 		t.Fatal(resp.Header)
 	}
@@ -97,7 +98,9 @@ func TestReleaseRegressionStdWriterSeparateHeaders(t *testing.T) {
 	e := stdx.New()
 	r := e.Group("")
 	var observed string
-	r.Use(func(c httpx.Context) error { c.SetHeader("X-Before", "before"); return c.Next() })
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error { c.SetHeader("X-Before", "before"); return next(c) }
+	})
 	r.Use(stdx.AdaptStdMiddleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			wrapped := &regressionHeaderWriter{ResponseWriter: w, header: make(http.Header)}
@@ -139,65 +142,61 @@ func TestReleaseRegressionStdInformationalStatus(t *testing.T) {
 	}
 }
 
+// A handler still running after http.TimeoutHandler gave up must not touch the
+// context handed to the next request: AdaptStdMiddleware isolates the
+// continuation on a child context, so late state never leaks sideways.
 func TestReleaseRegressionStdTimeoutPoolReuse(t *testing.T) {
 	old := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(old)
-	for _, composed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("composed=%v", composed), func(t *testing.T) {
-			e := stdx.New()
-			r := e.Group("")
-			r.Use(func(c httpx.Context) error { c.Set("request", c.Param("id")); return c.Next() })
-			timeout := stdx.AdaptStdMiddleware(func(next http.Handler) http.Handler {
-				return http.TimeoutHandler(next, 50*time.Millisecond, "timeout")
-			})
-			if composed {
-				httpx.UseInterceptor(r, httpx.AsInterceptor(timeout))
-			} else {
-				r.Use(timeout)
-			}
-			release := make(chan struct{})
-			type result struct {
-				id    string
-				state any
-				err   error
-			}
-			finished := make(chan result, 1)
-			r.GET("/:id", func(c httpx.Context) error {
-				if c.Param("id") == "first" {
-					<-release
-					state, _ := c.Get("request")
-					c.Set("late", true)
-					got := result{id: c.Param("id"), state: state, err: c.Text(200, "late response")}
-					finished <- got
-					return got.err
-				}
-				if _, ok := c.Get("late"); ok {
-					return c.Text(500, "state leaked")
-				}
-				return c.NoContent(204)
-			})
-			status, body := regressionServe(t, e, "GET", "/first")
-			if status != 503 || body != "timeout" {
-				close(release)
-				t.Fatalf("timeout response=%d %q", status, body)
-			}
-			status, body = regressionServe(t, e, "GET", "/second")
-			close(release)
-			if status != 204 || body != "" {
-				t.Fatalf("second response=%d %q", status, body)
-			}
-			select {
-			case got := <-finished:
-				if got.id != "first" || got.state != "first" || !errors.Is(got.err, http.ErrHandlerTimeout) {
-					t.Errorf("late handler result=%+v", got)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("handler did not finish")
-			}
-			status, body = regressionServe(t, e, "GET", "/third")
-			if status != 204 || body != "" {
-				t.Fatalf("third response=%d %q", status, body)
-			}
-		})
+	e := stdx.New()
+	r := e.Group("")
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error { c.Set("request", c.Param("id")); return next(c) }
+	})
+	r.Use(stdx.AdaptStdMiddleware(func(next http.Handler) http.Handler {
+		return http.TimeoutHandler(next, 50*time.Millisecond, "timeout")
+	}))
+	release := make(chan struct{})
+	type result struct {
+		id    string
+		state any
+		err   error
+	}
+	finished := make(chan result, 1)
+	r.GET("/:id", func(c httpx.Context) error {
+		if c.Param("id") == "first" {
+			<-release
+			state, _ := c.Get("request")
+			c.Set("late", true)
+			got := result{id: c.Param("id"), state: state, err: c.Text(200, "late response")}
+			finished <- got
+			return got.err
+		}
+		if _, ok := c.Get("late"); ok {
+			return c.Text(500, "state leaked")
+		}
+		return c.NoContent(204)
+	})
+	status, body := regressionServe(t, e, "GET", "/first")
+	if status != 503 || body != "timeout" {
+		close(release)
+		t.Fatalf("timeout response=%d %q", status, body)
+	}
+	status, body = regressionServe(t, e, "GET", "/second")
+	close(release)
+	if status != 204 || body != "" {
+		t.Fatalf("second response=%d %q", status, body)
+	}
+	select {
+	case got := <-finished:
+		if got.id != "first" || got.state != "first" || !errors.Is(got.err, http.ErrHandlerTimeout) {
+			t.Errorf("late handler result=%+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler did not finish")
+	}
+	status, body = regressionServe(t, e, "GET", "/third")
+	if status != 204 || body != "" {
+		t.Fatalf("third response=%d %q", status, body)
 	}
 }

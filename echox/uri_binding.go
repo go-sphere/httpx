@@ -30,10 +30,9 @@ func bindForm(dst any, ctx echo.Context) error {
 // method on echoContext rather than a function over echo.Context because it has
 // to read the parameter set exactly as Param and Params do — same decoding
 // rule, same resolution of the "*" key back to the name the route was
-// registered with. Binding straight off ctx.ParamNames() instead is how a field
-// tagged uri:"filepath" used to bind "" on a /files/*filepath route: echo only
-// knows that parameter as "*", so the tag matched nothing and the failure was
-// silent.
+// registered with. Binding straight off ctx.ParamNames() instead silently binds
+// "" for a field tagged uri:"filepath" on a /files/*filepath route, because echo
+// only knows that parameter as "*" and an unmatched tag is not an error.
 func (c *echoContext) bindURIWithForm(dst any) error {
 	names := c.ctx.ParamNames()
 	if len(names) == 0 {

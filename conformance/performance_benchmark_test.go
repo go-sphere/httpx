@@ -108,13 +108,18 @@ func BenchmarkFrameworkComplexRequest(b *testing.B) {
 			h := newBenchmarkHarness(b, name)
 			registerNoiseRoutes(h.router, benchmarkNoiseRoutes)
 
-			h.router.Use(func(ctx httpx.Context) error {
-				ctx.Set("trace", "bench-complex")
-				return ctx.Next()
+			h.router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.Set("trace", "bench-complex")
+					return next(ctx)
+				}
 			})
-			api := h.router.Group("/api", func(ctx httpx.Context) error {
-				ctx.Set("scope", "api")
-				return ctx.Next()
+			api := h.router.Group("/api")
+			api.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.Set("scope", "api")
+					return next(ctx)
+				}
 			})
 			v1 := api.Group("/v1")
 			v1.POST("/orgs/:orgID/users/:userID/orders", func(ctx httpx.Context) error {
@@ -183,9 +188,11 @@ func BenchmarkFrameworkComplexRequest(b *testing.B) {
 }
 
 func registerBenchmarkRoute(r httpx.Router) {
-	r.Use(func(ctx httpx.Context) error {
-		ctx.Set("trace", "v1")
-		return ctx.Next()
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			ctx.Set("trace", "v1")
+			return next(ctx)
+		}
 	})
 	r.GET("/bench/:id", func(ctx httpx.Context) error {
 		return ctx.JSON(200, map[string]any{

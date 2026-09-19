@@ -16,15 +16,11 @@ func init() {
 	register("Contract", casesContract)
 }
 
-// Contract details that are easy to get subtly different: the absence of
-// validation, method name case, registration-time failures, sniffed content
-// types, state-store semantics, and plain net/http middleware.
 func casesContract(t *testing.T, r runner) {
 	// Bind* decodes and does not validate: a `binding` tag is inert, so a
-	// missing "required" field binds to its zero value with no 400. Pinned
-	// rather than left untested — the adapters used to run go-playground's
-	// validator here, and the whole point of removing it is that the caller,
-	// not the binder, decides what a valid request is.
+	// missing "required" field binds to its zero value with no 400. The absence
+	// is pinned because it is the caller — not the binder — that decides what a
+	// valid request is.
 	t.Run("BindIgnoresBindingTag", func(t *testing.T) {
 		type dto struct {
 			Name string `json:"name" query:"name" binding:"required"`
@@ -78,10 +74,9 @@ func casesContract(t *testing.T, r runner) {
 	})
 
 	// The sequence generated handlers use: one struct filled from four sources
-	// in turn. Every source has to survive the next Bind* call, and none of
-	// them may fail because a *later* source has not been read yet — which is
-	// exactly what validating after each decode did, since the `uri` field is
-	// still empty when BindJSON returns.
+	// in turn. No Bind* call may fail because a *later* source has not been read
+	// yet — validating after each decode did exactly that, since the `uri` field
+	// is still empty when BindJSON returns.
 	t.Run("BindMultiSourceSequence", func(t *testing.T) {
 		type dto struct {
 			Name   string `json:"name"`
@@ -129,7 +124,6 @@ func casesContract(t *testing.T, r runner) {
 		r.compareGolden(t, got)
 	})
 
-	// Lowercase method names must register and dispatch.
 	t.Run("MethodNameCase", func(t *testing.T) {
 		methods := []string{"get", "post", "put", "delete", "patch", "options"}
 		register := func(router httpx.Router) {
@@ -166,12 +160,11 @@ func casesContract(t *testing.T, r runner) {
 		}
 	})
 
-	// The anonymous wildcard is one of those shapes, and the one that used to
-	// split the adapters 2-vs-3: gin and hertz panicked with their own message,
-	// while echo, fiber and stdx registered the route and then disagreed about
-	// whether the parameter was keyed "*" or "". So this case asserts more than
-	// "it panicked" — the panic value has to be httpx's error, which is what
-	// makes the five failures identical rather than merely simultaneous.
+	// The anonymous wildcard is the shape the frameworks split 2-vs-3 on: gin and
+	// hertz panic with their own message, while echo, fiber and stdx would
+	// register the route and then disagree on whether the parameter is keyed "*"
+	// or "". So the panic value has to be httpx's error, which is what makes the
+	// five failures identical rather than merely simultaneous.
 	t.Run("AnonymousWildcardRegistrationPanics", func(t *testing.T) {
 		for _, path := range []string{"/*", "/files/*", "/a/b/*"} {
 			t.Run(path, func(t *testing.T) {
@@ -261,7 +254,7 @@ func casesContract(t *testing.T, r runner) {
 }
 
 // Plain net/http middleware must behave the same through every adapter:
-// request mutation (including context values), response wrapping, and
+// request mutation (including context values), response wrapping and
 // short-circuiting.
 func casesStdMiddleware(t *testing.T, r runner) {
 	if r.suite.StdMiddleware == nil {
@@ -351,8 +344,8 @@ func casesStdMiddleware(t *testing.T, r runner) {
 
 type stdCtxKey struct{}
 
-// upperWriter upper-cases the body, exercising the writer-wrapping path of
-// AdaptStdMiddleware.
+// upperWriter upper-cases the body, exercising AdaptStdMiddleware's
+// writer-wrapping path.
 type upperWriter struct {
 	http.ResponseWriter
 }

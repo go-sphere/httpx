@@ -1,0 +1,10 @@
+status: 404
+content-type: application/json
+x-trace: full-path=""
+body: json
+---
+{
+  "code": 0,
+  "message": "Not Found",
+  "success": false
+}

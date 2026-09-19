@@ -14,12 +14,12 @@ func init() {
 	register("RequestEdges", casesRequestEdges)
 }
 
-// Edges of the request surface that the ordinary cases do not reach: the
-// multi-value shape of Queries/Headers, a body with no declared length, a
-// percent-encoded path, and a body large enough to cross a buffer.
+// Edges of the request surface the ordinary cases do not reach: the multi-value
+// shape of Queries/Headers, a body with no declared length, an encoded path, and
+// a body large enough to cross a buffer.
 func casesRequestEdges(t *testing.T, r runner) {
-	// Queries and Headers return map[string][]string; that shape only means
-	// something when a key repeats, which is what this case sends.
+	// Queries and Headers return map[string][]string, a shape that only means
+	// something when a key repeats.
 	t.Run("RepeatedQueryAndHeader", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/edges/repeated?tag=a&tag=b&single=x", nil)
 		req.Header.Add("X-Multi", "one")
@@ -38,17 +38,16 @@ func casesRequestEdges(t *testing.T, r runner) {
 		}, req)
 	})
 
-	// A body with no Content-Length: the frameworks read bodies very
-	// differently (net/http reader, fasthttp buffer), so this is where a
-	// length assumption would show up.
+	// A body with no Content-Length: the frameworks read bodies differently
+	// (net/http reader, fasthttp buffer), so a length assumption shows up here.
 	t.Run("BodyWithoutContentLength", func(t *testing.T) {
 		if !r.suite.Caps.InProcessUnknownLengthBody {
 			t.Skipf("%s: Caps.InProcessUnknownLengthBody is not declared; the in-process requester cannot express an unknown body length", r.suite.Name)
 		}
-		// A body whose length httptest cannot determine, which is how an
-		// unknown-length (chunked on the wire) request is expressed: setting
-		// TransferEncoding by hand alongside a negative ContentLength produces
-		// an illegal wire form that some servers reject outright.
+		// An io.Reader body makes httptest declare no length, which is how an
+		// unknown-length (chunked on the wire) request is expressed; setting
+		// TransferEncoding by hand alongside a negative ContentLength produces an
+		// illegal wire form some servers reject.
 		req := httptest.NewRequest(http.MethodPost, "http://example.com/edges/chunked",
 			io.NopCloser(strings.NewReader("chunked-body")))
 
@@ -112,9 +111,8 @@ func casesRequestEdges(t *testing.T, r runner) {
 			})
 		}, req)
 
-		// The response carries the payload length, so it is asserted inline
-		// rather than recorded: a golden file holding a megabyte tells nobody
-		// anything.
+		// Asserted inline rather than recorded: a golden file holding a megabyte
+		// tells nobody anything.
 		if got.Status != http.StatusOK {
 			t.Fatalf("status = %d, want %d", got.Status, http.StatusOK)
 		}

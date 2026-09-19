@@ -14,15 +14,17 @@ func TestStdMiddlewareShortCircuitThenError(t *testing.T) {
 	e := echo.New()
 	engine := New(WithEngine(e))
 	r := engine.Group("")
-	r.Use(func(ctx httpx.Context) error {
-		if err := ctx.Next(); err != nil {
-			return err
+	r.Use(func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			if err := next(ctx); err != nil {
+				return err
+			}
+			ec, _ := httpx.AsNativeContext[echo.Context](ctx)
+			if !ec.Response().Committed || ec.Response().Status != http.StatusUnauthorized {
+				t.Errorf("response state = %+v", ec.Response())
+			}
+			return errors.New("late failure")
 		}
-		ec, _ := httpx.AsNativeContext[echo.Context](ctx)
-		if !ec.Response().Committed || ec.Response().Status != http.StatusUnauthorized {
-			t.Errorf("response state = %+v", ec.Response())
-		}
-		return errors.New("late failure")
 	}, AdaptStdMiddleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -90,11 +92,13 @@ func TestCommittedErrorReachesEchoMiddleware(t *testing.T) {
 			}))
 			r := engine.Group("")
 			if fromMiddleware {
-				r.Use(func(ctx httpx.Context) error {
-					if err := ctx.Next(); err != nil {
-						return err
+				r.Use(func(next httpx.Handler) httpx.Handler {
+					return func(ctx httpx.Context) error {
+						if err := next(ctx); err != nil {
+							return err
+						}
+						return want
 					}
-					return want
 				})
 			}
 			r.GET("/", func(ctx httpx.Context) error {

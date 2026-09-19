@@ -17,9 +17,9 @@ func init() {
 	register("Stream", casesStream)
 }
 
-// Streaming and SSE under in-process dispatch: the final response must be the
-// same on every adapter. Incremental *delivery* needs a real connection and
-// stays in the four-framework module.
+// Streaming and SSE under in-process dispatch: the final response must match on
+// every adapter. Incremental *delivery* needs a real connection and stays in the
+// four-framework module.
 func casesStream(t *testing.T, r runner) {
 	t.Run("StreamBuffered", func(t *testing.T) {
 		got := r.serve(t, func(router httpx.Router) {
@@ -49,8 +49,8 @@ func casesStream(t *testing.T, r runner) {
 		}
 	})
 
-	// The WHATWG event-stream framing is byte-exact: comments, bare data,
-	// multi-line data, id/event/retry fields and JSON payloads.
+	// WHATWG event-stream framing is byte-exact: comments, bare and multi-line
+	// data, id/event/retry fields and JSON payloads.
 	t.Run("ServerSentEvents", func(t *testing.T) {
 		const wantBody = ": ready\n\n" +
 			"data: plain\n\n" +
@@ -132,12 +132,14 @@ func init() {
 // The error handler is the single place a failure becomes a response, so both
 // the default and a configured one are part of the contract.
 func casesErrorHandling(t *testing.T, r runner) {
-	// The default handler renders status, success and message — and must not
-	// leak the raw error string.
+	// The default handler renders status, success and message without leaking the
+	// raw error string.
 	t.Run("DefaultHandlerUsesStatusAndDoesNotLeak", func(t *testing.T) {
 		got := r.serve(t, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				return httpx.NewUnauthorizedError("login required")
+			router.Use(func(httpx.Handler) httpx.Handler {
+				return func(httpx.Context) error {
+					return httpx.NewUnauthorizedError("login required")
+				}
 			})
 			router.GET("/mw/unauth", func(ctx httpx.Context) error {
 				return ctx.Text(http.StatusOK, "ok")
@@ -166,12 +168,16 @@ func casesErrorHandling(t *testing.T, r runner) {
 	// chain: stopping is the adapter's job, not the handler's.
 	t.Run("CustomHandlerWithoutAbortStillStopsChain", func(t *testing.T) {
 		got := r.serveWith(t, Options{ErrorHandler: teapotErrorHandler}, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				return errors.New("middleware boom")
+			router.Use(func(httpx.Handler) httpx.Handler {
+				return func(httpx.Context) error {
+					return errors.New("middleware boom")
+				}
 			})
-			router.Use(func(ctx httpx.Context) error {
-				ctx.SetHeader("X-Should-Not-Run", "1")
-				return ctx.Next()
+			router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.SetHeader("X-Should-Not-Run", "1")
+					return next(ctx)
+				}
 			})
 			router.GET("/mw/error/custom", func(ctx httpx.Context) error {
 				ctx.SetHeader("X-Handler-Ran", "1")
@@ -194,10 +200,9 @@ func casesErrorHandling(t *testing.T, r runner) {
 		}
 	})
 
-	// A configured handler that only records a status and a header — the
-	// shape of a handler that leaves the body to a proxy or writes nothing on
-	// purpose — still owes that response. An adapter that only commits on a
-	// body write would answer 200 here.
+	// A configured handler that only records a status and a header — leaving the
+	// body to a proxy, say — still owes that response; an adapter that commits
+	// only on a body write would answer 200 here.
 	statusOnlyHandler := func(ctx httpx.Context, err error) {
 		ctx.SetHeader("X-Trace", "error:"+err.Error())
 		ctx.Status(http.StatusBadGateway)
@@ -210,12 +215,15 @@ func casesErrorHandling(t *testing.T, r runner) {
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/error/status-only", nil))
 	})
 
-	// The same handler on the middleware error path, which every adapter
-	// implements separately from the route path.
+	// The same handler for an error raised by a layer rather than the handler:
+	// the chain is rendered where it was composed, so this must reach the same
+	// response as the route path.
 	t.Run("StatusOnlyHandlerCommitsStatusFromMiddleware", func(t *testing.T) {
 		r.assertGoldenWith(t, Options{ErrorHandler: statusOnlyHandler}, func(router httpx.Router) {
-			router.Use(func(ctx httpx.Context) error {
-				return errors.New("upstream down")
+			router.Use(func(httpx.Handler) httpx.Handler {
+				return func(httpx.Context) error {
+					return errors.New("upstream down")
+				}
 			})
 			router.GET("/mw/error/status-only-mw", func(ctx httpx.Context) error {
 				return ctx.Text(http.StatusOK, "never")

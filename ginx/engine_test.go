@@ -59,11 +59,9 @@ func TestStartReturnsNilAfterGracefulStop(t *testing.T) {
 	}
 }
 
-// The unmatched-path fallback is installed unconditionally, and the override
-// point is after New. Both halves of that rule are asserted here because both
-// are things a caller can get wrong: setting NoRoute before WithEngine looks
-// like it should win and does not, and the supported override has to actually
-// work or there is no way to keep your own fallback at all.
+// The unmatched-path fallback is installed unconditionally by New, so a NoRoute
+// set before WithEngine is replaced; setting one after New wins. Both halves are
+// asserted because both are easy to get wrong from the outside.
 func TestRouteFallbackPrecedence(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 
@@ -85,8 +83,8 @@ func TestRouteFallbackPrecedence(t *testing.T) {
 			t.Fatalf("body = %q, want the shared httpx error body", body)
 		}
 
-		// The 405 half comes with it: gin reports a wrong method as 404 until
-		// HandleMethodNotAllowed is set, which is the other thing this installs.
+		// gin reports a wrong method as 404 until HandleMethodNotAllowed is set,
+		// which this installs too.
 		rr = httptest.NewRecorder()
 		ge.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/known", nil))
 		if rr.Code != http.StatusMethodNotAllowed {
@@ -98,8 +96,8 @@ func TestRouteFallbackPrecedence(t *testing.T) {
 		ge := gin.New()
 		engine := New(WithEngine(ge))
 		engine.Group("").GET("/known", func(ctx httpx.Context) error { return ctx.Text(http.StatusOK, "ok") })
-		// gin's setter replaces, so the last caller wins — this is the
-		// documented way to keep your own unmatched-path answer.
+		// gin's setter replaces, so the last caller wins — the documented way to
+		// keep your own unmatched-path answer.
 		ge.NoRoute(func(gc *gin.Context) { gc.String(http.StatusNotFound, "caller's 404") })
 
 		rr := httptest.NewRecorder()

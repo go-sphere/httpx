@@ -16,32 +16,32 @@ import (
 // short-circuited.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
-		return func(ctx httpx.Context) error {
-			return ctx.Next()
-		}
+		return func(next httpx.Handler) httpx.Handler { return next }
 	}
-	return func(ctx httpx.Context) error {
-		gc, ok := httpx.AsNativeContext[*gin.Context](ctx)
-		if !ok {
-			return errors.New("AdaptStdMiddleware: gin context type error")
-		}
-		var nextErr error
-		ran := false
-		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ran = true
-			gc.Request = r
-			if w != http.ResponseWriter(gc.Writer) {
-				old := gc.Writer
-				gc.Writer = newStdWriterBridge(old, w)
-				defer func() { gc.Writer = old }()
+	return func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			gc, ok := httpx.AsNativeContext[*gin.Context](ctx)
+			if !ok {
+				return errors.New("AdaptStdMiddleware: gin context type error")
 			}
-			nextErr = ctx.Next()
-		})
-		middleware(inner).ServeHTTP(gc.Writer, gc.Request)
-		if !ran && !gc.IsAborted() {
-			gc.Abort()
+			var nextErr error
+			ran := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ran = true
+				gc.Request = r
+				if w != http.ResponseWriter(gc.Writer) {
+					old := gc.Writer
+					gc.Writer = newStdWriterBridge(old, w)
+					defer func() { gc.Writer = old }()
+				}
+				nextErr = next(ctx)
+			})
+			middleware(inner).ServeHTTP(gc.Writer, gc.Request)
+			if !ran && !gc.IsAborted() {
+				gc.Abort()
+			}
+			return nextErr
 		}
-		return nextErr
 	}
 }
 

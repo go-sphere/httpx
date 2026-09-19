@@ -9,10 +9,10 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// WithErrorHandler now takes httpx.ErrorHandler on every adapter; the gin
-// shape moved to WithNativeErrorHandler. These tests pin both, including the
-// Abort bookkeeping the httpx-typed wrapper owns: without it gin would run the
-// rest of the chain over the error body.
+// WithErrorHandler takes httpx.ErrorHandler on every adapter; gin's own shape
+// lives on WithNativeErrorHandler. These pin both, including the Abort
+// bookkeeping the wrapper owns: without it gin would run the rest of the chain
+// over the error body.
 
 func TestWithErrorHandlerIsHTTPXShaped(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
@@ -40,8 +40,6 @@ func TestWithErrorHandlerIsHTTPXShaped(t *testing.T) {
 	}
 }
 
-// The wrapper aborts the gin context so no later handler overwrites the error
-// body it just wrote.
 func TestWithErrorHandlerAborts(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	ge := gin.New()
@@ -51,8 +49,10 @@ func TestWithErrorHandlerAborts(t *testing.T) {
 
 	var later bool
 	r := engine.Group("")
-	r.Use(func(ctx httpx.Context) error {
-		return httpx.NewInternalServerError("boom")
+	r.Use(func(httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			return httpx.NewInternalServerError("boom")
+		}
 	})
 	r.GET("/x", func(ctx httpx.Context) error {
 		later = true

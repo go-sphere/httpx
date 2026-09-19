@@ -17,10 +17,9 @@ func init() {
 	register("Request", casesRequest)
 }
 
-// Request-side cases: bodies, the five binders, forms and uploads. These are
-// where the four frameworks differ most, since each has its own body reader
-// and binder, so they belong in the shared suite rather than in a
-// four-framework test module.
+// Request-side cases: bodies, the five binders, forms and uploads. Each
+// framework has its own body reader and binder, so these belong in the shared
+// suite rather than in a four-framework test module.
 func casesRequest(t *testing.T, r runner) {
 	t.Run("BodyRaw", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
@@ -68,14 +67,10 @@ func casesRequest(t *testing.T, r runner) {
 		}, req)
 	})
 
-	// The BodyAccess contract says the caller owns the returned slice, so it
-	// must stay valid after the request. Retaining it across requests is
-	// asserted here for every adapter, but the case can only fail where the
-	// in-process requester reuses the framework's request buffer — none of the
-	// four do, they all build a fresh native context per request. The version
-	// that actually forces buffer reuse needs the framework's own types and
-	// lives in conformance/body_ownership_conformance_test.go, for the two
-	// adapters that serve the body out of a pooled buffer.
+	// The BodyAccess contract says the caller owns the returned slice, so it must
+	// stay valid after the request. No in-process requester reuses a framework
+	// buffer, so the case that actually forces reuse needs native types and lives
+	// in conformance/body_ownership_conformance_test.go.
 	t.Run("BodyRawOutlivesRequest", func(t *testing.T) {
 		const first = "body-of-the-first-request"
 		const second = "body-of-the-second-reques" // same length, different bytes
@@ -235,7 +230,6 @@ func casesRequest(t *testing.T, r runner) {
 		}, req)
 	})
 
-	// Request-side cookies, read one by one and as a map.
 	t.Run("Cookies", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/request/cookies", nil)
 		req.AddCookie(&http.Cookie{Name: "session", Value: "abc"})
@@ -257,8 +251,8 @@ func casesRequest(t *testing.T, r runner) {
 		}, req)
 	})
 
-	// The whole request surface in one response, so a change to any accessor
-	// shows up as a contract diff.
+	// The whole request surface in one response, so a change to any accessor is a
+	// contract diff.
 	t.Run("RequestInfo", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/request/info/42?a=1&b=2", nil)
 		req.Header.Set("X-Custom", "custom-value")

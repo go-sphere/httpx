@@ -7,17 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"slices"
 	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
 )
 
-var (
-	_ httpx.Engine           = (*Engine)(nil)
-	_ httpx.InterceptorScope = (*Engine)(nil)
-)
+var _ httpx.Engine = (*Engine)(nil)
 
 type Config struct {
 	engine      *echo.Echo
@@ -42,22 +38,13 @@ func NewConfig(opts ...Option) *Config {
 	//
 	// Precedence for echo.Echo.HTTPErrorHandler, highest first:
 	//
-	//  1. WithErrorHandler — New installs it, replacing whatever is here. It is
-	//     the portable surface, so passing it is an explicit request for httpx to
-	//     own every error echo renders; leaving the engine's own handler in place
-	//     would split the answers, with handler errors going through the
-	//     framework-neutral handler and echo's own 404/405 not (see New).
+	//  1. WithErrorHandler — New installs it, replacing whatever is here, so
+	//     httpx owns every error echo renders rather than only handler errors.
 	//  2. a handler the caller set on their own echo.Echo before WithEngine.
 	//  3. this adapter's DefaultErrorHandler.
 	//
-	// Deciding it here rather than in New would be wrong for case 1 and deciding
-	// it only in New would be wrong for case 2, so both sites read this list:
-	// New owns the top entry, and this skips the slot entirely when New will.
-	//
-	// ginx installs its fallback unconditionally instead (see
-	// ginx.installRouteFallback) because gin keeps NoRoute/NoMethod in unexported
-	// slices with no getter, so case 2 is not detectable there without reflecting
-	// over a third-party private field. Here the field is public and comparable.
+	// Both sites read this list: New owns the top entry, and this skips the slot
+	// entirely when New will fill it.
 	if conf.errHandler == nil && (conf.engine.HTTPErrorHandler == nil || isEchoDefaultErrorHandler(conf.engine)) {
 		conf.engine.HTTPErrorHandler = DefaultErrorHandler
 	}
@@ -80,17 +67,10 @@ func isEchoDefaultErrorHandler(e *echo.Echo) bool {
 // It understands *echo.HTTPError (framework 404/405/... errors) so their
 // status codes are preserved instead of being reported as 500.
 //
-// Naming rule for the whole repository: DefaultErrorHandler is always *this
-// adapter's default handler in its native shape*, the value the adapter
-// installs on the framework when the caller configures nothing. That is why
-// the five signatures differ — gin's is func(*gin.Context, error), echo's is
-// echo.HTTPErrorHandler, fiber's is func(fiber.Ctx, error) error, hertz's
-// takes (context.Context, *app.RequestContext, error) — and why for stdx the
-// native shape happens to *be* httpx.ErrorHandler: net/http has no error
-// handler of its own, so the adapter's own shape is the only one there is.
-// The portable, framework-neutral entry point is WithErrorHandler, which
-// takes httpx.ErrorHandler on every adapter; DefaultErrorHandler is not that
-// and is not interchangeable across adapters.
+// Across the repository DefaultErrorHandler is always this adapter's default
+// handler in its native shape, which is why the five signatures differ and why
+// it is not interchangeable across adapters. WithErrorHandler, which takes
+// httpx.ErrorHandler everywhere, is the portable surface.
 func DefaultErrorHandler(err error, c echo.Context) {
 	if c.Response().Committed {
 		return
@@ -178,9 +158,17 @@ type Engine struct {
 	engine     *echo.Echo
 	server     *http.Server
 	errHandler httpx.ErrorHandler
-	// interceptors are inherited by every group created from this engine; see
-	// Router.UseInterceptor.
-	interceptors []httpx.Interceptor
+	// nativeErrHandler is whatever occupied echo's HTTPErrorHandler slot after
+	// NewConfig applied the precedence rules, kept so installErrorHandler can
+	// wrap rather than replace it.
+	nativeErrHandler echo.HTTPErrorHandler
+	// chain is the engine scope, referenced by every group created from this
+	// engine; see Router.Use. notFound and notAllowed carry it into the
+	// unmatched-path answers, which is the one place a group's chain must not
+	// reach.
+	chain      *httpx.MiddlewareChain
+	notFound   *httpx.MiddlewareFallback
+	notAllowed *httpx.MiddlewareFallback
 	// wildcards is this engine's named-wildcard table; every Router it makes
 	// shares it, and no other engine can see it. See wildcardTable.
 	wildcards *wildcardTable
@@ -203,68 +191,122 @@ func New(opts ...Option) httpx.Engine {
 	if conf.ipExtractor != nil {
 		conf.engine.IPExtractor = conf.ipExtractor
 	}
-	if errHandler := conf.errHandler; errHandler != nil {
-		// Errors echo raises for itself — an unmatched path, a rejected method —
-		// never pass through the router wrapper, so without this the configured
-		// httpx.ErrorHandler would own every response except the ones the
-		// application did not route. The other adapters route their 404/405
-		// through it too (see ginx/hertzx installRouteFallback, fiberx
-		// routeFallback, stdx notAllowedLeaf).
-		//
-		// This is the top of the precedence list documented on NewConfig: it
-		// replaces a handler the caller set on their own echo.Echo, and the
-		// override point is after New — echo's field is a plain assignment, so
-		// setting Echo.HTTPErrorHandler once echox.New has returned wins outright
-		// and is the supported way to keep your own.
-		conf.engine.HTTPErrorHandler = func(err error, c echo.Context) {
-			if c.Response().Committed {
+	conf.server.Handler = conf.engine
+	engine := &Engine{
+		engine:           conf.engine,
+		server:           conf.server,
+		errHandler:       conf.errHandler,
+		nativeErrHandler: conf.engine.HTTPErrorHandler,
+		chain:            httpx.NewMiddlewareChain(),
+		wildcards:        wildcards,
+	}
+	// The leaf reports the error echo raised, which is what the configured
+	// httpx.ErrorHandler received before the engine chain covered unmatched
+	// paths: one value per Engine, so the composition around it can be cached.
+	engine.notFound = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(echo.ErrNotFound))
+	engine.notAllowed = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(echo.ErrMethodNotAllowed))
+	engine.installErrorHandler()
+	engine.running.Store(false)
+	return engine
+}
+
+// staticLeaf is the innermost handler of an unmatched-path chain: it reports the
+// error the adapter would have rendered had no middleware been registered.
+func staticLeaf(err error) httpx.Handler {
+	return func(httpx.Context) error { return err }
+}
+
+// installErrorHandler owns echo's HTTPErrorHandler slot, for two reasons that
+// have to be served by the same function.
+//
+// The first: errors echo raises for itself — an unmatched path, a rejected
+// method — never pass through the router wrapper, so without this a configured
+// httpx.ErrorHandler would own every response except the ones the application
+// did not route.
+//
+// The second: this is the only place engine-scope middleware can reach an
+// unmatched path on echo. Only the two errors echo raises for itself get the
+// chain; anything else reaching this slot came from a route, whose own chain has
+// already run, and running the engine's a second time would double it.
+//
+// It wraps rather than replaces whatever NewConfig left in the slot, which
+// preserves the configured precedence and extends the unmatched-path coverage to
+// the default configuration too. Setting Echo.HTTPErrorHandler after echox.New
+// has returned still wins outright, at the cost of that coverage.
+func (e *Engine) installErrorHandler() {
+	e.engine.HTTPErrorHandler = func(err error, c echo.Context) {
+		if c.Response().Committed {
+			return
+		}
+		if fb := e.unmatchedFallback(err); fb != nil {
+			// Marked before the chain runs, because the layers inside it read
+			// FullPath and must not be told a route accepted the request; see
+			// unmatchedRouteKey.
+			c.Set(unmatchedRouteKey, true)
+			if chained := fb.Handler()(newEchoContext(c, e.wildcards)); chained == nil {
+				// A layer answered the unmatched path itself. It still owes a
+				// status if all it did was set one.
+				commitErrorStatus(c.Response(), err)
 				return
 			}
-			errHandler(newEchoContext(c, wildcards), normalizeEchoError(err))
+		}
+		if e.errHandler != nil {
+			e.errHandler(newEchoContext(c, e.wildcards), normalizeEchoError(err))
 			// The handler may have rendered nothing; commit here, since nothing
 			// runs below and echo does not commit on its own. This is the path
 			// an unmatched route takes, where Response.Status is still 200 —
 			// see commitErrorStatus.
 			commitErrorStatus(c.Response(), err)
+			return
+		}
+		if e.nativeErrHandler != nil {
+			e.nativeErrHandler(err, c)
 		}
 	}
-	conf.server.Handler = conf.engine
-	engine := &Engine{
-		engine:     conf.engine,
-		server:     conf.server,
-		errHandler: conf.errHandler,
-		wildcards:  wildcards,
+}
+
+// unmatchedFallback returns the engine chain for the unmatched-path answer err
+// belongs to, or nil when err is not one echo raised for an unmatched path.
+//
+// Identity, not status: echo's NotFoundHandler and MethodNotAllowedHandler
+// return these exact package values, while a route that chose to return
+// echo.NewHTTPError(404) built its own and is not an unmatched path.
+func (e *Engine) unmatchedFallback(err error) *httpx.MiddlewareFallback {
+	switch {
+	case errors.Is(err, echo.ErrNotFound):
+		return e.notFound
+	case errors.Is(err, echo.ErrMethodNotAllowed):
+		return e.notAllowed
+	default:
+		return nil
 	}
-	engine.running.Store(false)
-	return engine
 }
 
-func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.engine.Use(adaptMiddlewares(middleware, e.errHandler, e.wildcards)...)
+// Use registers httpx middleware on the engine, implementing
+// httpx.MiddlewareScope. See Router.Use for the ordering rules.
+//
+// Engine scope is the one scope whose middleware also covers the paths no route
+// matched; see installErrorHandler.
+func (e *Engine) Use(m ...httpx.Middleware) {
+	e.chain.Use(m...)
 }
 
-// UseInterceptor registers composed middleware on the engine, implementing
-// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
-func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
-	if len(m) == 0 {
-		return
-	}
-	e.interceptors = append(slices.Clone(e.interceptors), m...)
-}
-
-// UseNative registers native echo middleware on the engine. See
-// Router.UseNative for why it is preferred over AdaptEchoMiddleware.
+// UseNative registers native echo middleware on the engine. See Router.UseNative
+// for why an echo.MiddlewareFunc can only be mounted this way.
 func (e *Engine) UseNative(middleware ...echo.MiddlewareFunc) {
 	e.engine.Use(middleware...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	base := joinPaths("/", prefix)
+	sub := e.chain.Sub()
+	sub.Use(m...)
 	return &Router{
-		group:        e.engine.Group(prefix, adaptMiddlewares(m, e.errHandler, e.wildcards)...),
-		basePath:     joinPaths("/", prefix),
-		errHandler:   e.errHandler,
-		interceptors: e.interceptors,
-		wildcards:    e.wildcards,
+		group:      e.engine.Group(echoGroupPrefix("/", base)),
+		basePath:   base,
+		errHandler: e.errHandler,
+		chain:      sub,
+		wildcards:  e.wildcards,
 	}
 }
 

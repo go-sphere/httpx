@@ -9,19 +9,16 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// Diagnostics for how middleware cost grows with chain depth. Both modes cross
-// the same gin dispatcher and return the same 204; "native" registers one gin
-// middleware per layer, "httpx" registers httpx middlewares, which ginx runs as
-// a single fused gin handler.
-//
-// These curves exist to locate the depth at which cost stops being linear. That
-// cliff is a property of nested call depth and frame size, not of the adapter:
-// native gin reaches it a few layers later, and neither GC nor Go stack growth
-// explains it (see BenchmarkGinDepthCurveGrownStack and
-// BenchmarkChainFrameSizeCurve, and benchmarks/MIDDLEWARE_FUSION_REPORT.md).
+// Both modes cross the same gin dispatcher and return the same 204: "native"
+// registers one gin middleware per layer, "httpx" composes into a single gin
+// handler. The depth cliff these curves locate is a property of nested call
+// depth and frame size, not of the adapter — see BenchmarkGinDepthCurveGrownStack
+// and BenchmarkChainFrameSizeCurve.
 func BenchmarkGinDepthCurve(b *testing.B) {
 	gin.SetMode(gin.ReleaseMode)
-	passthrough := func(c httpx.Context) error { return c.Next() }
+	passthrough := func(next httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error { return next(c) }
+	}
 	leaf := func(c httpx.Context) error { return c.NoContent(204) }
 	for _, layers := range []int{4, 8, 12, 16, 19, 20, 21, 22, 23, 24, 26} {
 		for _, mode := range []string{"native", "httpx"} {
@@ -50,11 +47,9 @@ func BenchmarkGinDepthCurve(b *testing.B) {
 	}
 }
 
-// The same curve with no framework in the picture: a chain of N functions where
-// every layer calls Next once. "concrete" drives Next as a direct method call,
-// "iface" through an interface, which is what a chain of httpx middlewares has
-// to do. Only the shape of the curve is meaningful here; absolute values exclude
-// routing and response writing.
+// The same curve with no framework: a chain of N functions each calling Next
+// once. "iface" drives Next through an interface, which is what a chain of httpx
+// middlewares does; "concrete" calls it directly. Only the curve shape matters.
 
 type curveNext interface{ Next() error }
 
@@ -113,9 +108,9 @@ func BenchmarkChainDepthCurve(b *testing.B) {
 	}
 }
 
-// growStack forces the benchmark goroutine's stack to grow before measuring, so
-// a depth cliff caused by runtime stack growth can be told apart from one
-// caused by the call chain itself.
+// growStack grows the benchmark goroutine's stack before measuring, so a depth
+// cliff from runtime stack growth can be told apart from one caused by the call
+// chain itself.
 //
 //go:noinline
 func growStack(n int) [64]byte {
@@ -132,7 +127,9 @@ var stackSink [64]byte
 
 func BenchmarkGinDepthCurveGrownStack(b *testing.B) {
 	gin.SetMode(gin.ReleaseMode)
-	passthrough := func(c httpx.Context) error { return c.Next() }
+	passthrough := func(next httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error { return next(c) }
+	}
 	leaf := func(c httpx.Context) error { return c.NoContent(204) }
 	for _, layers := range []int{18, 20, 24, 32} {
 		for _, mode := range []string{"native", "httpx"} {
@@ -163,8 +160,7 @@ func BenchmarkGinDepthCurveGrownStack(b *testing.B) {
 }
 
 // The padded variants keep the frame count per layer identical and only grow
-// each frame, which separates "too many nested calls" from "too much nested
-// stack" as the cause of the depth cliff.
+// each frame, separating "too many nested calls" from "too much nested stack".
 type curvePadded struct {
 	chain []func(*curvePadded) error
 	idx   int

@@ -18,49 +18,53 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// A Context received by an inner handler must remain usable by outer
-// middleware after Next returns. Native middleware must share the same request.
+// A Context retained by an inner handler must stay usable from outer middleware
+// after next returns, including across a native layer.
 func TestContextWrappersSurviveUnwind(t *testing.T) {
 	for _, name := range conformanceFrameworks {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, name)
 			var inner, leaf httpx.Context
 			var order []string
-			h.Router.Use(func(c httpx.Context) error {
-				defer func() { inner, leaf = nil, nil }()
-				order = append(order, "outer-before")
-				err := c.Next()
-				if inner == nil || leaf == nil {
-					t.Error("downstream did not execute")
+			h.Router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(c httpx.Context) error {
+					defer func() { inner, leaf = nil, nil }()
+					order = append(order, "outer-before")
+					err := next(c)
+					if inner == nil || leaf == nil {
+						t.Error("downstream did not execute")
+						return err
+					}
+					for _, retained := range []httpx.Context{inner, leaf} {
+						if retained.Param("id") != "42" {
+							t.Error("retained context lost route parameters")
+						}
+						if retained.StatusCode() != 204 {
+							t.Error("retained context lost response status")
+						}
+						a, aok := httpx.AsNativeContext[any](c)
+						b, bok := httpx.AsNativeContext[any](retained)
+						if !aok || !bok || a != b {
+							t.Error("native context identity changed")
+						}
+						retained.Set("after", "still-valid")
+						if v, ok := c.Get("after"); !ok || v != "still-valid" {
+							t.Error("retained context lost shared state")
+						}
+					}
+					order = append(order, "outer-after")
 					return err
 				}
-				for _, retained := range []httpx.Context{inner, leaf} {
-					if retained.Param("id") != "42" {
-						t.Error("retained context lost route parameters")
-					}
-					if retained.StatusCode() != 204 {
-						t.Error("retained context lost response status")
-					}
-					a, aok := httpx.AsNativeContext[any](c)
-					b, bok := httpx.AsNativeContext[any](retained)
-					if !aok || !bok || a != b {
-						t.Error("native context identity changed")
-					}
-					retained.Set("after", "still-valid")
-					if v, ok := c.Get("after"); !ok || v != "still-valid" {
-						t.Error("retained context lost shared state")
-					}
-				}
-				order = append(order, "outer-after")
-				return err
 			})
-			h.Router.Use(nativeHeaderMiddleware(t, name, "X-Native", "yes"))
-			h.Router.Use(func(c httpx.Context) error {
-				inner = c
-				order = append(order, "inner-before")
-				err := c.Next()
-				order = append(order, "inner-after")
-				return err
+			useNativeHeader(t, name, h.Router, "X-Native", "yes")
+			h.Router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(c httpx.Context) error {
+					inner = c
+					order = append(order, "inner-before")
+					err := next(c)
+					order = append(order, "inner-after")
+					return err
+				}
 			})
 			h.Router.GET("/unwind/:id", func(c httpx.Context) error {
 				leaf = c
@@ -82,24 +86,22 @@ func TestContextWrappersSurviveUnwind(t *testing.T) {
 	}
 }
 
-// Request access stays shared when a value-backed wrapper is copied into an
-// interface. In particular SetContext must update the native request.
+// A value-backed wrapper copied into an interface must keep request access
+// shared, and SetContext must update the native request.
 func TestWrapperSetContextAfterNext(t *testing.T) {
 	type contextKey struct{}
 	for _, name := range conformanceFrameworks {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, name)
-			h.Router.Use(func(c httpx.Context) error {
-				c.SetContext(context.WithValue(c.Context(), contextKey{}, "outer"))
-				err := c.Next()
-				if name != "hertzx" && c.Context().Value(contextKey{}) != "handler" {
-					t.Error("SetContext did not update the shared native request")
+			h.Router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(c httpx.Context) error {
+					c.SetContext(context.WithValue(c.Context(), contextKey{}, "outer"))
+					err := next(c)
+					if c.Context().Value(contextKey{}) != "handler" {
+						t.Error("SetContext below was not visible to the layer above")
+					}
+					return err
 				}
-				// Hertz intentionally retains a separate baseCtx for each invocation.
-				if name == "hertzx" && c.Context().Value(contextKey{}) != "outer" {
-					t.Error("Hertz middleware base context changed")
-				}
-				return err
 			})
 			h.Router.GET("/context", func(c httpx.Context) error {
 				if c.Context().Value(contextKey{}) != "outer" {
@@ -116,33 +118,32 @@ func TestWrapperSetContextAfterNext(t *testing.T) {
 	}
 }
 
-// nativeHeaderMiddleware wraps each framework's own middleware so the case can
-// check that a retained httpx.Context still works across a native layer. The
-// portable parts of native-middleware behavior live in the shared suite; this
-// file keeps the part that reaches for framework types.
-func nativeHeaderMiddleware(t *testing.T, framework, key, value string) httpx.Middleware {
+// useNativeHeader registers each framework's own middleware via UseNative, so
+// the case can check a retained httpx.Context across a native layer. It takes
+// the router rather than returning an httpx.Middleware because every httpx layer
+// shares one native handler slot, and a native c.Next() would step past it.
+func useNativeHeader(t *testing.T, framework string, router httpx.Router, key, value string) {
 	t.Helper()
 	switch framework {
 	case "ginx":
-		return ginx.AdaptGinMiddleware(func(c *gin.Context) { c.Header(key, value) })
+		router.(*ginx.Router).UseNative(func(c *gin.Context) { c.Header(key, value) })
 	case "fiberx":
-		return fiberx.AdaptFiberMiddleware(func(c fiber.Ctx) error {
+		router.(*fiberx.Router).UseNative(func(c fiber.Ctx) error {
 			c.Set(key, value)
 			return c.Next()
 		})
 	case "echox":
-		return echox.AdaptEchoMiddleware(func(next echo.HandlerFunc) echo.HandlerFunc {
+		router.(*echox.Router).UseNative(func(next echo.HandlerFunc) echo.HandlerFunc {
 			return func(c echo.Context) error {
 				c.Response().Header().Set(key, value)
 				return next(c)
 			}
 		})
 	case "hertzx":
-		return hertzx.AdaptHertzMiddleware(func(_ context.Context, rc *app.RequestContext) {
+		router.(*hertzx.Router).UseNative(func(_ context.Context, rc *app.RequestContext) {
 			rc.Header(key, value)
 		})
 	default:
 		t.Fatalf("unknown framework %q", framework)
-		return nil
 	}
 }

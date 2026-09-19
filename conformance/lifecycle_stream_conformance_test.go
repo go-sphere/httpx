@@ -14,8 +14,7 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// startWithTimeout runs engine.Start and returns its error, failing the test
-// if Start blocks (a closed engine must return immediately).
+// startWithTimeout fails the test if Start blocks: a closed engine must return immediately.
 func startWithTimeout(t *testing.T, engine httpx.Engine) error {
 	t.Helper()
 	errCh := make(chan error, 1)
@@ -31,10 +30,8 @@ func startWithTimeout(t *testing.T, engine httpx.Engine) error {
 	}
 }
 
-// TestEngineSingleUseConformance covers D7: engines are single-use. Start
-// after Stop — in either order — must return httpx.ErrEngineClosed on every
-// adapter instead of fake-starting (gin/echo), silently restarting (fiber),
-// or failing with a framework-specific error (hertz).
+// Engines are single-use: Start after Stop, in either order, returns
+// httpx.ErrEngineClosed on every adapter.
 func TestEngineSingleUseConformance(t *testing.T) {
 	t.Run("StopBeforeStart", func(t *testing.T) {
 		for _, name := range conformanceFrameworks {
@@ -85,17 +82,9 @@ func TestEngineSingleUseConformance(t *testing.T) {
 	})
 }
 
-// TestFlusherCapabilityConformance covers C6: gin/echo/hertz expose Flusher,
-// fiber (buffered model) does not, and an early Flush must not corrupt the
-// final in-process response.
-// Flusher capability and buffered streaming moved to the shared suite
-// (httpxtest); what remains needs a real connection.
-
-// TestStreamIncrementalDeliveryConformance covers C6 end to end: over a real
-// connection, data written before the handler (or stream callback) finishes
-// must reach the client. The handler blocks on a gate after the first event;
-// the test only opens the gate once the first event has been read, so the
-// test can only pass when flushing actually works mid-stream.
+// Over a real connection, data written before the stream callback finishes must
+// reach the client. The handler blocks on a gate until the first event has been
+// read, so the test passes only if flushing actually works mid-stream.
 func TestStreamIncrementalDeliveryConformance(t *testing.T) {
 	for _, name := range conformanceFrameworks {
 		t.Run(name, func(t *testing.T) {
@@ -148,8 +137,6 @@ func TestStreamIncrementalDeliveryConformance(t *testing.T) {
 			if first != "data: one\n" {
 				t.Fatalf("%s first line = %q", name, first)
 			}
-			// First event arrived while the handler is still blocked: flushing
-			// works. Release the handler and drain the rest.
 			openGate()
 			rest, err := io.ReadAll(reader)
 			if err != nil {

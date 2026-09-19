@@ -1,0 +1,8 @@
+status: 200
+content-type: application/json
+body: json
+---
+{
+  "context": "client-id-42",
+  "store": "client-id-42"
+}

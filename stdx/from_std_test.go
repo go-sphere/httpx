@@ -9,8 +9,8 @@ import (
 )
 
 // FromStd is this adapter's FromGin/FromHertz: net/http's request pair is the
-// native context here, so an httpx.Context can be built from it without an
-// Engine. The detached context has no route and no trusted-proxy policy.
+// native context here, so an httpx.Context is built from it without an Engine.
+// The detached context has no route and no trusted-proxy policy.
 func TestFromStd(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/from?a=1", nil)
@@ -35,9 +35,6 @@ func TestFromStd(t *testing.T) {
 	// must not be believed.
 	if got := ctx.ClientIP(); got != "203.0.113.9" {
 		t.Fatalf("ClientIP = %q, want the peer address", got)
-	}
-	if err := ctx.Next(); err != nil {
-		t.Fatalf("Next on a detached context = %v, want nil", err)
 	}
 	if err := ctx.JSON(http.StatusTeapot, map[string]string{"from": "std"}); err != nil {
 		t.Fatalf("JSON: %v", err)
@@ -65,11 +62,10 @@ func TestFromStdNativeContext(t *testing.T) {
 	}
 }
 
-// FromStd is new API, so the escape hatch's degradation is a stated contract
-// rather than something a caller discovers by panicking. Engine is the only
-// method on *Native that has no answer without an Engine; every other one works
-// on the pair that went in, so all of them are exercised here and the nil is
-// asserted instead of left to be met at a call site.
+// The escape hatch's degradation is a stated contract rather than something a
+// caller discovers by panicking: Engine is the only method on *Native that has
+// no answer without an Engine, and every other one works on the pair that went
+// in, so all of them are exercised here.
 func TestFromStdNativeDegradation(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -111,8 +107,8 @@ func TestFromStdNativeDegradation(t *testing.T) {
 }
 
 // DefaultErrorHandler on stdx is httpx-shaped because net/http has no error
-// handler of its own — the naming rule ("this adapter's default handler in its
-// native shape") lands on httpx.ErrorHandler here.
+// handler of its own: the naming rule "this adapter's default handler in its
+// native shape" lands on httpx.ErrorHandler here.
 func TestDefaultErrorHandlerIsHTTPXShape(t *testing.T) {
 	conf := NewConfig(WithErrorHandler(DefaultErrorHandler))
 	if conf.errHandler == nil {

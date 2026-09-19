@@ -20,36 +20,36 @@ import (
 // the next handler, the chain is short-circuited.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
-		return func(ctx httpx.Context) error {
-			return ctx.Next()
-		}
+		return func(next httpx.Handler) httpx.Handler { return next }
 	}
-	return func(ctx httpx.Context) error {
-		rc, ok := httpx.AsNativeContext[*app.RequestContext](ctx)
-		if !ok {
-			return errors.New("AdaptStdMiddleware: invalid context type")
+	return func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			rc, ok := httpx.AsNativeContext[*app.RequestContext](ctx)
+			if !ok {
+				return errors.New("AdaptStdMiddleware: invalid context type")
+			}
+			req, err := compatRequest(ctx.Context(), rc)
+			if err != nil {
+				return err
+			}
+			var nextErr error
+			ran := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ran = true
+				ctx.SetContext(r.Context())
+				nextErr = next(ctx)
+				replayHertzResponse(rc, w)
+			})
+			w := &stdResponseWriter{rc: rc}
+			middleware(inner).ServeHTTP(w, req)
+			if !w.wroteHeader {
+				w.WriteHeader(rc.Response.StatusCode())
+			}
+			if !ran && !rc.IsAborted() {
+				rc.Abort()
+			}
+			return nextErr
 		}
-		req, err := compatRequest(ctx.Context(), rc)
-		if err != nil {
-			return err
-		}
-		var nextErr error
-		ran := false
-		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ran = true
-			ctx.SetContext(r.Context())
-			nextErr = ctx.Next()
-			replayHertzResponse(rc, w)
-		})
-		w := &stdResponseWriter{rc: rc}
-		middleware(inner).ServeHTTP(w, req)
-		if !w.wroteHeader {
-			w.WriteHeader(rc.Response.StatusCode())
-		}
-		if !ran && !rc.IsAborted() {
-			rc.Abort()
-		}
-		return nextErr
 	}
 }
 

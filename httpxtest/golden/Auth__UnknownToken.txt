@@ -1,0 +1,9 @@
+status: 401
+content-type: application/json
+body: json
+---
+{
+  "code": 0,
+  "message": "authentication required",
+  "success": false
+}

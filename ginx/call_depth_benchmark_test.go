@@ -9,8 +9,8 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-// These benchmarks run serially. The sink makes allocation observable and is
-// cleared after each sub-benchmark; it is never used to access a finished request.
+// The sink makes the synthetic allocation observable; it is cleared after each
+// sub-benchmark.
 var diagnosticAllocation *diagnosticGinFrame
 
 type diagnosticGinFrame struct {
@@ -33,8 +33,6 @@ func diagnosticGinForwardOne(c *gin.Context) { diagnosticGinForwardTwo(c) }
 //go:noinline
 func diagnosticGinForwardTwo(c *gin.Context) { c.Next() }
 
-// BenchmarkGinCallDepth isolates forwarding depth and allocation cost. The
-// synthetic modes are diagnostic controls, not alternative adapter designs.
 func BenchmarkGinCallDepth(b *testing.B) {
 	gin.SetMode(gin.ReleaseMode)
 	for _, layers := range []int{5, 8, 9, 10, 15, 20} {
@@ -45,7 +43,9 @@ func BenchmarkGinCallDepth(b *testing.B) {
 				if mode == "httpx" {
 					r := New(WithEngine(e)).Group("")
 					for range layers {
-						r.Use(func(c httpx.Context) error { return c.Next() })
+						r.Use(func(next httpx.Handler) httpx.Handler {
+							return func(c httpx.Context) error { return next(c) }
+						})
 					}
 					r.GET("/bench", func(c httpx.Context) error { return c.NoContent(204) })
 				} else {

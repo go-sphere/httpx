@@ -214,24 +214,17 @@ func (c ginContext) BindHeader(dst any) error {
 // bind runs a gin binding call and reports **decode** failures as bind errors.
 //
 // httpx.Binder decodes and does not validate, but gin's binding package does
-// both: every binding.Binding runs gin's validator on the decoded value before
-// returning. That validator is the package-level binding.Validator — a
-// variable shared with every other gin user in the process — so ginx cannot
-// silence it without disabling validation for code it has never heard of.
-// It lets gin validate and drops the verdict here instead.
-//
-// The cost is the validator's wasted work on every bind and a direct
-// dependency on go-playground/validator purely to recognize its error types.
-// The alternative, decoding without gin's bindings the way stdx does, would
-// lose decode semantics the conformance suite does not pin — binding a
-// multipart *multipart.FileHeader field runs through gin's unexported
+// both, through the process-wide binding.Validator variable. Silencing that
+// would disable validation for every other gin user in the same binary, so ginx
+// lets gin validate and drops the verdict here, at the cost of the validator's
+// wasted work and a go-playground/validator dependency purely to recognize its
+// error types. Reimplementing the decoding the way stdx does is not an option:
+// a multipart *multipart.FileHeader field goes through gin's unexported
 // multipartRequest source, which MapFormWithTag has no equivalent for.
 //
-// One case this cannot cover: a process that replaces binding.Validator with
-// its own StructValidator gets error values ginx has no way to tell apart from
-// a decode failure, so those would surface as 400. Installing a global
-// validator is asking gin to validate; httpx's contract is what it does with
-// gin's own.
+// A process that replaces binding.Validator with its own StructValidator
+// returns error values ginx cannot tell apart from a decode failure, so those
+// surface as 400.
 //
 // gin's validator also panics on a typed nil inside a slice
 // (reflect.Value.Interface on a zero Value). That is validation failing on
@@ -239,8 +232,7 @@ func (c ginContext) BindHeader(dst any) error {
 // can trigger it — run under a recover that drops it, but only once the
 // panicking stack confirms gin's validator raised it (see
 // panickedInGinValidator). Any other panic, from either phase, is reported as a
-// bind failure, and a struct target (what generated handlers bind) keeps its
-// allocation profile.
+// bind failure, and a struct target keeps its allocation profile.
 func bind(dst any, run func() error) error {
 	if sliceTarget(dst) {
 		return bindRecovering(run)
@@ -271,27 +263,20 @@ const ginValidatorFrame = "github.com/gin-gonic/gin/binding.(*defaultValidator).
 // It is what keeps a dropped verdict from becoming a dropped *decode*. recover
 // alone cannot tell them apart: bindRecovering wraps a single
 // binding.Binding.Bind call, which decodes and validates with no seam between
-// the two, so a panic from either phase arrives at the same defer wearing the
-// same *reflect.ValueError. Dropping the validator's is correct because the
-// decode has already finished and the destination is fully populated; dropping
-// a decode panic returns nil with a half-written destination and sends the
-// handler into garbage where it should have answered 400.
+// them, so a panic from either phase arrives at the same defer wearing the same
+// *reflect.ValueError. Dropping the validator's is correct — the destination is
+// already fully populated — while dropping a decode panic returns nil over a
+// half-written destination where the handler should have answered 400.
 //
 // The panicking frames are still on the stack while a deferred function runs,
-// so the frame set says which phase raised it — and it says so by construction
-// rather than by guess: gin calls binding.validate only after the decode
-// returned no error, so ValidateStruct sitting below the panic *is* the proof
-// that the decode completed. The destination's own state is not a usable signal
-// (a decode that panicked part way through a slice leaves the same shape a
-// successful one does), and the panic value carries no origin.
+// and gin validates only after the decode returned no error, so ValidateStruct
+// sitting below the panic proves the decode completed. The panic value itself
+// carries no origin, and a decode that panicked part way through a slice leaves
+// the destination looking like a successful one.
 //
-// It costs one bounded stack walk, on a path that only runs when something
-// already panicked; an ordinary bind pays nothing. In exchange it reads a
-// gin-internal symbol name, and so is written to fail closed: a gin release
-// that renames that function makes ginx answer 400 for a typed nil element
-// instead of binding it, which TestBindDropsGinValidationVerdict catches at
-// upgrade time. Matching on the panic shape alone — what this did before —
-// fails open, and silently.
+// Matching a gin-internal symbol name keeps this failing closed: a release that
+// renames the function turns a typed nil element into a 400 instead of a silent
+// drop. Matching the panic shape alone would fail open.
 func panickedInGinValidator() bool {
 	// Skip this frame; the validator sits just below the panic, so the window
 	// only has to cover its recursion down to the slice element.
@@ -460,7 +445,7 @@ func (c ginContext) Get(key string) (any, bool) {
 	return val, true
 }
 
-// Context (context.Context accessor + Next)
+// Context (context.Context accessor)
 
 func (c ginContext) Context() context.Context {
 	return c.ctx.Request.Context()
@@ -468,35 +453,6 @@ func (c ginContext) Context() context.Context {
 
 func (c ginContext) SetContext(ctx context.Context) {
 	c.ctx.Request = c.ctx.Request.WithContext(ctx)
-}
-
-func (c ginContext) Next() error {
-	before := len(c.ctx.Errors)
-	c.ctx.Next()
-
-	if len(c.ctx.Errors) <= before {
-		return nil
-	}
-
-	errList := make([]error, 0, len(c.ctx.Errors)-before)
-	for _, err := range c.ctx.Errors[before:] {
-		if err != nil {
-			errList = append(errList, err.Err)
-		}
-	}
-
-	return joinErrors(errList)
-}
-
-func joinErrors(errs []error) error {
-	switch len(errs) {
-	case 0:
-		return nil
-	case 1:
-		return errs[0]
-	default:
-		return errors.Join(errs...)
-	}
 }
 
 func (c ginContext) StatusCode() int {

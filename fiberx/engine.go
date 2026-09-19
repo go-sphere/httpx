@@ -5,17 +5,13 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"slices"
 	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 )
 
-var (
-	_ httpx.Engine           = (*Engine)(nil)
-	_ httpx.InterceptorScope = (*Engine)(nil)
-)
+var _ httpx.Engine = (*Engine)(nil)
 
 type Config struct {
 	engine            *fiber.App
@@ -88,13 +84,13 @@ func defaultHTTPXErrorHandler(ctx httpx.Context, err error) {
 // understands *fiber.Error (framework 404/405/... errors) so their status
 // codes are preserved instead of being reported as 500.
 //
-// Errors from httpx handlers and middleware no longer reach it: the adapter
-// renders them itself (see defaultHTTPXErrorHandler), because fiber.Config is
-// immutable after fiber.New and an engine supplied through WithEngine would
-// otherwise answer with fiber's plain-text default. This handler is what the
-// adapter-built engine installs for the errors fiber raises on its own —
-// unmatched routes, a rejected method, an oversized body. Set it as your
-// fiber.Config's ErrorHandler to get the same shape for those on your own app.
+// Errors from httpx handlers and middleware do not reach it: the adapter renders
+// them itself (see defaultHTTPXErrorHandler), because fiber.Config is immutable
+// after fiber.New and an engine supplied through WithEngine would otherwise
+// answer with fiber's plain-text default. This handler is what the adapter-built
+// engine installs for the errors fiber raises on its own — unmatched routes, a
+// rejected method, an oversized body. Set it as your fiber.Config's ErrorHandler
+// to get the same shape for those on your own app.
 func DefaultErrorHandler(ctx fiber.Ctx, err error) error {
 	status, body := httpx.RenderError(normalizeFiberError(err))
 	return ctx.Status(status).JSON(body)
@@ -168,11 +164,15 @@ type Engine struct {
 	engine     *fiber.App
 	listen     func(*fiber.App) error
 	errHandler httpx.ErrorHandler
-	// interceptors are inherited by every group created from this engine; see
-	// Router.UseInterceptor.
-	interceptors []httpx.Interceptor
-	running      atomic.Bool
-	closed       atomic.Bool
+	// chain is the engine scope, referenced by every group created from this
+	// engine; see Router.Use. notFound and notAllowed carry it into the
+	// unmatched-path answers, which is the one place a group's chain must not
+	// reach.
+	chain      *httpx.MiddlewareChain
+	notFound   *httpx.MiddlewareFallback
+	notAllowed *httpx.MiddlewareFallback
+	running    atomic.Bool
+	closed     atomic.Bool
 }
 
 // routeFallback renders the errors fiber raises for itself — an unmatched path,
@@ -181,18 +181,41 @@ type Engine struct {
 //
 // Without it those answers come from fiber.Config.ErrorHandler, which this
 // adapter can only set when it builds the app: fiber.Config is immutable after
-// fiber.New, so an app supplied through WithEngine answers an unmatched path
-// with fiber's plain-text default instead of the shared error body. It is
-// registered before any route, so it is the outermost layer; on the ordinary
-// path it costs one call and one nil check, and errors a route already dealt
-// with never reach it (handleFiberError returns nil for those).
-func routeFallback(errHandler httpx.ErrorHandler) fiber.Handler {
+// fiber.New, so an app supplied through WithEngine would answer an unmatched
+// path with fiber's plain-text default instead of the shared error body. It is
+// registered before any route, so it is the outermost layer, and errors a route
+// already dealt with never reach it (handleFiberError returns nil for those).
+//
+// It is also where engine-scope middleware reaches a path no route matched; a
+// group's chain must not. The composition is resolved here rather than captured,
+// because this handler is installed by New, before any Use call.
+//
+// Only fiber's own 404 and 405 are treated as unmatched, matched by identity
+// against the package values fiber raises for itself.
+func (e *Engine) routeFallback() fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		err := ctx.Next()
-		if err == nil || errHandler == nil || responseDecided(ctx) {
+		if err == nil {
+			return nil
+		}
+		if fb := e.unmatchedFallback(err); fb != nil {
+			// Marked before the chain runs, because the layers inside it read
+			// FullPath and must not be told a route matched; see
+			// unmatchedRouteKey.
+			markUnmatchedRoute(ctx)
+			raw := err
+			if err = fb.Handler()(newFiberContext(ctx)); err == nil {
+				// A layer answered the unmatched path itself — or returned without
+				// answering, in which case the fallback's own status is still
+				// owed; see commitErrorStatus.
+				commitErrorStatus(ctx, raw)
+				return nil
+			}
+		}
+		if e.errHandler == nil || responseDecided(ctx) {
 			return err
 		}
-		errHandler(newFiberContext(ctx), normalizeFiberError(err))
+		e.errHandler(newFiberContext(ctx), normalizeFiberError(err))
 		// An error handler that rendered nothing still owes the error's status:
 		// fiber would otherwise send the 200 it starts every response with, so
 		// a path no route matched would answer 200. See commitErrorStatus.
@@ -201,35 +224,58 @@ func routeFallback(errHandler httpx.ErrorHandler) fiber.Handler {
 	}
 }
 
+// unmatchedFallback returns the engine chain for the unmatched-path answer err
+// belongs to, or nil when err is not one fiber raised for an unmatched path.
+//
+// Identity, not status: fiber raises these exact package values for a path no
+// route matched, while a route that chose to return fiber.NewError(404) built its
+// own and is not an unmatched path.
+func (e *Engine) unmatchedFallback(err error) *httpx.MiddlewareFallback {
+	switch {
+	case errors.Is(err, fiber.ErrNotFound):
+		return e.notFound
+	case errors.Is(err, fiber.ErrMethodNotAllowed):
+		return e.notAllowed
+	default:
+		return nil
+	}
+}
+
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
-	conf.engine.Use(routeFallback(conf.errHandler))
 	engine := &Engine{
 		engine:     conf.engine,
 		listen:     conf.listen,
 		errHandler: conf.errHandler,
+		chain:      httpx.NewMiddlewareChain(),
 	}
+	// The leaf reports the error fiber raised, which is what the configured
+	// httpx.ErrorHandler received before the engine chain covered unmatched
+	// paths: one value per Engine, so the composition around it can be cached.
+	engine.notFound = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(fiber.ErrNotFound))
+	engine.notAllowed = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(fiber.ErrMethodNotAllowed))
+	conf.engine.Use(engine.routeFallback())
 	engine.running.Store(false)
 	return engine
 }
 
-func (e *Engine) Use(middlewares ...httpx.Middleware) {
-	for _, middleware := range middlewares {
-		e.engine.Use(adaptMiddleware(middleware, e.errHandler))
-	}
+// staticLeaf is the innermost handler of an unmatched-path chain: it reports the
+// error the adapter would have rendered had no middleware been registered.
+func staticLeaf(err error) httpx.Handler {
+	return func(httpx.Context) error { return err }
 }
 
-// UseInterceptor registers composed middleware on the engine, implementing
-// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
-func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
-	if len(m) == 0 {
-		return
-	}
-	e.interceptors = append(slices.Clone(e.interceptors), m...)
+// Use registers httpx middleware on the engine, implementing
+// httpx.MiddlewareScope. See Router.Use for the ordering rules.
+//
+// Engine scope is the one scope whose middleware also covers the paths no route
+// matched; see routeFallback.
+func (e *Engine) Use(m ...httpx.Middleware) {
+	e.chain.Use(m...)
 }
 
 // UseNative registers native fiber middleware on the engine. See
-// Router.UseNative for why it is preferred over AdaptFiberMiddleware.
+// Router.UseNative for why a fiber.Handler can only be mounted this way.
 func (e *Engine) UseNative(handlers ...fiber.Handler) {
 	for _, h := range handlers {
 		e.engine.Use(h)
@@ -237,12 +283,13 @@ func (e *Engine) UseNative(handlers ...fiber.Handler) {
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	sub := e.chain.Sub()
+	sub.Use(m...)
 	return &Router{
-		basePath:     joinPaths("/", prefix),
-		group:        e.engine.Group(prefix),
-		middlewares:  cloneMiddlewares(nil, m...),
-		interceptors: e.interceptors,
-		errHandler:   e.errHandler,
+		basePath:   joinPaths("/", prefix),
+		group:      e.engine.Group(prefix),
+		chain:      sub,
+		errHandler: e.errHandler,
 	}
 }
 
@@ -265,10 +312,10 @@ func (e *Engine) Start() error {
 // listener before it starts waiting, so the server stops accepting whatever the
 // context does. What it does not offer is a forced close for the connections
 // still in flight: fasthttp.Server has no Close, and fiber hands out no listener
-// to close behind its back. So a context that expired is reported as success
-// (the listener is down, which is the part a forced stop is asked for) rather
-// than pretending the connections were cut — and httpxtest.Caps declares that
-// honestly with ForcedStopCutsConnections = false.
+// to close behind its back. So a context that expired is reported as success —
+// the listener is down, which is the part a forced stop is asked for — rather
+// than pretending the connections were cut, which httpxtest.Caps declares with
+// ForcedStopCutsConnections = false.
 //
 // A shutdown that genuinely failed is a different answer and keeps its error;
 // see classifyShutdownError.
@@ -290,21 +337,18 @@ func (e *Engine) Stop(ctx context.Context) error {
 // ShutdownWithContext returns one of exactly two things when it fails: the
 // caller's own context error, because the connections in flight outlived the
 // deadline, or whatever closing the listeners produced. The first is the
-// degraded stop above — the listeners are already closed by then, so the server
-// is down and success is the honest report, the same one httpx.Close gives for
-// the same shape. The second means a listener did not close and the socket may
-// still be bound, which is the one thing Stop must never report as a successful
-// stop, so it is returned unchanged.
+// degraded stop above — the listeners are already closed, so the server is down
+// and success is the honest report, as it is for httpx.Close. The second means a
+// listener did not close and the socket may still be bound, which Stop must
+// never report as a successful stop, so it is returned unchanged.
 //
-// Testing ctx.Err() alone cannot separate them, which is what this replaces:
-// fasthttp closes the listeners and collects their errors *before* it ever
-// consults the context, so a listener that failed to close while the caller's
-// deadline happened to be spent came back as nil.
-//
-// One case stays out of reach: on the timed-out path fasthttp returns ctx.Err()
-// and drops the listener error it had collected, so a close failure that
-// coincides with an expired deadline cannot be surfaced by anyone. Reporting
-// success there is the same degraded answer the deadline alone earns.
+// ctx.Err() alone cannot separate them: fasthttp closes the listeners and
+// collects their errors before it consults the context, so a listener that
+// failed to close while the caller's deadline happened to be spent comes back
+// as nil. One case stays out of reach — on the timed-out path fasthttp returns
+// ctx.Err() and drops the collected listener error, so a close failure
+// coinciding with an expired deadline cannot be surfaced; reporting success
+// there is the degraded answer the deadline alone earns.
 func classifyShutdownError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil

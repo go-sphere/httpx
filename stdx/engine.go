@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,9 +15,8 @@ import (
 )
 
 var (
-	_ httpx.Engine           = (*Engine)(nil)
-	_ httpx.InterceptorScope = (*Engine)(nil)
-	_ http.Handler           = (*Engine)(nil)
+	_ httpx.Engine = (*Engine)(nil)
+	_ http.Handler = (*Engine)(nil)
 )
 
 type Config struct {
@@ -101,10 +99,13 @@ type Engine struct {
 	errHandler     httpx.ErrorHandler
 	trustedProxies []*net.IPNet
 
-	// middlewares are the engine-wide layers: inherited by groups created
-	// afterwards, and the only ones that also run for unmatched paths.
-	middlewares  []httpx.Middleware
-	interceptors []httpx.Interceptor
+	// chain is the engine scope, referenced by every group created from this
+	// engine; see Router.Use. notFound and notAllowed carry it into the
+	// unmatched-path answers, which is the one place a group's chain must not
+	// reach.
+	chain      *httpx.MiddlewareChain
+	notFound   *httpx.MiddlewareFallback
+	notAllowed *httpx.MiddlewareFallback
 
 	pool    sync.Pool
 	running atomic.Bool
@@ -118,7 +119,13 @@ func New(opts ...Option) httpx.Engine {
 		server:         conf.server,
 		errHandler:     conf.errHandler,
 		trustedProxies: conf.trustedProxies,
+		chain:          httpx.NewMiddlewareChain(),
 	}
+	engine.notFound = httpx.NewMiddlewareFallback(engine.chain,
+		staticLeaf(httpx.NewNotFoundError(http.StatusText(http.StatusNotFound))))
+	engine.notAllowed = httpx.NewMiddlewareFallback(engine.chain,
+		staticLeaf(httpx.NewError(http.StatusMethodNotAllowed, 0,
+			http.StatusText(http.StatusMethodNotAllowed), nil)))
 	engine.pool.New = func() any {
 		ctx := &stdContext{engine: engine}
 		ctx.native.c = ctx
@@ -129,25 +136,22 @@ func New(opts ...Option) httpx.Engine {
 	return engine
 }
 
-func (e *Engine) Use(middleware ...httpx.Middleware) {
-	e.middlewares = append(e.middlewares, middleware...)
-}
-
-// UseInterceptor registers composed middleware on the engine, implementing
-// httpx.InterceptorScope. See Router.UseInterceptor for the ordering rules.
-func (e *Engine) UseInterceptor(m ...httpx.Interceptor) {
-	if len(m) == 0 {
-		return
-	}
-	e.interceptors = append(slices.Clone(e.interceptors), m...)
+// Use registers httpx middleware on the engine, implementing
+// httpx.MiddlewareScope. See Router.Use for the ordering rules.
+//
+// Engine scope is the one scope whose middleware also covers the paths no route
+// matched; see ServeHTTP.
+func (e *Engine) Use(m ...httpx.Middleware) {
+	e.chain.Use(m...)
 }
 
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
+	sub := e.chain.Sub()
+	sub.Use(m...)
 	return &Router{
-		engine:       e,
-		basePath:     joinPaths("/", prefix),
-		middlewares:  cloneMiddlewares(e.middlewares, m...),
-		interceptors: e.interceptors,
+		engine:   e,
+		basePath: joinPaths("/", prefix),
+		chain:    sub,
 	}
 }
 
@@ -157,22 +161,47 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx, _ := e.pool.Get().(*stdContext)
 	ctx.reset(w, req)
 
+	// fallbackStatus is non-zero for a request no route matched, so a chain that
+	// swallowed the error still owes that status; see below.
+	fallbackStatus := 0
+	var handler httpx.Handler
 	r, allow := e.root.match(req.Method, req.URL.Path, &ctx.values)
 	if r != nil {
 		ctx.route = r
-		ctx.chain = r.chain
-		ctx.leaf = r.handler
+		handler = r.handler
 	} else {
 		// Unmatched paths are outside every group, so only the engine's own
-		// middleware runs — the same rule the other adapters inherit.
-		ctx.chain = e.middlewares
-		ctx.leaf = notAllowedLeaf(allow)
+		// middleware runs — the same rule the other adapters inherit. A group's
+		// layers must not: a 404 belongs to no group.
+		if len(allow) == 0 {
+			handler = e.notFound.Handler()
+			fallbackStatus = http.StatusNotFound
+		} else {
+			// Written before the chain runs rather than inside the leaf, so the
+			// composition around the leaf stays the same value for every request
+			// and can be cached. A layer therefore sees the header already set,
+			// which is the right way round: it can read or replace it.
+			sort.Strings(allow)
+			ctx.SetHeader("Allow", strings.Join(allow, ", "))
+			handler = e.notAllowed.Handler()
+			fallbackStatus = http.StatusMethodNotAllowed
+		}
 	}
 
-	err := ctx.Next()
+	err := handler(ctx)
 	if err != nil && !ctx.rw.written {
 		e.errHandler(ctx, err)
 		commitErrorStatus(&ctx.rw, err)
+	}
+	if err == nil && fallbackStatus != 0 && !ctx.rw.written && ctx.rw.status == http.StatusOK {
+		// An engine-scope layer returned without calling next and without
+		// answering, so the unmatched-path error never reached the error handler.
+		// Nothing runs below this point, and the 200 every response starts at
+		// would become the answer for a path no route matched. The fallback's own
+		// status is the floor — the same rule commitErrorStatus applies to an
+		// error handler that renders nothing — and a status the layer chose for
+		// itself still wins.
+		ctx.rw.status = fallbackStatus
 	}
 	if !ctx.rw.written {
 		// A handler — or an error handler — that only called Status still
@@ -204,21 +233,12 @@ func commitErrorStatus(rw *responseWriter, err error) {
 	rw.status = int(status)
 }
 
-// notAllowedLeaf answers a path that no route matched: 404, or 405 with an
-// Allow header when the path exists under other methods.
-func notAllowedLeaf(allow []string) httpx.Handler {
-	if len(allow) == 0 {
-		return func(ctx httpx.Context) error {
-			return httpx.NewNotFoundError(http.StatusText(http.StatusNotFound))
-		}
-	}
-	sort.Strings(allow)
-	header := strings.Join(allow, ", ")
-	return func(ctx httpx.Context) error {
-		ctx.SetHeader("Allow", header)
-		return httpx.NewError(http.StatusMethodNotAllowed, 0,
-			http.StatusText(http.StatusMethodNotAllowed), nil)
-	}
+// staticLeaf is the innermost handler of an unmatched-path chain: it reports the
+// error the adapter would have rendered had no middleware been registered. One
+// value per Engine, built in New, which is what lets the composition around it be
+// cached.
+func staticLeaf(err error) httpx.Handler {
+	return func(httpx.Context) error { return err }
 }
 
 func (e *Engine) Start() error {
