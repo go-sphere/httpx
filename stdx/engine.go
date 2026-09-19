@@ -313,15 +313,12 @@ func (e *Engine) clientIP(req *http.Request) string {
 		}
 		return ip
 	}
-	// Every hop, the client included, is inside the trusted ranges: the
-	// leftmost entry is that client. Keep the peer fallback for a chain whose
-	// left edge is blank or malformed, where nothing verifiable remains.
-	for _, raw := range hops {
-		ip := strings.TrimSpace(raw)
-		if ip == "" || net.ParseIP(ip) == nil {
-			return remote
-		}
-		return ip
+	// Every hop, the client included, is inside the trusted ranges, so the
+	// leftmost entry is that client. Everything non-blank on the way here parsed
+	// as an IP; the one chain with nothing verifiable left is the one whose left
+	// edge is blank, and the peer still wins there.
+	if first := strings.TrimSpace(hops[0]); first != "" {
+		return first
 	}
 	return remote
 }
