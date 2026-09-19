@@ -111,8 +111,8 @@ func WithDefaultMiddleware() Option {
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For / X-Real-IP are honored only when the direct peer is
 // inside the given IPs/CIDRs, and an empty list ignores forwarding headers
-// entirely (hertz's default trusts every peer). Invalid entries panic at
-// construction time.
+// entirely (hertz's default trusts every peer). Blank or bracketed entries are
+// not accepted. Invalid entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
 		cidrs, err := httpx.ParseCIDRs(proxies)

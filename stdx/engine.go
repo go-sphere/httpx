@@ -78,7 +78,9 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (which is
 // also the default). When every hop is trusted the leftmost entry is returned,
-// matching gin. Invalid entries panic at construction time.
+// matching gin. Blank entries are skipped, an entry that is not a bare IP
+// (brackets, a port) ends the chain at the peer, and X-Real-IP is never read.
+// Invalid entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
 		cidrs, err := httpx.ParseCIDRs(proxies)

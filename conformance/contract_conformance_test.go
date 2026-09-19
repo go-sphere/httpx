@@ -22,23 +22,48 @@ import (
 
 func newTrustedProxyEngine(tb testing.TB, name, addr string, proxies []string) httpx.Engine {
 	tb.Helper()
+	return newProxyEngine(tb, name, addr, proxies, true)
+}
+
+// newProxyEngine builds one engine per adapter. configure selects whether
+// WithTrustedProxies is installed at all, so a test can observe the
+// framework's own default policy.
+func newProxyEngine(tb testing.TB, name, addr string, proxies []string, configure bool) httpx.Engine {
+	tb.Helper()
 	switch name {
 	case "ginx":
 		gin.SetMode(gin.ReleaseMode)
-		return ginx.New(ginx.WithAddr(addr), ginx.WithTrustedProxies(proxies...))
+		opts := []ginx.Option{ginx.WithAddr(addr)}
+		if configure {
+			opts = append(opts, ginx.WithTrustedProxies(proxies...))
+		}
+		return ginx.New(opts...)
 	case "echox":
-		return echox.New(echox.WithAddr(addr), echox.WithTrustedProxies(proxies...))
+		opts := []echox.Option{echox.WithAddr(addr)}
+		if configure {
+			opts = append(opts, echox.WithTrustedProxies(proxies...))
+		}
+		return echox.New(opts...)
 	case "fiberx":
-		return fiberx.New(
-			fiberx.WithListen(addr, fiber.ListenConfig{DisableStartupMessage: true}),
-			fiberx.WithTrustedProxies(proxies...),
-		)
+		opts := []fiberx.Option{fiberx.WithListen(addr, fiber.ListenConfig{DisableStartupMessage: true})}
+		if configure {
+			opts = append(opts, fiberx.WithTrustedProxies(proxies...))
+		}
+		return fiberx.New(opts...)
 	case "hertzx":
 		hlog.SetSilentMode(true)
 		hlog.SetOutput(io.Discard)
-		return hertzx.New(hertzx.WithAddr(addr), hertzx.WithTrustedProxies(proxies...))
+		opts := []hertzx.Option{hertzx.WithAddr(addr)}
+		if configure {
+			opts = append(opts, hertzx.WithTrustedProxies(proxies...))
+		}
+		return hertzx.New(opts...)
 	case "stdx":
-		return stdx.New(stdx.WithAddr(addr), stdx.WithTrustedProxies(proxies...))
+		opts := []stdx.Option{stdx.WithAddr(addr)}
+		if configure {
+			opts = append(opts, stdx.WithTrustedProxies(proxies...))
+		}
+		return stdx.New(opts...)
 	default:
 		tb.Fatalf("unknown framework %q", name)
 		return nil
@@ -128,6 +153,110 @@ func TestTrustedProxiesConformance(t *testing.T) {
 				}
 				if payload["ip"] != tc.wantIP {
 					t.Fatalf("%s ClientIP = %q, want %q", framework, payload["ip"], tc.wantIP)
+				}
+			})
+		}
+	}
+}
+
+// TestClientIPFrameworkDifferences pins the edge cases where the adapters do
+// not agree, so a framework upgrade that changes one of them fails here rather
+// than in production. The shared contract is TestTrustedProxiesConformance;
+// each divergence is also documented on the adapter's WithTrustedProxies.
+func TestClientIPFrameworkDifferences(t *testing.T) {
+	// A plausible deployment policy: the local reverse proxy plus the LAN.
+	proxies := []string{"127.0.0.0/8", "10.0.0.0/8", "192.168.0.0/16"}
+	cases := []struct {
+		name      string
+		configure bool
+		xff       string
+		xRealIP   string
+		want      map[string]string
+	}{
+		{
+			// The peer is trusted and the chain holds a blank entry. gin, echo
+			// and hertz stop at it and answer with the peer; fiber and stdx skip
+			// it and keep walking left.
+			name:      "BlankEntry",
+			configure: true,
+			xff:       "1.2.3.4, , 10.0.0.2",
+			want: map[string]string{
+				"ginx": "127.0.0.1", "echox": "127.0.0.1", "hertzx": "127.0.0.1",
+				"fiberx": "1.2.3.4", "stdx": "1.2.3.4",
+			},
+		},
+		{
+			// A bracketed entry is not a bare IP. Only echo normalizes it; the
+			// rest fail closed to the peer.
+			name:      "BracketedIPv6Entry",
+			configure: true,
+			xff:       "[2001:db8::1]",
+			want: map[string]string{
+				"echox": "2001:db8::1",
+				"ginx":  "127.0.0.1", "fiberx": "127.0.0.1", "hertzx": "127.0.0.1", "stdx": "127.0.0.1",
+			},
+		},
+		{
+			// gin and hertz fall back to X-Real-IP when X-Forwarded-For yields
+			// nothing; the other three never read the header.
+			name:      "XRealIPFallback",
+			configure: true,
+			xRealIP:   "203.0.113.9",
+			want: map[string]string{
+				"ginx": "203.0.113.9", "hertzx": "203.0.113.9",
+				"echox": "127.0.0.1", "fiberx": "127.0.0.1", "stdx": "127.0.0.1",
+			},
+		},
+		{
+			// Without WithTrustedProxies each adapter keeps its framework's own
+			// default: gin, echo and hertz honor forwarding headers from any
+			// peer, fiber and stdx answer with the peer.
+			name: "DefaultPolicyHonorsForwardedFor",
+			xff:  "203.0.113.9",
+			want: map[string]string{
+				"ginx": "203.0.113.9", "echox": "203.0.113.9", "hertzx": "203.0.113.9",
+				"fiberx": "127.0.0.1", "stdx": "127.0.0.1",
+			},
+		},
+	}
+	for _, framework := range proxyFrameworks {
+		for _, tc := range cases {
+			t.Run(framework+"/"+tc.name, func(t *testing.T) {
+				want, ok := tc.want[framework]
+				if !ok {
+					t.Fatalf("%s/%s has no expectation", framework, tc.name)
+				}
+				addr := reserveAddrTB(t)
+				engine := newProxyEngine(t, framework, addr, proxies, tc.configure)
+				engine.Group("").GET("/ip", func(ctx httpx.Context) error {
+					return ctx.JSON(http.StatusOK, map[string]string{"ip": ctx.ClientIP()})
+				})
+				stop := startEngineAndWait(t, engine, addr)
+				defer stop()
+
+				req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/ip", nil)
+				if err != nil {
+					t.Fatalf("build request: %v", err)
+				}
+				if tc.xff != "" {
+					req.Header.Set("X-Forwarded-For", tc.xff)
+				}
+				if tc.xRealIP != "" {
+					req.Header.Set("X-Real-IP", tc.xRealIP)
+				}
+				client := &http.Client{Timeout: 2 * time.Second}
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatalf("request failed: %v", err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				body, _ := io.ReadAll(resp.Body)
+				var payload map[string]string
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("parse body: %v; body=%q", err, body)
+				}
+				if payload["ip"] != want {
+					t.Fatalf("%s ClientIP = %q, want %q", framework, payload["ip"], want)
 				}
 			})
 		}

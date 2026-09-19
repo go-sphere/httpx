@@ -146,10 +146,11 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (which is
-// already fiber's default). It only takes effect when the engine is
-// constructed by this adapter; combined with WithEngine it panics, because
-// fiber.Config cannot be changed after fiber.New. Invalid entries panic at
-// construction time.
+// already fiber's default). Fiber never reads X-Real-IP; blank entries are
+// skipped, while an entry that is not a bare IP (brackets, a port) falls back
+// to the peer. It only takes effect when the engine is constructed by this
+// adapter; combined with WithEngine it panics, because fiber.Config cannot be
+// changed after fiber.New. Invalid entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
 		if _, err := httpx.ParseCIDRs(proxies); err != nil {

@@ -129,7 +129,9 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (echo's
-// default trusts every peer). Invalid entries panic at construction time.
+// default trusts every peer). Echo never reads X-Real-IP; a bracketed IPv6
+// entry is normalized, and a blank entry falls back to the peer. Invalid
+// entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
 		cidrs, err := httpx.ParseCIDRs(proxies)

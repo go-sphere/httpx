@@ -121,7 +121,9 @@ func WithDefaultMiddleware() Option {
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (gin's
-// default trusts every peer). Invalid entries panic at construction time.
+// default trusts every peer). gin also consults X-Real-IP when X-Forwarded-For
+// yields nothing, and does not accept blank or bracketed entries. Invalid
+// entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
 		if _, err := httpx.ParseCIDRs(proxies); err != nil {
