@@ -250,14 +250,3 @@ Feature values are adapter declarations and can be extended in future versions.
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 (https://github.com/go-sphere/httpx/discussions)
-
-### 发布多个模块
-
-根模块和 adapter 必须按顺序发布。开发时 `go.work` 使用本地根模块，不能证明 adapter 的已发布依赖足以编译。
-
-1. 完成 `make check`，提交根模块的变更后发布根模块 `v0.0.5`。
-2. 执行 `make prepare-release TAG=v0.0.5`，更新五个 adapter 的 `go.mod`/`go.sum`。根版本不可下载时，此命令在修改文件前退出。
-3. 检查并提交依赖更新，再执行 `make release-check TAG=v0.0.5`。此步骤关闭 workspace，逐个验证消费者实际使用的依赖和测试。
-4. 执行 `make tag-all TAG=v0.0.5` 发布 adapter tags；它会先运行上述发布检查，依赖仍指向旧版本时拒绝打 tag。
-
-`make prepare-release` 和 `make release-check` 不创建或推送 tag。
