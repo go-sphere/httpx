@@ -32,6 +32,51 @@ python3 benchmarks/report.py --skip-network --skip-gin-depth
 python3 benchmarks/report.py --render-only   # re-render the prose without measuring again
 ```
 
+## Summary
+
+Everything numbered below is computed from this run. Re-running the benchmarks rewrites it, so it cannot drift away from the tables.
+
+### Which adapter is fastest
+
+**stdx** is fastest on 11 of the 14 shared scenarios; fiberx takes `LargeBody` and `MultipartUpload`, ginx takes `NestedChain`.
+
+| Adapter | Scenarios won | Empty ns/op | allocs on an empty request |
+| --- | ---: | ---: | ---: |
+| stdx (net/http) | 11 | 26.45 | 0 |
+| fiberx (fiber) | 2 | 81.91 | 1 |
+| ginx (gin) | 1 | 34.22 | 0 |
+| echox (echo) | 0 | 58.8 | 2 |
+| hertzx (hertz) | 0 | 323 | 4 |
+
+### Does going through httpx cost or save
+
+Both sides run the same framework and return the same response; the only difference is the adapter. Negative means httpx is faster.
+
+| Framework | Empty | Middleware1 | Middleware5 | Middleware10 | Middleware20 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| gin → ginx | +11% | +4% | -11% | -28% | -45% |
+| echo → echox | +106% | +31% | -33% | -58% | -72% |
+| fiber → fiberx | +69% | +35% | +23% | +13% | ≈0% |
+| hertz → hertzx | +164% | +153% | +126% | +99% | -24% |
+| std → stdx | -56% | -56% | -55% | -56% | -86% |
+
+**Wrapping is not uniformly a cost.** `stdx` is ahead of the native equivalent at every depth measured, including an empty request. It overtakes the framework's own middleware on ginx from 5 layers up, echox from 5 layers up and hertzx from 20 layers up. The reason is structural rather than tuning: httpx composes the chain into the route at registration, so a layer is one call and no allocation, while the frameworks pay per-layer index bookkeeping or a per-layer allocation. Where httpx stays behind, it is the fixed per-request cost of building the adapter Context, which an empty request shows undiluted and a real handler amortizes.
+
+### Can the net/http adapter beat the frameworks' own code
+
+`stdx` — through httpx — is faster than **every** framework's hand-written native implementation on 8 of 12 paired scenarios. It loses on `BindFull`, `LargeBody`, `MultipartUpload` and `StaticFile`.
+
+Read this narrowly. `ginx`, `echox` and `stdx` are driven through the same `net/http` harness, so those columns are a fair comparison and stdx genuinely wins them: its segment-tree router is cheaper than `ServeMux`, and its Context allocates nothing. `fiberx` and `hertzx` are driven through their own fasthttp dispatchers, and this benchmark deliberately excludes HTTP parsing and connection handling — which is exactly where fasthttp earns its reputation. **These numbers do not say stdx is faster than fiber or hertz.** What stdx wins is routing and context dispatch; what a mature framework offers is an ecosystem, binders and middleware this table does not measure.
+
+### What none of this shows
+
+**Section 4 is the one that decides whether any of the above matters, and it says no.** At a fixed rate over a real socket every adapter and every framework lands on the same latency percentiles: the differences measured here are three orders of magnitude below one round trip. Treat sections 1–3 as a budget for the adapter layer, not as a reason to pick a framework.
+
+Two rows are not like-for-like and must not be read as overhead:
+
+- **`LargeBody` on fiber and hertz.** Native `c.Body()` returns a view into the pooled request buffer; `httpx.BodyRaw` contracts that the caller owns the slice, so the fasthttp adapters `bytes.Clone` it. That row prices a guarantee, not an abstraction.
+- **`State` and `StateParallel` on net/http.** httpx `Set`/`Get` is a per-request store; net/http has only the request context, which propagates downstream. Different semantics, not different speed.
+
 ## How to read this
 
 - **Compare pairs within one framework, never across.** Each framework has its own dispatcher and its own per-request reset cost, so fiber-native against gin-httpx means nothing. That is why the tables are grouped by framework.

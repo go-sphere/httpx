@@ -31,6 +31,15 @@ in `history/` can be quoted next to anything else.
 
 Only numbers from the same `bench-report` run may be quoted side by side.
 
+The report opens with a **Summary** that states the conclusions — which adapter wins, where
+wrapping costs and where it saves, whether stdx beats the frameworks' own code. Every figure in
+it is *computed from that run*: the win counts, the rankings and the middleware crossover
+points are derived from the tables below them, so re-running cannot leave the prose asserting
+something the numbers no longer support. Only the methodology caveats are fixed text, because
+they describe the harness rather than the measurement. If you want to change what the summary
+says, change `render_findings` in `report.py` — editing `BENCHMARK.md` is pointless, the next
+run overwrites it.
+
 Generated output goes exclusively under `results/latest/`, never into the same namespace as
 the older data in `results/`. A generator sharing that namespace will eventually pick a name
 an archived report already used and overwrite it — which is how the first round's

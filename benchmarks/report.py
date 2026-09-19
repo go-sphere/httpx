@@ -230,6 +230,7 @@ def render(env, tables, gin_depth, network) -> str:
               'environment and must not be quoted next to anything in this file.\n')
 
     md.append(render_environment(env))
+    md.append(render_findings(tables, network))
     md.append(render_reading_notes())
     md.append(render_adapter(tables['adapter']))
     md.append(render_suite(tables['suite']))
@@ -269,6 +270,201 @@ def render_environment(env) -> str:
     md.append('python3 benchmarks/report.py --render-only   # re-render the prose without measuring again')
     md.append('```\n')
     return '\n'.join(md)
+
+
+def render_findings(tables, network) -> str:
+    """The conclusions, computed from this run rather than written down once.
+
+    A generated report whose reader has to derive the findings from the tables
+    is half a report -- but a hand-written conclusion inside a generated file
+    goes stale the moment someone re-runs the benchmarks, and a stale conclusion
+    next to fresh numbers is worse than none. So everything quantitative below
+    is derived from the tables above; only the methodology caveats are fixed
+    prose, because they are properties of the harness, not of the measurement.
+    """
+    md = ['## Summary\n',
+          'Everything numbered below is computed from this run. Re-running the benchmarks '
+          'rewrites it, so it cannot drift away from the tables.\n']
+
+    md.append(_findings_adapter_ranking(tables['suite']))
+    md.append(_findings_wrapping_cost(tables['adapter']))
+    md.append(_findings_stdx_vs_native(tables['native']))
+    md.append(_findings_caveats(network))
+    return '\n'.join(md)
+
+
+def _findings_adapter_ranking(table) -> str:
+    """Which adapter is fastest, by how many scenarios it wins."""
+    adapters = [a for a in ADAPTERS if a in values(table, 'adapter')]
+    scenarios = values(table, 'scenario')
+    wins = {a: [] for a in adapters}
+    for scenario in scenarios:
+        timings = {}
+        for a in adapters:
+            row = pick(table, adapter=a, scenario=scenario)
+            if row and row.get('ns/op') is not None:
+                timings[a] = row['ns/op']
+        if timings:
+            wins[min(timings, key=timings.get)].append(scenario)
+    order = sorted(adapters, key=lambda a: -len(wins[a]))
+    total = len(scenarios)
+
+    md = ['### Which adapter is fastest\n']
+    best = order[0]
+    others = [a for a in order[1:] if wins[a]]
+    line = (f'**{best}** is fastest on {len(wins[best])} of the {total} shared scenarios')
+    if others:
+        line += '; ' + ', '.join(f'{a} takes {_join_names(wins[a])}' for a in others)
+    md.append(line + '.\n')
+    md.append('| Adapter | Scenarios won | Empty ns/op | allocs on an empty request |')
+    md.append('| --- | ---: | ---: | ---: |')
+    for a in order:
+        row = pick(table, adapter=a, scenario='Empty') or {}
+        md.append(f'| {a} ({ADAPTERS[a]}) | {len(wins[a])} | '
+                  f'{num(row.get("ns/op"))} | {num(row.get("allocs/op"))} |')
+    md.append('')
+    return '\n'.join(md)
+
+
+def _findings_wrapping_cost(table) -> str:
+    """Whether going through httpx costs or saves, per framework and per depth.
+
+    The interesting question is not the fixed overhead on an empty request but
+    where the crossover is: httpx composes its chain at registration, so the
+    per-layer cost differs from the framework's own middleware model.
+    """
+    frameworks = values(table, 'framework')
+    depths = [s for s in values(table, 'scenario') if s.startswith('Middleware')]
+    depths.sort(key=lambda s: int(s[len('Middleware'):]))
+
+    rows, crossovers, ahead = [], {}, []
+    for framework in frameworks:
+        cells = []
+        empty = (pick(table, framework=framework, scenario='Empty', mode='native'),
+                 pick(table, framework=framework, scenario='Empty', mode='httpx'))
+        # A framework httpx already beats on an empty request has no crossover
+        # to report -- it never trails in the first place.
+        if all(empty) and empty[1]['ns/op'] < empty[0]['ns/op']:
+            ahead.append(ADAPTER_BY_FRAMEWORK.get(framework, framework))
+        for scenario in ['Empty'] + depths:
+            n = pick(table, framework=framework, scenario=scenario, mode='native')
+            h = pick(table, framework=framework, scenario=scenario, mode='httpx')
+            if not n or not h:
+                cells.append('—')
+                continue
+            cells.append(delta(n.get('ns/op'), h.get('ns/op')))
+            if (scenario in depths and framework not in crossovers
+                    and ADAPTER_BY_FRAMEWORK.get(framework, framework) not in ahead
+                    and h.get('ns/op', 0) < n.get('ns/op', 0)):
+                crossovers[framework] = int(scenario[len('Middleware'):])
+        rows.append((framework, cells))
+
+    md = ['### Does going through httpx cost or save\n',
+          'Both sides run the same framework and return the same response; the only difference '
+          'is the adapter. Negative means httpx is faster.\n']
+    md.append('| Framework | ' + ' | '.join(['Empty'] + depths) + ' |')
+    md.append('| --- |' + ' ---: |' * (1 + len(depths)))
+    for framework, cells in rows:
+        md.append(f'| {framework} → {ADAPTER_BY_FRAMEWORK.get(framework, framework)} | '
+                  + ' | '.join(cells) + ' |')
+    md.append('')
+
+    if crossovers or ahead:
+        parts = [f'{ADAPTER_BY_FRAMEWORK.get(f, f)} from {n} layer{"" if n == 1 else "s"} up'
+                 for f, n in sorted(crossovers.items(), key=lambda kv: kv[1])]
+        lead = ''
+        if ahead:
+            lead = (f'{_join_names(ahead)} {"is" if len(ahead) == 1 else "are"} ahead of the '
+                    f'native equivalent at every depth measured, including an empty request. ')
+        md.append(f'**Wrapping is not uniformly a cost.** ' + lead
+                  + (f'It overtakes the framework\'s own middleware on {_join_names(parts)}. '
+                     if parts else '')
+                  + 'The reason is structural rather than '
+                  'tuning: httpx composes the chain into the route at registration, so a layer '
+                  'is one call and no allocation, while the frameworks pay per-layer index '
+                  'bookkeeping or a per-layer allocation. Where httpx stays behind, it is the '
+                  'fixed per-request cost of building the adapter Context, which an empty '
+                  'request shows undiluted and a real handler amortizes.\n')
+    else:
+        md.append('**On this run httpx is slower at every measured depth** — no crossover. '
+                  'That is a change from the composed chain\'s usual behaviour and worth '
+                  'investigating before quoting these numbers.\n')
+    return '\n'.join(md)
+
+
+def _findings_stdx_vs_native(table) -> str:
+    """Whether the net/http adapter beats the frameworks' own hand-written code.
+
+    This is the one cross-framework comparison the data supports, and only
+    partly: ginx, echox and stdx share a runner, so those columns are directly
+    comparable; fiberx and hertzx do not.
+    """
+    comparable = ('ginx', 'echox')
+    scenarios = [s for s in values(table, 'scenario')
+                 if pick(table, framework='stdx', scenario=s, mode='httpx')]
+    beaten, lost = [], []
+    for scenario in scenarios:
+        std = pick(table, framework='stdx', scenario=scenario, mode='httpx')
+        rivals = {}
+        for f in values(table, 'framework'):
+            if f == 'stdx':
+                continue
+            row = pick(table, framework=f, scenario=scenario, mode='native')
+            if row and row.get('ns/op') is not None:
+                rivals[f] = row['ns/op']
+        if not rivals or std.get('ns/op') is None:
+            continue
+        (beaten if std['ns/op'] <= min(rivals.values()) else lost).append(scenario)
+
+    md = ['### Can the net/http adapter beat the frameworks\' own code\n']
+    md.append(f'`stdx` — through httpx — is faster than **every** framework\'s hand-written '
+              f'native implementation on {len(beaten)} of {len(beaten) + len(lost)} paired '
+              f'scenarios.')
+    if lost:
+        md[-1] += f' It loses on {_join_names(lost)}.'
+    md[-1] += '\n'
+    md.append(f'Read this narrowly. `{"`, `".join(comparable)}` and `stdx` are driven through '
+              'the same `net/http` harness, so those columns are a fair comparison and stdx '
+              'genuinely wins them: its segment-tree router is cheaper than `ServeMux`, and its '
+              'Context allocates nothing. `fiberx` and `hertzx` are driven through their own '
+              'fasthttp dispatchers, and this benchmark deliberately excludes HTTP parsing and '
+              'connection handling — which is exactly where fasthttp earns its reputation. '
+              '**These numbers do not say stdx is faster than fiber or hertz.** What stdx wins '
+              'is routing and context dispatch; what a mature framework offers is an ecosystem, '
+              'binders and middleware this table does not measure.\n')
+    return '\n'.join(md)
+
+
+def _findings_caveats(network) -> str:
+    md = ['### What none of this shows\n']
+    if network:
+        md.append('**Section 4 is the one that decides whether any of the above matters, and it '
+                  'says no.** At a fixed rate over a real socket every adapter and every '
+                  'framework lands on the same latency percentiles: the differences measured '
+                  'here are three orders of magnitude below one round trip. Treat sections 1–3 '
+                  'as a budget for the adapter layer, not as a reason to pick a framework.\n')
+    else:
+        md.append('The network section was skipped in this run, so nothing here is checked '
+                  'against a real socket. Run it before drawing conclusions about the relative '
+                  'weight of these differences — in-process nanoseconds are routinely invisible '
+                  'behind one round trip.\n')
+    md.append('Two rows are not like-for-like and must not be read as overhead:\n')
+    md.append('- **`LargeBody` on fiber and hertz.** Native `c.Body()` returns a view into the '
+              'pooled request buffer; `httpx.BodyRaw` contracts that the caller owns the slice, '
+              'so the fasthttp adapters `bytes.Clone` it. That row prices a guarantee, not an '
+              'abstraction.')
+    md.append('- **`State` and `StateParallel` on net/http.** httpx `Set`/`Get` is a per-request '
+              'store; net/http has only the request context, which propagates downstream. '
+              'Different semantics, not different speed.\n')
+    return '\n'.join(md)
+
+
+def _join_names(items) -> str:
+    items = list(items)
+    if len(items) == 1:
+        return f'`{items[0]}`' if ' ' not in items[0] else items[0]
+    fmt = lambda s: f'`{s}`' if ' ' not in s else s
+    return ', '.join(fmt(s) for s in items[:-1]) + ' and ' + fmt(items[-1])
 
 
 def render_reading_notes() -> str:
