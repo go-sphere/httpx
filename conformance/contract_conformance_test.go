@@ -16,6 +16,7 @@ import (
 	"github.com/go-sphere/httpx/fiberx"
 	"github.com/go-sphere/httpx/ginx"
 	"github.com/go-sphere/httpx/hertzx"
+	"github.com/go-sphere/httpx/stdx"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -36,6 +37,8 @@ func newTrustedProxyEngine(tb testing.TB, name, addr string, proxies []string) h
 		hlog.SetSilentMode(true)
 		hlog.SetOutput(io.Discard)
 		return hertzx.New(hertzx.WithAddr(addr), hertzx.WithTrustedProxies(proxies...))
+	case "stdx":
+		return stdx.New(stdx.WithAddr(addr), stdx.WithTrustedProxies(proxies...))
 	default:
 		tb.Fatalf("unknown framework %q", name)
 		return nil
@@ -64,10 +67,15 @@ func startEngineAndWait(t *testing.T, engine httpx.Engine, addr string) func() {
 	return nil
 }
 
+// proxyFrameworks is the framework list of TestTrustedProxiesConformance. It
+// names stdx, which the shared conformanceFrameworks list does not carry.
+var proxyFrameworks = []string{"ginx", "fiberx", "echox", "hertzx", "stdx"}
+
 // The trusted-proxy policy depends on the connection's peer address, and the
 // in-process requesters of fiberx/hertzx report 0.0.0.0, so this needs a real
 // listener. WithTrustedProxies: X-Forwarded-For is honored only when the direct
-// peer is trusted, on every adapter.
+// peer is trusted, on every adapter — stdx included, which is why this test
+// names its frameworks itself.
 func TestTrustedProxiesConformance(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -80,8 +88,18 @@ func TestTrustedProxiesConformance(t *testing.T) {
 		// Trusted hops are skipped right-to-left and the raw joined header must
 		// never leak (fiber requires EnableIPValidation for this).
 		{name: "MultiHopTrustedTailSkipped", proxies: []string{"127.0.0.1"}, xff: "203.0.113.9, 127.0.0.1", wantIP: "203.0.113.9"},
+		// A client that is itself inside a trusted range, behind a same-host
+		// proxy: every hop is trusted, so the leftmost entry is the client.
+		// gin, hertz, echo and fiber all resolve it that way; stdx used to fall
+		// back to the peer here, reporting 127.0.0.1 for every LAN session.
+		{name: "AllHopsTrustedReturnsLeftmost", proxies: []string{"127.0.0.0/8", "192.168.0.0/16"}, xff: "192.168.1.50", wantIP: "192.168.1.50"},
+		{name: "AllHopsTrustedMultiHopReturnsLeftmost", proxies: []string{"127.0.0.0/8", "192.168.0.0/16"}, xff: "192.168.1.50, 192.168.1.60", wantIP: "192.168.1.50"},
+		// An entry nothing can parse fails closed to the peer on every adapter,
+		// and a port on an entry is equally unusable.
+		{name: "MalformedChainFallsBackToPeer", proxies: []string{"127.0.0.1"}, xff: "garbage", wantIP: "127.0.0.1"},
+		{name: "EntryWithPortFallsBackToPeer", proxies: []string{"127.0.0.1"}, xff: "1.2.3.4:5678", wantIP: "127.0.0.1"},
 	}
-	for _, framework := range conformanceFrameworks {
+	for _, framework := range proxyFrameworks {
 		for _, tc := range cases {
 			t.Run(framework+"/"+tc.name, func(t *testing.T) {
 				addr := reserveAddrTB(t)
