@@ -77,7 +77,8 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (which is
-// also the default). Invalid entries panic at construction time.
+// also the default). When every hop is trusted the leftmost entry is returned,
+// matching gin. Invalid entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
 		cidrs, err := httpx.ParseCIDRs(proxies)
@@ -286,13 +287,18 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 
 // clientIP applies the trusted-proxy policy: without trusted proxies the peer
 // address wins and forwarding headers are ignored; with them, X-Forwarded-For
-// is walked right to left past trusted hops.
+// is walked right to left past trusted hops. When every hop is trusted the
+// leftmost entry is returned — the address the first trusted hop saw, which is
+// also what gin resolves. Falling back to the peer there would name the
+// nearest proxy instead (127.0.0.1 for a same-host reverse proxy), so a client
+// that is itself inside a trusted range would be reported as the proxy.
 func (e *Engine) clientIP(req *http.Request) string {
 	remote := remoteIP(req)
 	if len(e.trustedProxies) == 0 || !ipInAny(remote, e.trustedProxies) {
 		return remote
 	}
-	for _, raw := range reverse(strings.Split(req.Header.Get("X-Forwarded-For"), ",")) {
+	hops := strings.Split(req.Header.Get("X-Forwarded-For"), ",")
+	for _, raw := range reverse(hops) {
 		ip := strings.TrimSpace(raw)
 		if ip == "" {
 			continue
@@ -304,6 +310,16 @@ func (e *Engine) clientIP(req *http.Request) string {
 		}
 		if ipInAny(ip, e.trustedProxies) {
 			continue
+		}
+		return ip
+	}
+	// Every hop, the client included, is inside the trusted ranges: the
+	// leftmost entry is that client. Keep the peer fallback for a chain whose
+	// left edge is blank or malformed, where nothing verifiable remains.
+	for _, raw := range hops {
+		ip := strings.TrimSpace(raw)
+		if ip == "" || net.ParseIP(ip) == nil {
+			return remote
 		}
 		return ip
 	}

@@ -305,7 +305,13 @@ func TestClientIP(t *testing.T) {
 		{name: "UntrustedPeerIgnoresHeader", proxies: []string{"10.0.0.0/8"}, remote: "192.168.1.1:1", xff: "1.2.3.4", want: "192.168.1.1"},
 		{name: "TrustedPeerTakesLastUntrustedHop", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", xff: "1.2.3.4, 10.0.0.2", want: "1.2.3.4"},
 		{name: "WalksPastSeveralTrustedHops", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", xff: "8.8.8.8, 1.2.3.4, 10.0.0.2, 10.0.0.3", want: "1.2.3.4"},
-		{name: "AllHopsTrustedFallsBackToPeer", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", xff: "10.0.0.9", want: "10.0.0.1"},
+		{name: "AllHopsTrustedReturnsLeftmost", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", xff: "10.0.0.9", want: "10.0.0.9"},
+		// The shape a same-host reverse proxy produces when the client itself
+		// is on the LAN: Caddy writes the client into X-Forwarded-For and
+		// connects from 127.0.0.1. The client must win over the peer.
+		{name: "TrustedClientInTrustedRangeReturnsClient", proxies: []string{"127.0.0.0/8", "192.168.0.0/16"}, remote: "127.0.0.1:1", xff: "192.168.1.50", want: "192.168.1.50"},
+		{name: "AllHopsTrustedMultiHopReturnsLeftmost", proxies: []string{"127.0.0.0/8", "192.168.0.0/16"}, remote: "127.0.0.1:1", xff: "192.168.1.50, 192.168.1.60", want: "192.168.1.50"},
+		{name: "AllHopsTrustedBlankLeftEdgeFallsBackToPeer", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", xff: ", 10.0.0.9", want: "10.0.0.1"},
 		{name: "EmptyHeaderFallsBackToPeer", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", want: "10.0.0.1"},
 		{name: "MalformedHopEndsTheChain", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", xff: "1.2.3.4, garbage, 10.0.0.2", want: "10.0.0.1"},
 		{name: "BlankEntriesAreSkipped", proxies: []string{"10.0.0.0/8"}, remote: "10.0.0.1:1", xff: "1.2.3.4, , 10.0.0.2", want: "1.2.3.4"},
