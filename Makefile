@@ -13,6 +13,10 @@ GO_MOD_DIRS := . ginx fiberx echox hertzx stdx conformance
 TAG_ADAPTERS := ginx fiberx echox hertzx stdx
 DIRECT_DEPS_TEMPLATE := {{if and (not .Main) (not .Indirect) (not .Replace)}}{{.Path}}{{end}}
 
+# Resolve go-sphere modules straight from GitHub, bypassing the module proxy
+# and its cached "@latest", which lags behind freshly pushed tags.
+DIRECT_ORIGIN := GOPRIVATE=github.com/go-sphere/*
+
 .DEFAULT_GOAL := check
 
 # Local builds use the workspace to test all adapters against the root module.
@@ -38,9 +42,10 @@ deps-update:
 	for dir in $(GO_MOD_DIRS); do \
 		echo "==> updating $$dir"; \
 		( cd "$$dir"; \
-		  deps="$$(GOWORK=off $(GO) list -m -f '$(DIRECT_DEPS_TEMPLATE)' all)"; \
-		  if [ -n "$$deps" ]; then GOWORK=off $(GO) get -u $$deps; fi; \
-		  GOWORK=off $(GO) mod tidy ); \
+		  GOWORK=off $(DIRECT_ORIGIN) $(GO) mod tidy; \
+		  deps="$$(GOWORK=off $(DIRECT_ORIGIN) $(GO) list -m -f '$(DIRECT_DEPS_TEMPLATE)' all)"; \
+		  if [ -n "$$deps" ]; then GOWORK=off $(DIRECT_ORIGIN) $(GO) get -u $$deps; fi; \
+		  GOWORK=off $(DIRECT_ORIGIN) $(GO) mod tidy ); \
 	done
 
 tidy:
