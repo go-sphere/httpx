@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -72,6 +73,7 @@ var nativeBuilders = map[string]func(tb testing.TB, scenario string, req *http.R
 	"echox":  buildNativeEcho,
 	"fiberx": buildNativeFiber,
 	"hertzx": buildNativeHertz,
+	"stdx":   buildNativeStd,
 }
 
 // Mirrors the shared scenario payloads so native handlers return identical bytes.
@@ -400,4 +402,103 @@ func buildNativeHertz(tb testing.TB, scenario string, req *http.Request) (func()
 		})
 	}
 	return hertzRunner(tb, "hertz", h, req), true
+}
+
+// buildNativeStd is the "without httpx" side for stdx: a ServeMux, the one
+// middleware shape net/http has, and hand-written decoding — no form decoder,
+// since reaching for go-playground/form is already a step towards an adapter.
+func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), bool) {
+	mux := http.NewServeMux()
+	switch scenario {
+	case "JSON1K":
+		mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, _ *http.Request) {
+			writeNativeJSON(w, http.StatusOK, nativePayload1K)
+		})
+	case "JSON100K":
+		mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, _ *http.Request) {
+			writeNativeJSON(w, http.StatusOK, nativePayload100K)
+		})
+	case "State":
+		// net/http has no per-request state store; the request context is the
+		// only place to put a value, so it is what a hand-written handler uses.
+		// It is not the same thing httpx.Set does — compare the rows knowing that.
+		mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, r *http.Request) {
+			r = r.WithContext(context.WithValue(r.Context(), nativeStateKey{}, "value"))
+			writeNativeJSON(w, http.StatusOK, map[string]any{"value": r.Context().Value(nativeStateKey{})})
+		})
+	case "BindJSON":
+		mux.HandleFunc("POST /scenario", func(w http.ResponseWriter, r *http.Request) {
+			var v struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			writeNativeJSON(w, http.StatusOK, map[string]any{"name": v.Name})
+		})
+	case "BindFull":
+		mux.HandleFunc("POST /scenario/{id}", func(w http.ResponseWriter, r *http.Request) {
+			var b nativeBody
+			if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			active, err := strconv.ParseBool(r.URL.Query().Get("active"))
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			writeNativeJSON(w, http.StatusOK, map[string]any{
+				"name": b.Name, "age": b.Age, "active": active,
+				"id": r.PathValue("id"), "token": r.Header.Get("X-Token"),
+			})
+		})
+	case "LargeBody":
+		mux.HandleFunc("POST /scenario", func(w http.ResponseWriter, r *http.Request) {
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			writeNativeJSON(w, http.StatusOK, map[string]any{"length": len(raw)})
+		})
+	case "MultipartUpload":
+		mux.HandleFunc("POST /scenario", func(w http.ResponseWriter, r *http.Request) {
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			defer func() { _ = file.Close() }()
+			writeNativeJSON(w, http.StatusOK, map[string]any{
+				"filename": header.Filename, "size": header.Size, "title": r.FormValue("title"),
+			})
+		})
+	case "StaticFile":
+		mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(nativeAssets)))
+	default:
+		mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
+	handler := http.Handler(mux)
+	for range middlewareLayers(scenario) {
+		next := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+	}
+	return netHTTPRunner(tb, "std", handler, req), true
+}
+
+type nativeStateKey struct{}
+
+func writeNativeJSON(w http.ResponseWriter, status int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }

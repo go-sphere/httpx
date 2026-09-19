@@ -91,6 +91,23 @@ adapter's own module (for example `ginx/middleware_test.go` for how ginx
 composes chains into gin routes, and `ginx/middleware_alloc_test.go` for the
 allocation guards).
 
+## Benchmarks
+
+[`benchmarks/BENCHMARK.md`](benchmarks/BENCHMARK.md) compares all five adapters
+against the framework they wrap — gin, echo, fiber, hertz and net/http — on the
+shared scenario table, plus a fixed-rate network run.
+
+```bash
+make bench-report   # every table in one session -> benchmarks/BENCHMARK.md
+```
+
+Numbers may only be quoted next to each other when they came out of the same
+`bench-report` run: it compiles one test binary and measures every table from
+it back to back, recording the environment and the git revision alongside. The
+per-table targets (`make bench-adapter`, `bench-suite`, `bench-native`,
+`bench-network`) are for iterating on one table, and two of their runs are two
+different environments. See [`benchmarks/README.md`](benchmarks/README.md).
+
 ## Streaming and Server-Sent Events
 
 Every official adapter implements the optional `Streamer` context capability.

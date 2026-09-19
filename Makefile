@@ -25,7 +25,7 @@ export GOWORK := $(CURDIR)/go.work
 endif
 
 .PHONY: work deps-update tidy fmt test test-race lint lint-all check verify api-compat
-.PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network golden tag tag-all tag-delete help prepare-release release-check
+.PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network bench-report golden tag tag-all tag-delete help prepare-release release-check
 
 # The workspace is the only way the repo builds before a release: every adapter
 # requires the published github.com/go-sphere/httpx, but they use symbols that
@@ -145,6 +145,13 @@ bench-native:
 bench-network:
 	python3 benchmarks/network.py
 
+# Every table above in one session, from one compiled binary, rendered into
+# benchmarks/BENCHMARK.md. This is the only way to get numbers that may be
+# quoted next to each other: the individual targets above are for iterating on
+# one table, and two of their runs are two different environments.
+bench-report:
+	python3 benchmarks/report.py --count $(BENCH_COUNT) --benchtime $(BENCH_TIME)
+
 tag:
 	@test -n "$(TAG)" || { echo "TAG is required: make tag TAG=v0.0.1"; exit 1; }
 	git tag -s $(TAG) -m "$(TAG)"
@@ -197,6 +204,7 @@ help:
 	  '  bench-native                pair each scenario against a no-httpx implementation' \
 	  '  (bench-adapter/suite/native take BENCH_COUNT=$(BENCH_COUNT) BENCH_TIME=$(BENCH_TIME))' \
 	  '  bench-network               run fixed-rate Vegeta network comparison' \
+	  '  bench-report                run every table in one session -> benchmarks/BENCHMARK.md' \
 	  '  prepare-release TAG=v0.0.5    update adapter dependencies after the root tag is published' \
 	  '  release-check TAG=v0.0.5      test published dependencies without go.work' \
 	  '  tag TAG=v0.0.1              create and push the root tag' \

@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/go-sphere/httpx/fiberx"
 	"github.com/go-sphere/httpx/ginx"
 	"github.com/go-sphere/httpx/hertzx"
+	"github.com/go-sphere/httpx/stdx"
 	"github.com/gofiber/fiber/v3"
 	"github.com/labstack/echo/v4"
 	"github.com/valyala/fasthttp"
@@ -27,7 +29,7 @@ import (
 func BenchmarkAdapter(b *testing.B) {
 	gin.SetMode(gin.ReleaseMode)
 	hlog.SetLevel(hlog.LevelError)
-	for _, framework := range []string{"gin", "echo", "fiber", "hertz"} {
+	for _, framework := range []string{"gin", "echo", "fiber", "hertz", "std"} {
 		for _, scenario := range []string{"Empty", "Middleware1", "Middleware5", "Middleware10", "Middleware20", "JSON1K", "StateParallel"} {
 			for _, mode := range []string{"native", "httpx"} {
 				b.Run(fmt.Sprintf("framework=%s/scenario=%s/mode=%s", framework, scenario, mode), func(b *testing.B) {
@@ -55,7 +57,7 @@ func BenchmarkAdapter(b *testing.B) {
 
 // Serves the allocation benchmark's routes over a real listener when -httpx-bench-addr is set.
 var benchmarkAddr = flag.String("httpx-bench-addr", "", "serve benchmark routes at this address")
-var benchmarkFramework = flag.String("httpx-bench-framework", "gin", "gin, echo, fiber, or hertz")
+var benchmarkFramework = flag.String("httpx-bench-framework", "gin", "gin, echo, fiber, hertz, or std")
 var benchmarkMode = flag.String("httpx-bench-mode", "httpx", "native or httpx")
 var benchmarkScenario = flag.String("httpx-bench-scenario", "JSON1K", "Empty, Middleware1/5/10/20, JSON1K, or StateParallel")
 
@@ -264,11 +266,57 @@ func adapterBenchmarkFactoryWithRegistration(tb testing.TB, framework, scenario 
 			c := e.NewContext()
 			return func() { c.ResetWithoutConn(); c.Request.SetRequestURI("/bench"); e.ServeHTTP(context.Background(), c) }
 		}
+	case "std":
+		// net/http is stdx's framework: the native side is a ServeMux, its
+		// middleware the one shape net/http has, and its state store the
+		// request context — there is no per-request map to Set into.
+		var handler http.Handler
+		if adapted {
+			e := stdx.New()
+			register(e)
+			h, ok := e.(http.Handler)
+			if !ok {
+				tb.Fatal("stdx: engine is not an http.Handler")
+			}
+			handler = h
+		} else {
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /bench", func(w http.ResponseWriter, r *http.Request) {
+				if state {
+					r = r.WithContext(context.WithValue(r.Context(), benchStateKey{}, "value"))
+					if v := r.Context().Value(benchStateKey{}); v != "value" {
+						panic("invalid state")
+					}
+				}
+				if jsonResponse {
+					body, err := json.Marshal(payload)
+					if err != nil {
+						panic(err)
+					}
+					w.Header().Set("Content-Type", "application/json; charset=utf-8")
+					w.WriteHeader(200)
+					_, _ = w.Write(body)
+					return
+				}
+				w.WriteHeader(204)
+			})
+			handler = http.Handler(mux)
+			for range layers {
+				next := handler
+				handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+			}
+		}
+		if len(addr) != 0 {
+			tb.Fatal(http.ListenAndServe(addr[0], handler))
+		}
+		return netHTTPBenchmarkFactory(handler, check)
 	default:
 		tb.Fatalf("unknown framework %q", framework)
 		return nil
 	}
 }
+
+type benchStateKey struct{}
 
 // Retains header capacity, never buffers bodies; both sides of a net/http pair
 // reuse the same writer and request.

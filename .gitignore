@@ -162,6 +162,18 @@ coverage.out
 coverage.html
 coverage.txt
 
+# Benchmark working data: compiled test binaries (tens of megabytes each, kept
+# so a run can be repeated from the exact same build) and raw samples.
+#
+# benchmarks/ has no go.mod, so it is part of the root module -- anything
+# tracked here ships in the module zip that every consumer of
+# github.com/go-sphere/httpx downloads, and every adapter depends on the root
+# module. Benchmark samples have no business in a library's module zip, and
+# `make bench-report` rewrites them wholesale anyway. The reports carry their
+# own tables, so the conclusions survive without the raw output.
+benchmarks/bin/
+benchmarks/results/
+
 # macOS system files
 .DS_Store
 

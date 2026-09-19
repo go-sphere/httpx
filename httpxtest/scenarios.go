@@ -78,6 +78,13 @@ func (s Scenario) RewindableRequest() (*http.Request, func()) {
 		// alone would leave the next iteration reading a different buffer than a
 		// native handler reads.
 		req.Body = body
+		// Drop the parsed-form cache with it. net/http parses a multipart or
+		// urlencoded body once and memoizes it on the request, so without this
+		// only the first iteration would parse and every later one would read
+		// the memo — while fiber and hertz, whose runners reset their native
+		// request, re-parse every time. The MultipartUpload row would then be
+		// comparing parsing against a map lookup across frameworks.
+		req.Form, req.PostForm, req.MultipartForm = nil, nil, nil
 	}
 }
 
