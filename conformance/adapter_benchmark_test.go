@@ -328,6 +328,13 @@ type benchmarkResponseWriter struct {
 func (w *benchmarkResponseWriter) Header() http.Header         { return w.header }
 func (w *benchmarkResponseWriter) WriteHeader(status int)      { w.status = status }
 func (w *benchmarkResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// Flush makes the writer look like a live net/http connection, which always
+// flushes. Without it the SSE scenario measured http.ResponseController
+// building an ErrNotSupported per write — an allocation no real server pays —
+// and on stdx it measured nothing at all, since Stream stopped at the first
+// flush.
+func (w *benchmarkResponseWriter) Flush() {}
 func netHTTPBenchmarkFactory(h http.Handler, check func(int, []byte)) func() func() {
 	return netHTTPBenchmarkFactoryForPath(h, "/bench", check)
 }

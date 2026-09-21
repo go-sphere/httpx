@@ -96,6 +96,52 @@ func casesStream(t *testing.T, r runner) {
 		}
 	})
 
+	// A writer that cannot flush is not an error: the Flusher contract makes
+	// the flush a no-op and the stream continues, buffered. Such a writer is
+	// what http.TimeoutHandler hands a handler, and what any wrapper written
+	// before Unwrap existed hands it. stdx used to give up on the callback
+	// after committing the headers, answering an SSE request with an empty
+	// 200 — invisible to the cases above, whose in-process writer can flush.
+	t.Run("StreamThroughNonFlushingWriter", func(t *testing.T) {
+		if r.suite.StdMiddleware == nil {
+			t.Skipf("%s: no StdMiddleware hook declared", r.suite.Name)
+		}
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				next.ServeHTTP(nonFlushingWriter{w}, req)
+			})
+		}
+		got := r.serve(t, func(router httpx.Router) {
+			router.Use(r.suite.StdMiddleware(mw))
+			router.GET("/stream/noflush", func(ctx httpx.Context) error {
+				if fl, ok := httpx.AsFlusher(ctx); ok {
+					ctx.Status(http.StatusOK)
+					if err := fl.Flush(); err != nil {
+						return httpx.NewInternalServerError("Flush reported: " + err.Error())
+					}
+				}
+				s, ok := httpx.AsStreamer(ctx)
+				if !ok {
+					return httpx.NewInternalServerError("Streamer not supported")
+				}
+				return s.Stream(http.StatusOK, "text/event-stream", func(w io.Writer) error {
+					if _, err := io.WriteString(w, "data: one\n\n"); err != nil {
+						return err
+					}
+					_, err := io.WriteString(w, "data: two\n\n")
+					return err
+				})
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/stream/noflush", nil))
+
+		if got.Status != http.StatusOK {
+			t.Fatalf("status = %d; body=%q", got.Status, got.Body)
+		}
+		if got.Body != "data: one\n\ndata: two\n\n" {
+			t.Fatalf("body = %q, want both events: the stream stopped at a writer that cannot flush", got.Body)
+		}
+	})
+
 	// Flush is optional; where it is supported it must not disturb the
 	// response that follows. See Caps.Flusher.
 	t.Run("FlushDoesNotDisturbResponse", func(t *testing.T) {
@@ -123,6 +169,12 @@ func casesStream(t *testing.T, r runner) {
 			t.Fatalf("body = %q, want %q", got.Body, "after-flush")
 		}
 	})
+}
+
+// nonFlushingWriter forwards only the three ResponseWriter methods: no Flush
+// and no Unwrap, so http.ResponseController reports ErrNotSupported through it.
+type nonFlushingWriter struct {
+	http.ResponseWriter
 }
 
 func init() {

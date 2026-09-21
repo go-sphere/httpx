@@ -130,6 +130,27 @@ func BenchmarkBindHeader(b *testing.B) {
 	}
 }
 
+type queryDTO struct {
+	Active bool `query:"active"`
+	Page   int  `query:"page"`
+}
+
+// BenchmarkBindQueryEmpty is the common case for a generated handler: it binds
+// the query unconditionally and the request has none. BindQuery returns before
+// the decoder walks the struct.
+func BenchmarkBindQueryEmpty(b *testing.B) {
+	c := &stdContext{}
+	c.native.c = c
+	c.reset(&discardWriter{header: make(http.Header)}, httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
+	var dst queryDTO
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := c.BindQuery(&dst); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkClientIP walks a forwarding chain under a trusted-proxy policy —
 // the work any access log or rate limiter does per request.
 func BenchmarkClientIP(b *testing.B) {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -348,7 +349,17 @@ func (c *stdContext) BindJSON(dst any) error {
 }
 
 func (c *stdContext) BindQuery(dst any) error {
-	return httpx.WrapBindError(queryDecoder.Decode(dst, c.queryValues()))
+	values := c.queryValues()
+	if len(values) == 0 {
+		// Nothing to decode. The decoder would still walk every field of dst
+		// by reflection to find that out — about 60 ns, which a generated
+		// handler pays on every request because it binds the query
+		// unconditionally. Decoding an empty map sets nothing and the decoder
+		// has no default-value tags, so leaving dst alone is the same result.
+		// The same shortcut BindURI takes when the route has no parameters.
+		return nil
+	}
+	return httpx.WrapBindError(queryDecoder.Decode(dst, values))
 }
 
 func (c *stdContext) BindForm(dst any) error {
@@ -562,11 +573,33 @@ func (c *stdContext) StatusCode() int { return c.rw.status }
 func (c *stdContext) NativeContext() any { return &c.native }
 
 // Flush implements httpx.Flusher: the first flush commits status and headers.
+// A writer that cannot flush is not an error; see flush.
 func (c *stdContext) Flush() error {
 	if !c.rw.written {
 		c.rw.WriteHeader(c.rw.status)
 	}
-	return http.NewResponseController(c.rw.ResponseWriter).Flush()
+	return flush(c.rw.ResponseWriter)
+}
+
+// flush sends w's buffered data to the client, and reports nothing when w has
+// no way to: the httpx.Flusher contract makes an unsupported flush a no-op, and
+// gin and httputil.ReverseProxy do the same. A writer with no Flush is not
+// exotic — http.TimeoutHandler's is one, as is any wrapper written before
+// Unwrap existed — and on such a writer Stream used to abandon its callback
+// after committing the headers, answering an SSE request with an empty 200.
+//
+// The direct assertion comes first because it is the common case and costs
+// nothing; the controller is what follows an Unwrap chain, at the price of
+// allocating the ErrNotSupported it returns when the chain ends nowhere.
+func flush(w http.ResponseWriter) error {
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+		return nil
+	}
+	if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
 }
 
 // Stream implements httpx.Streamer: the response is committed before fn runs
@@ -653,7 +686,7 @@ func (w *responseWriter) Flush() {
 	if !w.written {
 		w.WriteHeader(w.status)
 	}
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
+	_ = flush(w.ResponseWriter)
 }
 
 func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {

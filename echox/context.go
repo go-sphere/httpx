@@ -413,9 +413,14 @@ func (c *echoContext) Flush() error {
 	if !resp.Committed {
 		resp.WriteHeader(resp.Status)
 	}
-	// Go under echo.Response.Flush(), which panics when unsupported; the
-	// controller returns an error instead.
-	return http.NewResponseController(resp.Writer).Flush()
+	// Go under echo.Response.Flush(), which panics when unsupported. The
+	// httpx.Flusher contract makes an unsupported flush a no-op, so the
+	// controller's ErrNotSupported is dropped here as it is in echoFlushWriter;
+	// any other error is a real failure and is returned.
+	if err := http.NewResponseController(resp.Writer).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
 }
 
 // Stream implements httpx.Streamer: each write inside fn is flushed to the
