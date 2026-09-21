@@ -459,6 +459,13 @@ func (c ginContext) StatusCode() int {
 	return c.ctx.Writer.Status()
 }
 
+// Committed reports whether the response header has been written. gin's
+// ResponseWriter tracks it for its own render path, so this is the same bit
+// gin consults, not a second one kept alongside.
+func (c ginContext) Committed() bool {
+	return c.ctx.Writer.Written()
+}
+
 func (c ginContext) NativeContext() any {
 	return c.ctx
 }

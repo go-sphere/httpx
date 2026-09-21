@@ -15,6 +15,7 @@ import (
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/binder"
+	"github.com/valyala/fasthttp"
 )
 
 var (
@@ -408,48 +409,94 @@ func (c fiberContext[T]) bindHeader(dst any) error {
 
 // Responder (httpx.Responder)
 
+// writeBody runs one response-writing call under the post-commit rules
+// httpx.Responder documents, and is the single place this adapter applies them.
+//
+// gin, echo and stdx inherit those rules from the http.ResponseWriter they
+// write through: once the header is out, WriteHeader is ignored, Header()
+// changes are dropped and Write appends. fiber offers no writer to intercept —
+// status, headers and body sit in a fasthttp.Response that is serialized only
+// after the handler returns — so all three stay freely rewritable past the
+// point at which a client has conceptually received them, and fiber's writers
+// replace the body rather than extend it. The buffer is the only seam there
+// is, which is why the rules live here rather than in each Responder method.
+//
+// Before the first write there is nothing to protect and the call runs
+// untouched. Afterwards the header block is snapshotted and the body emptied,
+// so that what the call produces can be told apart from what was already
+// there; the snapshot then goes back over whatever the call set, and the two
+// bodies are concatenated. Body materializes a body stream the call may have
+// installed, so DataFromReader appends like any other write, and fasthttp
+// recomputes Content-Length from the body as it serializes, so the restored
+// one cannot go stale.
+func (c fiberContext[T]) writeBody(write func() error) error {
+	if !c.Committed() {
+		err := write()
+		if err == nil {
+			markResponseCommitted(c.ctx)
+		}
+		return err
+	}
+	resp := c.ctx.Response()
+	if resp.IsBodyStream() {
+		// The body has been handed to fasthttp as a stream: there is no buffer
+		// left to append to, and nothing still mutable to freeze.
+		return nil
+	}
+	var header fasthttp.ResponseHeader
+	resp.Header.CopyTo(&header)
+	sent := bytes.Clone(resp.Body())
+	resp.ResetBody()
+	err := write()
+	body := append(sent, resp.Body()...)
+	header.CopyTo(&resp.Header)
+	resp.SetBody(body)
+	return err
+}
+
 func (c fiberContext[T]) Status(code int) {
-	if !responseDecided(c.ctx) {
+	if !c.Committed() {
 		c.ctx.Status(code)
 	}
 }
 
 func (c fiberContext[T]) JSON(code int, v any) error {
-	return c.ctx.Status(code).JSON(v)
+	return c.writeBody(func() error {
+		return c.ctx.Status(code).JSON(v)
+	})
 }
 
 func (c fiberContext[T]) Text(code int, s string) error {
-	err := c.ctx.Status(code).SendString(s)
-	if err == nil && s == "" {
-		markResponseCommitted(c.ctx)
-	}
-	return err
+	return c.writeBody(func() error {
+		return c.ctx.Status(code).SendString(s)
+	})
 }
 
 func (c fiberContext[T]) NoContent(code int) error {
-	c.ctx.Status(code)
-	c.ctx.Response().ResetBody()
-	markResponseCommitted(c.ctx)
-	return nil
+	return c.writeBody(func() error {
+		c.ctx.Status(code)
+		c.ctx.Response().ResetBody()
+		return nil
+	})
 }
 
 func (c fiberContext[T]) Bytes(code int, b []byte, contentType string) error {
-	if contentType == "" {
-		contentType = http.DetectContentType(b)
-	}
-	c.ctx.Set(fiber.HeaderContentType, contentType)
-	err := c.ctx.Status(code).Send(b)
-	if err == nil && len(b) == 0 {
-		markResponseCommitted(c.ctx)
-	}
-	return err
+	return c.writeBody(func() error {
+		if contentType == "" {
+			contentType = http.DetectContentType(b)
+		}
+		c.ctx.Set(fiber.HeaderContentType, contentType)
+		return c.ctx.Status(code).Send(b)
+	})
 }
 
 func (c fiberContext[T]) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
-	if contentType != "" {
-		c.ctx.Set(fiber.HeaderContentType, contentType)
-	}
-	return c.ctx.Status(code).SendStream(r, streamSize(size))
+	return c.writeBody(func() error {
+		if contentType != "" {
+			c.ctx.Set(fiber.HeaderContentType, contentType)
+		}
+		return c.ctx.Status(code).SendStream(r, streamSize(size))
+	})
 }
 
 // streamSize narrows the contract's int64 size to the int that fiber's
@@ -466,29 +513,33 @@ func streamSize(size int64) int {
 }
 
 func (c fiberContext[T]) File(path string) error {
-	return c.ctx.SendFile(path)
+	return c.writeBody(func() error {
+		return c.ctx.SendFile(path)
+	})
 }
 
 func (c fiberContext[T]) Redirect(code int, location string) error {
 	if !httpx.ValidRedirectCode(code) {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
 	}
-	err := c.ctx.Redirect().Status(code).To(location)
-	if err == nil {
-		markResponseCommitted(c.ctx)
-	}
-	return err
+	return c.writeBody(func() error {
+		return c.ctx.Redirect().Status(code).To(location)
+	})
 }
 
 func (c fiberContext[T]) SetHeader(key, value string) {
+	if c.Committed() {
+		return
+	}
 	c.ctx.Set(key, value)
 }
 
 func (c fiberContext[T]) SetCookie(cookie *http.Cookie) {
-	if cookie != nil {
-		if s := cookie.String(); s != "" {
-			c.ctx.Response().Header.Add(fiber.HeaderSetCookie, s)
-		}
+	if cookie == nil || c.Committed() {
+		return
+	}
+	if s := cookie.String(); s != "" {
+		c.ctx.Response().Header.Add(fiber.HeaderSetCookie, s)
 	}
 }
 
@@ -521,6 +572,14 @@ func (c fiberContext[T]) SetContext(ctx context.Context) {
 
 func (c fiberContext[T]) StatusCode() int {
 	return c.ctx.Response().StatusCode()
+}
+
+// Committed reports whether the response header has been written. fiber
+// buffers the whole response, so there is no framework flag to read: the
+// predicate is responseDecided, the same one the router consults before
+// letting the error handler render over a response.
+func (c fiberContext[T]) Committed() bool {
+	return responseDecided(c.ctx)
 }
 
 func (c fiberContext[T]) NativeContext() any {

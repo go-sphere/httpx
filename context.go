@@ -146,11 +146,25 @@ type Binder interface {
 
 // Responder writes HTTP responses in a framework-independent manner.
 //
-// Once a response body is written the response is committed. Committed-response
-// detection is framework-dependent: implementations SHOULD leave a committed
-// response untouched and MAY either return an error or silently no-op when a
-// body-writing method is called again. Callers must not rely on a second write
-// being reported as an error.
+// A response is committed once its header has been written, which every
+// body-writing method below does. From that point the contract is net/http's,
+// measured against a handler writing to an http.ResponseWriter:
+//
+//   - The status freezes at the value the committing call sent. A later Status,
+//     and the code a later body write passes, are both ignored.
+//   - The response headers freeze. A later SetHeader or SetCookie is dropped,
+//     as is any header a later write would have set, its Content-Type included.
+//   - The body appends. Whatever bytes a later write produces are added to what
+//     is already there; a call that produces none — NoContent, an empty Bytes —
+//     leaves the response as it stands.
+//   - None of it is an error. A post-commit write reports success, and no
+//     return value tells a caller it wrote into a committed response. Ask
+//     ResponseInfo.Committed instead.
+//
+// Three adapters inherit this from the ResponseWriter they write through; the
+// two over buffering frameworks (fiber, hertz) reproduce it, because a buffered
+// response would otherwise still be rewritable after the point at which a
+// client has conceptually received it.
 type Responder interface {
 	// Status sets the HTTP status code. It does not write a body, and has no
 	// effect — and reports no error — once the response is committed.
@@ -204,6 +218,20 @@ type Responder interface {
 type ResponseInfo interface {
 	// StatusCode returns the current response status code.
 	StatusCode() int
+
+	// Committed reports whether the response header has been written — exactly
+	// the predicate net/http consults before ignoring a WriteHeader call as
+	// superfluous. Every body-writing Responder method commits. Status alone
+	// does not, on any adapter: it records the code the first write will send.
+	//
+	// net/http exposes no such accessor on http.ResponseWriter, so this is an
+	// addition beyond the standard library rather than a contradiction of it.
+	// It exists because the convention layer above httpx needs it and the
+	// post-commit rules leave it no other way to find out: a recovery or error
+	// middleware deciding whether to render an error body has to know that the
+	// handler already sent one, and the write it would make to find out
+	// succeeds, appends a second document, and reports nothing.
+	Committed() bool
 }
 
 // NativeContextProvider exposes the underlying framework context.

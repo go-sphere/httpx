@@ -17,6 +17,12 @@ import (
 // hertz panic on it natively while echo, fiber and stdx register it, and among
 // those three the parameter is keyed "*" on echo and fiber but "" on stdx. The
 // named form is the one for which Param, Params and BindURI agree on all five.
+//
+// Only the wildcard is checked, so passing is not a portability verdict on the
+// whole path: "/files/*path:archive" satisfies this and WildcardParamName duly
+// returns "path:archive". That shape is outside the grammar Registrar promises
+// and is left unspecified rather than rejected — deliberately, so do not widen
+// this function into a general route validator.
 func ValidateWildcardPath(path string) error {
 	star := strings.IndexByte(path, '*')
 	if star == -1 {

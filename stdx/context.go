@@ -570,6 +570,11 @@ func (c *stdContext) SetContext(ctx context.Context) {
 
 func (c *stdContext) StatusCode() int { return c.rw.status }
 
+// Committed reports whether the response header has been written. The wrapper
+// in responseWriter already records it — it is what keeps an error from being
+// rendered over a response — so this reads net/http's own predicate.
+func (c *stdContext) Committed() bool { return c.rw.written }
+
 func (c *stdContext) NativeContext() any { return &c.native }
 
 // Flush implements httpx.Flusher: the first flush commits status and headers.

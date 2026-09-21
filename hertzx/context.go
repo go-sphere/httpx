@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server/render"
+	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/http1/resp"
 	"github.com/go-sphere/httpx"
 )
@@ -206,62 +207,111 @@ func (c *hertzContext) BindHeader(dst any) error {
 
 // Responder (httpx.Responder)
 
+// writeBody runs one response-writing call under the post-commit rules
+// httpx.Responder documents, and is the single place this adapter applies them.
+//
+// gin, echo and stdx inherit those rules from the http.ResponseWriter they
+// write through: once the header is out, WriteHeader is ignored, Header()
+// changes are dropped and Write appends. hertz offers no writer to intercept —
+// status, headers and body sit in a protocol.Response that is serialized only
+// after the handler returns — so all three stay freely rewritable past the
+// point at which a client has conceptually received them. The buffer is the
+// only seam there is, which is why the rules live here rather than in each
+// Responder method.
+//
+// Before the first write there is nothing to protect and the call runs
+// untouched. Afterwards the header block is snapshotted and the body emptied,
+// so that what the call produces can be told apart from what was already
+// there; the snapshot then goes back over whatever the call set, leaving only
+// its bytes, appended. Body materializes a body stream the call may have
+// installed, so DataFromReader appends like any other write, and hertz
+// recomputes Content-Length from the body as it serializes, so the restored
+// one cannot go stale.
+func (c *hertzContext) writeBody(write func() error) error {
+	if !c.Committed() {
+		err := write()
+		if err == nil {
+			c.ctx.Set(responseCommittedKey, true)
+		}
+		return err
+	}
+	resp := &c.ctx.Response
+	if resp.GetHijackWriter() != nil || resp.IsBodyStream() {
+		// The bytes are already going out over the connection (Stream/SSE) or
+		// have been handed to hertz as a stream: there is no buffer left to
+		// append to, and nothing still mutable to freeze.
+		return nil
+	}
+	var header protocol.ResponseHeader
+	resp.Header.CopyTo(&header)
+	sent := bytes.Clone(resp.Body())
+	resp.ResetBody()
+	err := write()
+	body := append(sent, resp.Body()...)
+	header.CopyTo(&resp.Header)
+	resp.SetBody(body)
+	return err
+}
+
 func (c *hertzContext) Status(code int) {
-	if !hertzResponseCommitted(c.ctx) {
+	if !c.Committed() {
 		c.ctx.Status(code)
 	}
 }
 
 func (c *hertzContext) JSON(code int, v any) error {
-	// Use Hertz's configured marshaler (including ResetJSONMarshal), while
-	// returning encoding failures instead of letting RequestContext.JSON panic.
-	r := render.JSONRender{Data: v}
-	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+	return c.writeBody(func() error {
+		// Use Hertz's configured marshaler (including ResetJSONMarshal), while
+		// returning encoding failures instead of letting RequestContext.JSON
+		// panic.
+		r := render.JSONRender{Data: v}
+		if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+			c.ctx.Status(code)
+			r.WriteContentType(&c.ctx.Response)
+			return nil
+		}
+		if err := r.Render(&c.ctx.Response); err != nil {
+			return err
+		}
 		c.ctx.Status(code)
-		r.WriteContentType(&c.ctx.Response)
-		c.ctx.Set(responseCommittedKey, true)
 		return nil
-	}
-	if err := r.Render(&c.ctx.Response); err != nil {
-		return err
-	}
-	c.ctx.Status(code)
-	return nil
+	})
 }
 
 func (c *hertzContext) Text(code int, s string) error {
-	c.ctx.String(code, s)
-	if s == "" {
-		c.ctx.Set(responseCommittedKey, true)
-	}
-	return nil
+	return c.writeBody(func() error {
+		c.ctx.String(code, s)
+		return nil
+	})
 }
 
 func (c *hertzContext) NoContent(code int) error {
-	c.ctx.Status(code)
-	c.ctx.Response.ResetBody()
-	c.ctx.Set(responseCommittedKey, true)
-	return nil
+	return c.writeBody(func() error {
+		c.ctx.Status(code)
+		c.ctx.Response.ResetBody()
+		return nil
+	})
 }
 
 func (c *hertzContext) Bytes(code int, b []byte, contentType string) error {
-	if contentType == "" {
-		contentType = http.DetectContentType(b)
-	}
-	c.ctx.Data(code, contentType, b)
-	if len(b) == 0 {
-		c.ctx.Set(responseCommittedKey, true)
-	}
-	return nil
+	return c.writeBody(func() error {
+		if contentType == "" {
+			contentType = http.DetectContentType(b)
+		}
+		c.ctx.Data(code, contentType, b)
+		return nil
+	})
 }
 
 func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
-	if contentType != "" {
-		c.ctx.SetContentType(contentType)
-	}
-	c.ctx.Status(code)
-	c.ctx.SetBodyStream(r, streamSize(size))
-	return nil
+	return c.writeBody(func() error {
+		if contentType != "" {
+			c.ctx.SetContentType(contentType)
+		}
+		c.ctx.Status(code)
+		c.ctx.SetBodyStream(r, streamSize(size))
+		return nil
+	})
 }
 
 // streamSize narrows the contract's int64 size to the int that hertz's
@@ -278,25 +328,31 @@ func streamSize(size int64) int {
 }
 
 func (c *hertzContext) File(path string) error {
-	c.ctx.File(path)
-	return nil
+	return c.writeBody(func() error {
+		c.ctx.File(path)
+		return nil
+	})
 }
 
 func (c *hertzContext) Redirect(code int, location string) error {
 	if !httpx.ValidRedirectCode(code) {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
 	}
-	c.ctx.Redirect(code, []byte(location))
-	c.ctx.Set(responseCommittedKey, true)
-	return nil
+	return c.writeBody(func() error {
+		c.ctx.Redirect(code, []byte(location))
+		return nil
+	})
 }
 
 func (c *hertzContext) SetHeader(key, value string) {
+	if c.Committed() {
+		return
+	}
 	c.ctx.Header(key, value)
 }
 
 func (c *hertzContext) SetCookie(cookie *http.Cookie) {
-	if cookie == nil {
+	if cookie == nil || c.Committed() {
 		return
 	}
 	// Serialize via net/http for full fidelity (Expires, Partitioned, no
@@ -335,6 +391,14 @@ func (c *hertzContext) SetContext(ctx context.Context) {
 
 func (c *hertzContext) StatusCode() int {
 	return c.ctx.Response.StatusCode()
+}
+
+// Committed reports whether the response header has been written. hertz
+// buffers the whole response, so there is no framework flag to read: the
+// predicate is hertzResponseCommitted, the same one the router consults before
+// letting the error handler render over a response.
+func (c *hertzContext) Committed() bool {
+	return hertzResponseCommitted(c.ctx)
 }
 
 func (c *hertzContext) NativeContext() any {

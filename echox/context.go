@@ -403,6 +403,13 @@ func (c *echoContext) StatusCode() int {
 	return c.ctx.Response().Status
 }
 
+// Committed reports whether the response header has been written. echo sets
+// Response.Committed in WriteHeader and consults it exactly where net/http
+// does, so this is the same bit echo itself uses.
+func (c *echoContext) Committed() bool {
+	return c.ctx.Response().Committed
+}
+
 func (c *echoContext) NativeContext() any {
 	return c.ctx
 }

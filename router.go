@@ -19,9 +19,23 @@ type Handler func(Context) error
 // at registration time. Which methods Any matches beyond the standard set is
 // also framework-dependent.
 //
-// Wildcard paths must satisfy ValidateWildcardPath (a single named wildcard
-// as the final path segment); adapters panic at registration for other
-// shapes, matching gin/hertz native behavior.
+// The portable path grammar is three shapes and nothing else: a static
+// segment, a ":name" parameter filling exactly one segment, and a single
+// "*name" wildcard as the final segment. stdx is the reference implementation
+// — what its router accepts is what httpx promises. The wildcard rule is
+// enforced by ValidateWildcardPath, which every adapter calls from every
+// registration entry point, so all five panic identically, with that error
+// rather than a framework's, on any other wildcard shape.
+//
+// Any other path syntax is unspecified: no restriction, and no promise. The
+// case that comes up is a literal colon inside a segment
+// ("/v1/reports:generate", the custom-method form google.api.http uses), and
+// the five adapters disagree about all of it — whether the colon introduces a
+// parameter or is matched literally, whether two such routes sharing a prefix
+// register or panic, and which of them a request reaches when they do. httpx
+// neither rejects these paths nor makes them agree. A path outside the grammar
+// may panic at registration, match requests it should not, or silently collide
+// with a sibling route; no conformance case covers it, and none will.
 type Registrar interface {
 	Handle(method, path string, h Handler)
 	Any(path string, h Handler)

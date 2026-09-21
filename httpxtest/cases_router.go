@@ -101,6 +101,42 @@ func casesRouter(t *testing.T, r runner) {
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/api/v1/base", nil))
 	})
 
+	// The whole promised path grammar, in one route table: a static segment, a
+	// ":name" parameter filling exactly one segment, and one "*name" wildcard
+	// taking the rest. Each shape is pinned on its own elsewhere; what this adds
+	// is that they coexist, and that a static segment beats a parameter for the
+	// path both could match. Nothing outside these three shapes belongs in this
+	// suite — see the Registrar doc comment for why they have no agreed answer.
+	t.Run("SupportedGrammar", func(t *testing.T) {
+		register := func(router httpx.Router) {
+			router.GET("/grammar/exact", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "static")
+			})
+			router.GET("/grammar/:id", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "param:"+ctx.Param("id"))
+			})
+			router.GET("/grammar/files/*path", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "wildcard:"+ctx.Param("path"))
+			})
+		}
+
+		for _, tc := range []struct{ name, path, want string }{
+			{"Static", "/grammar/exact", "static"},
+			{"Param", "/grammar/42", "param:42"},
+			{"Wildcard", "/grammar/files/a/b.txt", "wildcard:a/b.txt"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := r.serve(t, register, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.path, nil))
+				if got.Status != http.StatusOK {
+					t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
+				}
+				if got.Body != tc.want {
+					t.Fatalf("body = %q, want %q", got.Body, tc.want)
+				}
+			})
+		}
+	})
+
 	t.Run("Handle", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
 			router.Handle(http.MethodPut, "/api/handle", func(ctx httpx.Context) error {
