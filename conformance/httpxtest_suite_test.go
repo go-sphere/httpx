@@ -1,3 +1,9 @@
+// Package conformance holds the cross-adapter tests that cannot live in
+// httpxtest: the httpxtest.Suite definitions for all five adapters, tests that
+// need a real listener (engine lifecycle, trusted proxies, streaming, shutdown),
+// framework-specific native-context cases, the concurrency stress test and the
+// cross-framework benchmark tables. It contains only tests and is not meant to
+// be imported.
 package conformance
 
 import (

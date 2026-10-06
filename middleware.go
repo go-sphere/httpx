@@ -37,6 +37,10 @@ type Middleware func(next Handler) Handler
 // Engine include it, so a caller holding either interface calls Use directly;
 // it is still a named interface of its own for code that accepts any scope.
 type MiddlewareScope interface {
+	// Use appends m to this scope in registration order; the first layer
+	// registered is the outermost. Layers apply to routes registered after
+	// the call, including routes of groups created earlier from this scope;
+	// routes already registered keep their chain. Nil layers are ignored.
 	Use(m ...Middleware)
 }
 

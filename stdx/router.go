@@ -20,6 +20,9 @@ var anyMethods = []string{
 	http.MethodConnect, http.MethodTrace,
 }
 
+// Router is the stdx route scope returned by [Engine.Group] and
+// [Router.Group]. Its zero value is not usable. Register routes before the
+// engine starts serving.
 type Router struct {
 	engine   *Engine
 	basePath string
@@ -36,6 +39,7 @@ func (r *Router) Use(m ...httpx.Middleware) {
 	r.chain.Use(m...)
 }
 
+// BasePath returns this scope's absolute prefix, "/" for the root.
 func (r *Router) BasePath() string {
 	if r.basePath == "" {
 		return "/"
@@ -54,6 +58,8 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 	}
 }
 
+// Group returns a nested scope under prefix with m registered on it as if by
+// Use.
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := r.chain.Sub()
 	sub.Use(m...)
@@ -64,6 +70,11 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+// Handle registers h for method (upper-cased) and path joined onto
+// BasePath, wrapped in the middleware registered so far on this scope and its
+// parents. It panics on an invalid wildcard (httpx.ValidateWildcardPath), on a
+// duplicate method and pattern, and on a parameter or wildcard whose name
+// conflicts with one already registered at the same position.
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	if err := httpx.ValidateWildcardPath(path); err != nil {
 		panic(err)
@@ -82,12 +93,15 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 	r.Handle(method, path, stdLeaf(h))
 }
 
+// Any registers h for path under all nine standard HTTP methods.
 func (r *Router) Any(path string, h httpx.Handler) {
 	for _, method := range anyMethods {
 		r.Handle(method, path, h)
 	}
 }
 
+// Static serves the directory root at prefix; it is StaticFS with
+// os.DirFS(root).
 func (r *Router) Static(prefix, root string) {
 	r.StaticFS(prefix, os.DirFS(root))
 }

@@ -117,9 +117,19 @@ type Native struct {
 	c *stdContext
 }
 
-func (n *Native) Request() *http.Request              { return n.c.req }
-func (n *Native) SetRequest(req *http.Request)        { n.c.req = req }
+// Request returns the current request.
+func (n *Native) Request() *http.Request { return n.c.req }
+
+// SetRequest replaces the request the rest of the chain reads from.
+func (n *Native) SetRequest(req *http.Request) { n.c.req = req }
+
+// ResponseWriter returns the adapter's writer, which tracks whether the
+// response was committed. Write through it, not around it, so Committed and
+// error rendering stay accurate.
 func (n *Native) ResponseWriter() http.ResponseWriter { return &n.c.rw }
+
+// SetWriter replaces the underlying writer the adapter's writer forwards to,
+// for example with a wrapping writer from a net/http middleware.
 func (n *Native) SetWriter(w http.ResponseWriter) {
 	n.c.rw.ResponseWriter = w
 	// A wrapping writer may own a different header map.
@@ -133,8 +143,16 @@ func (n *Native) SetWriter(w http.ResponseWriter) {
 // caller can see.
 func (n *Native) Engine() *Engine { return n.c.engine }
 
-func (n *Native) Written() bool                                { return n.c.rw.written }
-func (n *Native) MarkWritten(status int)                       { n.c.rw.markWritten(status) }
+// Written reports whether the response has been committed.
+func (n *Native) Written() bool { return n.c.rw.written }
+
+// MarkWritten records that the response was committed with status through
+// the underlying writer directly, so no error body is rendered over it. It
+// has no effect when the response is already committed.
+func (n *Native) MarkWritten(status int) { n.c.rw.markWritten(status) }
+
+// Unwrap returns the writer and request a net/http handler should be served
+// with; it is ResponseWriter and Request in one call.
 func (n *Native) Unwrap() (http.ResponseWriter, *http.Request) { return &n.c.rw, n.c.req }
 
 // Request (httpx.Request)

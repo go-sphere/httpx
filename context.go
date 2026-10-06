@@ -12,6 +12,7 @@ import (
 // All methods are side-effect-free: they MUST NOT consume the request body,
 // trigger form parsing, or mutate any internal request state.
 type RequestInfo interface {
+	// Method returns the request method, such as "GET".
 	Method() string
 	Path() string     // Always returns the decoded request path
 	FullPath() string // Returns a route pattern when available, empty otherwise
@@ -28,13 +29,20 @@ type RequestInfo interface {
 	// framework-dependent; behind a single proxy layer all adapters agree.
 	ClientIP() string
 
+	// Param returns the value of the route parameter key, or "" when the
+	// matched route has no such parameter. A named wildcard (/files/*path)
+	// yields the rest of the path without a leading slash ("a/b.txt").
 	Param(key string) string
 	Params() map[string]string // nil if no params
 
+	// Query returns the first URL query value for key, or "" when absent.
 	Query(key string) string
 	Queries() map[string][]string // nil if no queries
+	// RawQuery returns the encoded query string, without the leading "?".
 	RawQuery() string
 
+	// Header returns the first value of the request header key, matched
+	// case-insensitively, or "" when absent.
 	Header(key string) string
 	Headers() map[string][]string // nil if no headers
 
@@ -239,6 +247,8 @@ type ResponseInfo interface {
 // This optional capability is an escape hatch for framework-specific features
 // that are intentionally not included in the cross-framework Context surface.
 type NativeContextProvider interface {
+	// NativeContext returns the framework's own request context. Its dynamic
+	// type is adapter-specific; each adapter documents what it returns.
 	NativeContext() any
 }
 
@@ -314,7 +324,12 @@ func ValidRedirectCode(code int) bool {
 	return code >= http.StatusMultipleChoices && code <= http.StatusPermanentRedirect
 }
 
-// AsNativeContext returns the underlying native context when supported.
+// AsNativeContext returns ctx's underlying framework context as T. It reports
+// false when ctx does not implement [NativeContextProvider] or when the native
+// context is not a T; the zero T is returned then. Each adapter documents its
+// native type (for example *gin.Context on ginx, *stdx.Native on stdx).
+//
+//	gc, ok := httpx.AsNativeContext[*gin.Context](ctx)
 func AsNativeContext[T any](ctx Context) (T, bool) {
 	var zero T
 	nativeProvider, ok := ctx.(NativeContextProvider)

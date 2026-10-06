@@ -59,6 +59,9 @@ func (t *wildcardTable) lookup(pattern string) (wildcardRoute, bool) {
 	return route, ok
 }
 
+// Router is the echo route scope returned by [Engine.Group] and
+// [Router.Group], wrapping an *echo.Group. Its zero value is not usable.
+// Register routes before the engine starts serving.
 type Router struct {
 	group      *echo.Group
 	basePath   string
@@ -87,10 +90,15 @@ func (r *Router) UseNative(middleware ...echo.MiddlewareFunc) {
 	r.group.Use(middleware...)
 }
 
+// BasePath returns this scope's absolute prefix, the group prefixes joined
+// with a trailing slash the caller wrote kept.
 func (r *Router) BasePath() string {
 	return r.basePath
 }
 
+// SupportsRouterFeature reports every feature as unsupported natively. Named
+// wildcards still work: Handle rewrites them to echo's anonymous form and
+// keeps the name for Param, BindURI and FullPath.
 func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 	switch feature {
 	case httpx.RouterFeatureNamedWildcard:
@@ -100,6 +108,8 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 	}
 }
 
+// Group returns a nested scope under prefix with m registered on it as if by
+// Use.
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	base := joinPaths(r.basePath, prefix)
 	sub := r.chain.Sub()
@@ -133,6 +143,10 @@ func (r *Router) normalizeWildcardPath(path string) string {
 	return fixed
 }
 
+// Handle registers h for method (upper-cased) and path joined onto BasePath,
+// wrapped in the httpx middleware registered so far on this scope and its
+// parents. A named wildcard is rewritten for echo and its name kept. It panics
+// on an invalid wildcard (httpx.ValidateWildcardPath).
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	r.group.Add(strings.ToUpper(method), r.echoPath(path), r.toEchoHandler(h))
 }
@@ -150,10 +164,14 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 	r.Handle(method, path, stdLeaf(h))
 }
 
+// Any registers h for path with echo's Any, so the method set beyond the
+// standard ones is echo's.
 func (r *Router) Any(path string, h httpx.Handler) {
 	r.group.Any(r.echoPath(path), r.toEchoHandler(h))
 }
 
+// Static serves the directory root at prefix; it is StaticFS with
+// os.DirFS(root).
 func (r *Router) Static(prefix, root string) {
 	r.StaticFS(prefix, os.DirFS(root))
 }

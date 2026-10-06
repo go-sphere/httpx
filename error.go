@@ -9,12 +9,14 @@ import (
 // StatusError is an error carrying an HTTP status code.
 type StatusError interface {
 	error
+	// GetStatus returns the HTTP status code the error should be rendered with.
 	GetStatus() int32
 }
 
 // CodeError is an error carrying an application-specific error code.
 type CodeError interface {
 	error
+	// GetCode returns the application-specific error code.
 	GetCode() int32
 }
 
@@ -22,10 +24,15 @@ type CodeError interface {
 // technical detail in Error().
 type MessageError interface {
 	error
+	// GetMessage returns the message that is safe to show to clients; it
+	// may be empty.
 	GetMessage() string
 }
 
 // Error carries an HTTP status, an application code and a user message.
+// Construct one with NewError, WithStatus or a status helper such as
+// NewNotFoundError or BadRequestError; the concrete type is unexported. The
+// returned values unwrap to the error they were built from.
 type Error interface {
 	error
 	StatusError
@@ -76,6 +83,12 @@ func NewError(status, code int32, message string, err error) Error {
 	}
 }
 
+// WithStatus wraps err as an Error with the given HTTP status. The code is
+// taken from the first CodeError in err's chain, or 0. The user message is
+// messages joined with "; ", and empty when none are given; err's own text
+// is never used as the message. The new status takes precedence over any
+// status err already carries. A nil err is replaced by an error whose text is
+// the status text.
 func WithStatus(status int32, err error, messages ...string) Error {
 	code := int32(0)
 	var se CodeError
@@ -85,46 +98,63 @@ func WithStatus(status int32, err error, messages ...string) Error {
 	return NewError(status, code, strings.Join(messages, "; "), err)
 }
 
+// NewWithStatus returns a new Error with the given HTTP status and code 0,
+// using message both as the user message and as the Error() text.
 func NewWithStatus(status int32, message string) Error {
 	return NewError(status, 0, message, errors.New(message))
 }
 
+// BadRequestError wraps err with status 400; see WithStatus.
 func BadRequestError(err error, messages ...string) Error {
 	return WithStatus(http.StatusBadRequest, err, messages...)
 }
 
+// NewBadRequestError returns a new 400 Error carrying message; see
+// NewWithStatus.
 func NewBadRequestError(message string) Error {
 	return NewWithStatus(http.StatusBadRequest, message)
 }
 
+// UnauthorizedError wraps err with status 401; see WithStatus.
 func UnauthorizedError(err error, messages ...string) Error {
 	return WithStatus(http.StatusUnauthorized, err, messages...)
 }
 
+// NewUnauthorizedError returns a new 401 Error carrying message; see
+// NewWithStatus.
 func NewUnauthorizedError(message string) Error {
 	return NewWithStatus(http.StatusUnauthorized, message)
 }
 
+// ForbiddenError wraps err with status 403; see WithStatus.
 func ForbiddenError(err error, messages ...string) Error {
 	return WithStatus(http.StatusForbidden, err, messages...)
 }
 
+// NewForbiddenError returns a new 403 Error carrying message; see
+// NewWithStatus.
 func NewForbiddenError(message string) Error {
 	return NewWithStatus(http.StatusForbidden, message)
 }
 
+// NotFoundError wraps err with status 404; see WithStatus.
 func NotFoundError(err error, messages ...string) Error {
 	return WithStatus(http.StatusNotFound, err, messages...)
 }
 
+// NewNotFoundError returns a new 404 Error carrying message; see
+// NewWithStatus.
 func NewNotFoundError(message string) Error {
 	return NewWithStatus(http.StatusNotFound, message)
 }
 
+// InternalServerError wraps err with status 500; see WithStatus.
 func InternalServerError(err error, messages ...string) Error {
 	return WithStatus(http.StatusInternalServerError, err, messages...)
 }
 
+// NewInternalServerError returns a new 500 Error carrying message; see
+// NewWithStatus.
 func NewInternalServerError(message string) Error {
 	return NewWithStatus(http.StatusInternalServerError, message)
 }
@@ -145,8 +175,12 @@ func WrapBindError(err error) error {
 // ErrorBody is the JSON written by adapter default error handlers.
 // It matches the public fields of sphere/httpz.ErrorResponse (no debug Error).
 type ErrorBody struct {
-	Success bool   `json:"success"`
-	Code    int    `json:"code"`
+	// Success is always false for an error body.
+	Success bool `json:"success"`
+	// Code is the application code from CodeError, or 0.
+	Code int `json:"code"`
+	// Message is the error's user message, or the HTTP status text when it
+	// carries none.
 	Message string `json:"message"`
 }
 

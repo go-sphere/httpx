@@ -15,6 +15,8 @@ import (
 
 var _ httpx.Engine = (*Engine)(nil)
 
+// Config is the resolved configuration [New] builds an [Engine] from. Its
+// fields are unexported; set them with [Option] values.
 type Config struct {
 	engine      *echo.Echo
 	server      *http.Server
@@ -22,8 +24,15 @@ type Config struct {
 	ipExtractor echo.IPExtractor
 }
 
+// Option configures an [Engine] at construction. Options are applied in
+// order, so a later option overrides an earlier one touching the same setting.
 type Option func(*Config)
 
+// NewConfig applies opts in order and fills the defaults: echo.New(), an
+// http.Server listening on ":8080", and [DefaultErrorHandler] in
+// Echo.HTTPErrorHandler unless [WithErrorHandler] was given or the supplied
+// Echo already has a non-default handler. [New] calls it; most callers pass
+// options to New directly.
 func NewConfig(opts ...Option) *Config {
 	conf := &Config{}
 	for _, opt := range opts {
@@ -91,12 +100,26 @@ func normalizeEchoError(err error) error {
 	return err
 }
 
+// WithEngine uses engine instead of a new echo.New(). A custom
+// HTTPErrorHandler already set on it keeps rendering errors unless
+// [WithErrorHandler] is also given; echo's default handler is replaced by
+// [DefaultErrorHandler]. [New] wraps the
+// handler and adds one native middleware; setting HTTPErrorHandler after New
+// returns replaces the adapter's, and engine-scope httpx middleware then no
+// longer covers unmatched paths.
 func WithEngine(engine *echo.Echo) Option {
 	return func(conf *Config) {
 		conf.engine = engine
 	}
 }
 
+// WithServer supplies the http.Server to serve with. [New] installs the echo
+// instance as its Handler, replacing any handler already set; the server's
+// other fields are kept. Start serves plain HTTP on a listener it binds
+// itself, so the server's TLS configuration is not used.
+//
+// Order matters with [WithAddr]: WithAddr after WithServer sets Addr on this
+// server, while WithServer after WithAddr replaces the server WithAddr made.
 func WithServer(server *http.Server) Option {
 	return func(conf *Config) {
 		conf.server = server
@@ -104,7 +127,8 @@ func WithServer(server *http.Server) Option {
 }
 
 // WithAddr sets the listen address, creating the http.Server when none was
-// supplied. It is the framework-neutral option present on every adapter.
+// supplied. It is the framework-neutral option present on every adapter. The
+// default is ":8080"; an empty address listens on ":http".
 func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		if conf.server == nil {
@@ -156,6 +180,10 @@ func WithTrustedProxies(proxies ...string) Option {
 	}
 }
 
+// Engine is the echo-backed httpx.Engine returned by [New]. It also
+// implements httpx.TestRequester through [Engine.Do]. Its zero value is not
+// usable. Register routes and middleware before serving. An Engine is
+// single-use: once stopped, Start returns httpx.ErrEngineClosed.
 type Engine struct {
 	engine     *echo.Echo
 	server     *http.Server
@@ -178,6 +206,9 @@ type Engine struct {
 	closed    atomic.Bool
 }
 
+// New constructs an echo-backed Engine configured by opts. The dynamic type is
+// *[Engine]. New does not listen; call Start to serve. It panics when
+// [WithTrustedProxies] was given an invalid entry.
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	wildcards := &wildcardTable{}
@@ -299,6 +330,8 @@ func (e *Engine) UseNative(middleware ...echo.MiddlewareFunc) {
 	e.engine.Use(middleware...)
 }
 
+// Group returns a [Router] for prefix with m registered on it as if by Use;
+// "" and "/" both mean the root.
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	base := joinPaths("/", prefix)
 	sub := e.chain.Sub()
@@ -312,6 +345,10 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+// Start binds the server's address (":http" when empty), then serves until
+// [Engine.Stop]. IsRunning becomes true only after the listener is bound. It
+// returns nil after Stop, httpx.ErrEngineClosed when Stop was already called,
+// and the listen or serve error otherwise.
 func (e *Engine) Start() error {
 	if e.closed.Load() {
 		return httpx.ErrEngineClosed
@@ -333,6 +370,11 @@ func (e *Engine) Start() error {
 	return nil
 }
 
+// Stop marks the engine closed and shuts the server down with httpx.Close:
+// in-flight requests drain until ctx is done, after which the server is
+// force-closed, cutting the connections still being served, and nil is
+// returned. A nil ctx waits indefinitely. After Stop, Start returns
+// httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
 	// httpx.Close force-closes when the graceful drain fails, so the server is

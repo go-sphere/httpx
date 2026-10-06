@@ -14,8 +14,13 @@ import (
 
 var _ httpx.Engine = (*Engine)(nil)
 
+// ErrorHandler is gin's native error-handler shape, accepted by
+// [WithNativeErrorHandler]. It is called with the gin context and the error a
+// handler, middleware or unmatched route produced, and owns the response.
 type ErrorHandler func(ctx *gin.Context, err error)
 
+// Config is the resolved configuration [New] builds an [Engine] from. Its
+// fields are unexported; set them with [Option] values.
 type Config struct {
 	engine            *gin.Engine
 	server            *http.Server
@@ -25,8 +30,13 @@ type Config struct {
 	setTrustedProxies bool
 }
 
+// Option configures an [Engine] at construction. Options are applied in
+// order, so a later option overrides an earlier one touching the same setting.
 type Option func(*Config)
 
+// NewConfig applies opts in order and fills the defaults: gin.New(), an
+// http.Server listening on ":8080" and [DefaultErrorHandler]. [New] calls it;
+// most callers pass options to New directly.
 func NewConfig(opts ...Option) *Config {
 	conf := Config{}
 	for _, opt := range opts {
@@ -54,12 +64,24 @@ func DefaultErrorHandler(ctx *gin.Context, err error) {
 	ctx.Abort()
 }
 
+// WithEngine uses engine instead of a new gin.New(). [New] enables gin's
+// HandleMethodNotAllowed on it and replaces any NoRoute/NoMethod handlers so
+// unmatched requests are rendered by the configured error handler; handlers
+// set on engine after New returns win. Middleware already registered on engine
+// is kept and runs outside every httpx layer.
 func WithEngine(engine *gin.Engine) Option {
 	return func(conf *Config) {
 		conf.engine = engine
 	}
 }
 
+// WithServer supplies the http.Server to serve with. [New] installs the gin
+// engine as its Handler, replacing any handler already set; the server's
+// other fields are kept. Start serves plain HTTP on a listener it binds
+// itself, so the server's TLS configuration is not used.
+//
+// Order matters with [WithAddr]: WithAddr after WithServer sets Addr on this
+// server, while WithServer after WithAddr replaces the server WithAddr made.
 func WithServer(server *http.Server) Option {
 	return func(conf *Config) {
 		conf.server = server
@@ -72,7 +94,8 @@ func WithServer(server *http.Server) Option {
 //
 // The gin context is aborted afterwards unless the handler already did it:
 // the handler owns the response, and letting gin continue into the remaining
-// chain would let a later layer write over the error body.
+// chain would let a later layer write over the error body. A nil errHandler is
+// ignored.
 func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
 		if errHandler == nil {
@@ -97,7 +120,8 @@ func WithNativeErrorHandler(errHandler ErrorHandler) Option {
 }
 
 // WithAddr sets the listen address, creating the http.Server when none was
-// supplied. It is the framework-neutral option present on every adapter.
+// supplied. It is the framework-neutral option present on every adapter. The
+// default is ":8080"; an empty address listens on ":http".
 func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		if conf.server == nil {
@@ -134,6 +158,10 @@ func WithTrustedProxies(proxies ...string) Option {
 	}
 }
 
+// Engine is the gin-backed httpx.Engine returned by [New]. It also implements
+// httpx.TestRequester through [Engine.Do]. Its zero value is not usable.
+// Register routes and middleware before serving. An Engine is single-use: once
+// stopped, Start returns httpx.ErrEngineClosed.
 type Engine struct {
 	engine     *gin.Engine
 	server     *http.Server
@@ -149,7 +177,9 @@ type Engine struct {
 	closed     atomic.Bool
 }
 
-// New constructs a gin-backed Engine using core options.
+// New constructs a gin-backed Engine configured by opts. The dynamic type is
+// *[Engine]. New does not listen; call Start to serve. It panics when
+// [WithTrustedProxies] was given an invalid entry.
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	if conf.defaultMiddleware {
@@ -245,6 +275,8 @@ func (e *Engine) UseNative(handlers ...gin.HandlerFunc) {
 	e.engine.Use(handlers...)
 }
 
+// Group returns a [Router] for prefix with m registered on it as if by Use;
+// "" and "/" both mean the root.
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := e.chain.Sub()
 	sub.Use(m...)
@@ -255,6 +287,10 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+// Start binds the server's address (":http" when empty), then serves until
+// [Engine.Stop]. IsRunning becomes true only after the listener is bound. It
+// returns nil after Stop, httpx.ErrEngineClosed when Stop was already called,
+// and the listen or serve error otherwise.
 func (e *Engine) Start() error {
 	if e.closed.Load() {
 		return httpx.ErrEngineClosed
@@ -276,6 +312,11 @@ func (e *Engine) Start() error {
 	return nil
 }
 
+// Stop marks the engine closed and shuts the server down with httpx.Close:
+// in-flight requests drain until ctx is done, after which the server is
+// force-closed, cutting the connections still being served, and nil is
+// returned. A nil ctx waits indefinitely. After Stop, Start returns
+// httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
 	// httpx.Close force-closes when the graceful drain fails, so the server is

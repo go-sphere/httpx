@@ -1,25 +1,3 @@
-// Package httpxtest is the shared conformance suite for httpx adapters.
-//
-// An adapter provides a Suite — a name, a capability declaration, and a
-// function that builds an Engine — and calls Run from its own module's tests:
-//
-//	func TestConformance(t *testing.T) {
-//		httpxtest.Run(t, httpxtest.Suite{
-//			Name: "ginx",
-//			Caps: httpxtest.Caps{NamedWildcard: true, Flusher: true},
-//			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
-//				...
-//			},
-//		})
-//	}
-//
-// Response shape is checked against the golden contracts embedded in this
-// package, so the suite states what a response must look like instead of
-// asserting that the adapters agree with each other. Set HTTPX_UPDATE_GOLDEN=1
-// to rewrite them from a source checkout, then run the suite for every adapter
-// to confirm they all still match. The package is deliberately importable from
-// outside this repository, so a third-party adapter can certify itself against
-// the same contract as the official four.
 package httpxtest
 
 import (
@@ -105,7 +83,10 @@ type Suite struct {
 	NativeMiddleware func(scope any, mark func(string))
 }
 
-// Run executes every shared case against s.
+// Run executes every shared case against s, one subtest per case group.
+// Suite.Name and Suite.NewEngine are required; Run fails t immediately when
+// either is missing. Cases needing a capability s.Caps does not declare, or a
+// nil optional hook, are skipped with a reason.
 func Run(t *testing.T, s Suite) {
 	t.Helper()
 	if s.Name == "" {

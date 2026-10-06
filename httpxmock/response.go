@@ -61,9 +61,11 @@ type ResponseWrite struct {
 	// other kind.
 	Value any
 
-	// Location is the target of a Redirect, Path the argument of a File.
+	// Location is the target of a Redirect; empty for every other kind.
 	Location string
-	Path     string
+
+	// Path is the argument of a File call; empty for every other kind.
+	Path string
 
 	// Body is the bytes this call appended to the response, which is empty
 	// when the status forbids a body.

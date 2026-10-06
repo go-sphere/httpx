@@ -62,6 +62,9 @@ func wildcardRouteOf(native fiber.Ctx) *wildcardRoute {
 	return route
 }
 
+// Router is the fiber route scope returned by [Engine.Group] and
+// [Router.Group], wrapping a fiber.Router. Its zero value is not usable.
+// Register routes before the engine starts serving.
 type Router struct {
 	basePath   string
 	group      fiber.Router
@@ -95,6 +98,7 @@ func (r *Router) UseNative(handlers ...fiber.Handler) {
 	}
 }
 
+// BasePath returns this scope's absolute prefix, "/" for the root.
 func (r *Router) BasePath() string {
 	if r.basePath == "" {
 		return "/"
@@ -102,6 +106,9 @@ func (r *Router) BasePath() string {
 	return r.basePath
 }
 
+// SupportsRouterFeature reports every feature as unsupported natively. Named
+// wildcards still work: Handle rewrites them to fiber's anonymous form and
+// keeps the name for Param, BindURI and FullPath.
 func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 	switch feature {
 	case httpx.RouterFeatureNamedWildcard:
@@ -111,6 +118,8 @@ func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
 	}
 }
 
+// Group returns a nested scope under prefix with m registered on it as if by
+// Use.
 func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := r.chain.Sub()
 	sub.Use(m...)
@@ -143,6 +152,10 @@ func (r *Router) normalizeWildcardPath(path string) (string, *wildcardRoute) {
 	}
 }
 
+// Handle registers h for method (upper-cased) and path on the fiber group,
+// wrapped in the httpx middleware registered so far on this scope and its
+// parents. A named wildcard is rewritten for fiber and its name kept. It
+// panics on an invalid wildcard (httpx.ValidateWildcardPath).
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	methods := []string{strings.ToUpper(method)}
 	fixed, wildcard := r.normalizeWildcardPath(path)
@@ -155,11 +168,15 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 	r.Handle(method, path, stdLeaf(h))
 }
 
+// Any registers h for path with fiber's All, so the method set beyond the
+// standard ones is fiber's.
 func (r *Router) Any(path string, h httpx.Handler) {
 	fixed, wildcard := r.normalizeWildcardPath(path)
 	r.group.All(fixed, r.adaptHandler(h, wildcard))
 }
 
+// Static serves the directory root at prefix; it is StaticFS with
+// os.DirFS(root).
 func (r *Router) Static(prefix, root string) {
 	r.StaticFS(prefix, os.DirFS(root))
 }
