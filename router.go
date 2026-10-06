@@ -7,7 +7,10 @@ import (
 	"net/http"
 )
 
-// Handler is the canonical function signature for framework adapters.
+// Handler serves one request through ctx. Returning a non-nil error asks the
+// adapter to render it with the configured error handler; an error returned
+// after the response was committed does not change the response, but still
+// reaches the middleware layers above the handler as next's return value.
 type Handler func(Context) error
 
 // Registrar registers handlers on a router scope.
@@ -37,9 +40,23 @@ type Handler func(Context) error
 // may panic at registration, match requests it should not, or silently collide
 // with a sibling route; no conformance case covers it, and none will.
 type Registrar interface {
+	// Handle registers h for method and path, joined onto this scope's prefix.
+	// Middleware registered on this scope and its parents so far wraps h; see
+	// MiddlewareChain. An unsupported wildcard shape panics with the error
+	// from ValidateWildcardPath.
 	Handle(method, path string, h Handler)
+
+	// Any registers h for path under every standard HTTP method.
 	Any(path string, h Handler)
+
+	// Static serves the files under the root directory at prefix; it is
+	// StaticFS with os.DirFS(root).
 	Static(prefix, root string)
+
+	// StaticFS serves fs at prefix through StaticFileHandler, registered as
+	// GET and HEAD routes, so middleware on this scope wraps static requests.
+	// Directory listings are never served: a directory without index.html
+	// answers 404.
 	StaticFS(prefix string, fs fs.FS)
 }
 
@@ -73,21 +90,31 @@ const (
 
 // RouterFeatureProvider exposes optional router capability detection.
 type RouterFeatureProvider interface {
+	// SupportsRouterFeature reports whether the underlying router natively
+	// supports feature. A false answer does not make the feature unusable
+	// through httpx: adapters emulate named wildcards, for example.
 	SupportsRouterFeature(feature RouterFeature) bool
 }
 
-// Router is a full-featured route scope.
+// Router is a route scope: a path prefix plus the middleware registered on it
+// and its parents. Obtain the first one from Engine.Group and nest further
+// scopes with Group. Register routes and middleware before the engine starts
+// serving.
 type Router interface {
 	Registrar
 	MiddlewareScope
 	RouterFeatureProvider
 
+	// BasePath returns this scope's absolute path prefix: the group prefixes
+	// joined, keeping a trailing slash the caller wrote.
 	BasePath() string
 
 	// Group returns a nested scope under prefix, with m registered on it as if
 	// by Use.
 	Group(prefix string, m ...Middleware) Router
 
+	// GET, POST, PUT, DELETE, PATCH, HEAD and OPTIONS are shorthands for
+	// Handle with the corresponding method.
 	GET(path string, h Handler)
 	POST(path string, h Handler)
 	PUT(path string, h Handler)
@@ -107,9 +134,11 @@ var ErrEngineClosed = errors.New("httpx: engine closed (engines are single-use; 
 // Engine is the entrypoint: it can serve HTTP, apply global middleware,
 // and create groups, but cannot register routes directly.
 //
-// Lifecycle contract: Start blocks while serving and returns nil after a
-// graceful Stop. Engines are single-use — calling Start after Stop (in any
-// order, including Stop before the first Start) returns ErrEngineClosed.
+// Lifecycle contract: Start blocks while serving and returns nil once Stop
+// ended it — never the framework's own "server closed" error. Stop on an
+// engine that never started returns nil. Engines are single-use — calling
+// Start after Stop (in any order, including Stop before the first Start)
+// returns ErrEngineClosed.
 // IsRunning is best-effort: on net/http based adapters it becomes true only
 // after the listener is bound; on fiber/hertz it may become true slightly
 // before binding completes.
@@ -119,10 +148,26 @@ var ErrEngineClosed = errors.New("httpx: engine closed (engines are single-use; 
 // See Middleware.
 type Engine interface {
 	MiddlewareScope
+
+	// Group returns the Router for prefix ("" or "/" for the root), with m
+	// registered on it as if by Use.
 	Group(prefix string, m ...Middleware) Router
 
+	// Start listens on the configured address and serves until Stop. It
+	// returns nil once Stop ended it, ErrEngineClosed when Stop was already
+	// called, and the listener or server error otherwise (for example, an
+	// address already in use).
 	Start() error
+
+	// Stop shuts the engine down gracefully, waiting for in-flight requests
+	// until ctx is done, and marks the engine closed even if it never started,
+	// in which case it returns nil. When ctx expires first the listener is
+	// still closed; whether connections still being served are cut is
+	// adapter-specific. A nil error does not by itself mean every in-flight
+	// request finished.
 	Stop(ctx context.Context) error
+
+	// IsRunning reports whether Start is currently serving.
 	IsRunning() bool
 }
 
@@ -135,6 +180,12 @@ type TestRequester interface {
 }
 
 // AsTestRequester returns the in-process test capability when supported.
+// Every official adapter's Engine supports it.
+//
+//	if tr, ok := httpx.AsTestRequester(engine); ok {
+//		resp, err := tr.Do(httptest.NewRequest(http.MethodGet, "/api/ping", nil))
+//		// ...
+//	}
 func AsTestRequester(e Engine) (TestRequester, bool) {
 	tr, ok := e.(TestRequester)
 	return tr, ok

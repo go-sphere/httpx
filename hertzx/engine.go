@@ -17,8 +17,14 @@ import (
 
 var _ httpx.Engine = (*Engine)(nil)
 
+// ErrorHandler is hertz's native error-handler shape, accepted by
+// [WithNativeErrorHandler]. It is called with the request's context, the hertz
+// request context and the error a handler, middleware or unmatched route
+// produced, and owns the response.
 type ErrorHandler func(ctx context.Context, rc *app.RequestContext, err error)
 
+// Config is the resolved configuration [New] builds an [Engine] from. Its
+// fields are unexported; set them with [Option] values.
 type Config struct {
 	engine            *server.Hertz
 	addr              string
@@ -27,8 +33,14 @@ type Config struct {
 	clientIP          app.ClientIP
 }
 
+// Option configures an [Engine] at construction. Options are applied in
+// order, so a later option overrides an earlier one touching the same setting.
 type Option func(*Config)
 
+// NewConfig applies opts in order and fills the defaults: server.New()
+// (with server.WithHostPorts when [WithAddr] was given) and
+// [DefaultErrorHandler]. [New] calls it; most callers pass options to New
+// directly.
 func NewConfig(opts ...Option) *Config {
 	conf := Config{}
 	for _, opt := range opts {
@@ -55,6 +67,11 @@ func DefaultErrorHandler(ctx context.Context, rc *app.RequestContext, err error)
 	rc.Abort()
 }
 
+// WithEngine uses engine instead of a server the adapter builds; [WithAddr]
+// then has no effect. [New] enables HandleMethodNotAllowed on it and replaces
+// any NoRoute/NoMethod handlers so unmatched requests are rendered by the
+// configured error handler; handlers set after New returns win. Middleware
+// already registered on engine is kept and runs outside every httpx layer.
 func WithEngine(engine *server.Hertz) Option {
 	return func(conf *Config) {
 		conf.engine = engine
@@ -85,7 +102,8 @@ func WithNativeErrorHandler(errHandler ErrorHandler) Option {
 //
 // The hertz context is aborted afterwards unless the handler already did it:
 // the handler owns the response, and letting hertz continue into the
-// remaining chain would let a later layer write over the error body.
+// remaining chain would let a later layer write over the error body. A nil
+// errHandler is ignored.
 func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
 		if errHandler == nil {
@@ -126,6 +144,10 @@ func WithTrustedProxies(proxies ...string) Option {
 	}
 }
 
+// Engine is the hertz-backed httpx.Engine returned by [New]. It also
+// implements httpx.TestRequester through [Engine.Do]. Its zero value is not
+// usable. Register routes and middleware before serving. An Engine is
+// single-use: once stopped, Start returns httpx.ErrEngineClosed.
 type Engine struct {
 	engine     *server.Hertz
 	errHandler ErrorHandler
@@ -141,6 +163,9 @@ type Engine struct {
 	closed     atomic.Bool
 }
 
+// New constructs a hertz-backed Engine configured by opts. The dynamic type is
+// *[Engine]. New does not listen; call Start to serve. It panics when
+// [WithTrustedProxies] was given an invalid entry.
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	if conf.defaultMiddleware {
@@ -236,6 +261,8 @@ func (e *Engine) UseNative(handlers ...app.HandlerFunc) {
 	e.engine.Use(handlers...)
 }
 
+// Group returns a [Router] for prefix with m registered on it as if by Use;
+// "" and "/" both mean the root.
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := e.chain.Sub()
 	sub.Use(m...)
@@ -246,6 +273,12 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+// Start runs the hertz server until [Engine.Stop]. It returns nil once Stop
+// ended it (hertz's transports end their accept loop with nil on shutdown),
+// httpx.ErrEngineClosed when Stop was already called, and otherwise whatever
+// hertz's Run returns, such as a bind failure. IsRunning becomes true just
+// before hertz binds, so it may briefly report true before the listener
+// exists.
 func (e *Engine) Start() error {
 	if e.closed.Load() {
 		return httpx.ErrEngineClosed
@@ -266,6 +299,10 @@ func (e *Engine) Start() error {
 // leaves a request in flight to finish on its own. Closing the listener is the
 // part a caller asking for a forced stop actually needs, and claiming more than
 // that would be wrong.
+//
+// Stop on an engine that never started returns nil, as on every adapter, and
+// marks the engine closed so Start returns httpx.ErrEngineClosed. A nil ctx
+// waits indefinitely.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
 	if ctx == nil {
@@ -277,10 +314,15 @@ func (e *Engine) Stop(ctx context.Context) error {
 	// for the rest of the process after a stop that timed out.
 	defer e.running.Store(false)
 	err := e.engine.Shutdown(ctx)
-	if err == nil || !running {
-		// Nothing was ever serving: there is no transport to force closed, and
-		// hertz's own "not running" error is the honest answer.
-		return err
+	if !running {
+		// Nothing this engine started is serving: there is no transport to
+		// force closed, and hertz's "engine is not running" is the expected
+		// answer rather than a failure. Stop before Start is nil on every
+		// adapter.
+		return nil
+	}
+	if err == nil {
+		return nil
 	}
 	closeErr := e.engine.Close()
 	if ctx.Err() != nil {

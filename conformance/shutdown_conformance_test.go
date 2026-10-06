@@ -283,3 +283,74 @@ func dialable(addr string) bool {
 	_ = conn.Close()
 	return true
 }
+
+// The two lifecycle answers that must not depend on the framework underneath:
+// Stop on an engine that never started has nothing to fail at and returns nil,
+// and Start returns nil — not the framework's "server closed" — once a graceful
+// Stop ended it. Both are on the Engine interface, so a caller can treat any
+// non-nil error from either as a real failure. Needs a real listener for the
+// second; the first runs the same way across all five adapters.
+func TestEngineLifecycleErrorsConformance(t *testing.T) {
+	t.Run("StopBeforeStartReturnsNil", func(t *testing.T) {
+		for _, name := range shutdownFrameworks {
+			t.Run(name, func(t *testing.T) {
+				engine := newShutdownEngine(t, name, reserveAddrTB(t))
+				stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				if err := engine.Stop(stopCtx); err != nil {
+					t.Fatalf("%s Stop before Start = %v, want nil", name, err)
+				}
+				if engine.IsRunning() {
+					t.Fatalf("%s IsRunning() is true after Stop", name)
+				}
+				if err := startWithTimeout(t, engine); !errors.Is(err, httpx.ErrEngineClosed) {
+					t.Fatalf("%s Start after Stop = %v, want ErrEngineClosed", name, err)
+				}
+			})
+		}
+	})
+
+	t.Run("StartReturnsNilAfterGracefulStop", func(t *testing.T) {
+		for _, name := range shutdownFrameworks {
+			t.Run(name, func(t *testing.T) {
+				// Several rounds, each with a request served first, so a
+				// "closed" error that surfaces only sometimes is caught.
+				for round := range 5 {
+					addr := reserveAddrTB(t)
+					engine := newShutdownEngine(t, name, addr)
+					engine.Group("").GET("/ping", func(ctx httpx.Context) error {
+						return ctx.Text(http.StatusOK, "pong")
+					})
+
+					served := make(chan error, 1)
+					go func() { served <- engine.Start() }()
+					waitReachable(t, addr)
+					// No keep-alive: hertz's drain waits out an idle connection
+					// until its ExitWaitTimeout, five seconds a round.
+					client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+					resp, err := client.Get("http://" + addr + "/ping")
+					if err != nil {
+						t.Fatalf("%s round %d request: %v", name, round, err)
+					}
+					_, _ = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+
+					stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					stopErr := engine.Stop(stopCtx)
+					cancel()
+					if stopErr != nil {
+						t.Fatalf("%s round %d graceful Stop = %v, want nil", name, round, stopErr)
+					}
+					select {
+					case err := <-served:
+						if err != nil {
+							t.Fatalf("%s round %d Start after graceful Stop = %v, want nil", name, round, err)
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatalf("%s round %d Start did not return after Stop", name, round)
+					}
+				}
+			})
+		}
+	})
+}

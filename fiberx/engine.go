@@ -13,6 +13,8 @@ import (
 
 var _ httpx.Engine = (*Engine)(nil)
 
+// Config is the resolved configuration [New] builds an [Engine] from. Its
+// fields are unexported; set them with [Option] values.
 type Config struct {
 	engine            *fiber.App
 	listen            func(*fiber.App) error
@@ -21,8 +23,15 @@ type Config struct {
 	setTrustedProxies bool
 }
 
+// Option configures an [Engine] at construction. Options are applied in
+// order, so a later option overrides an earlier one touching the same setting.
 type Option func(*Config)
 
+// NewConfig applies opts in order and fills the defaults: a fiber.App built
+// with [DefaultErrorHandler] and UnescapePath enabled, listening on ":8080",
+// and the adapter's httpx error renderer. It panics when [WithTrustedProxies]
+// is combined with [WithEngine]. [New] calls it; most callers pass options to
+// New directly.
 func NewConfig(opts ...Option) *Config {
 	conf := Config{}
 	for _, opt := range opts {
@@ -104,12 +113,22 @@ func normalizeFiberError(err error) error {
 	return err
 }
 
+// WithEngine uses engine instead of an app the adapter builds. Its
+// fiber.Config is kept as is: fiber's ErrorHandler still answers the errors
+// that never reach the adapter, such as an oversized request body, and with
+// UnescapePath off the adapter decodes
+// route parameters itself. [New] registers one fallback handler on engine with
+// app.Use. Do not combine it with [WithTrustedProxies]; configure
+// TrustProxy on your own fiber.Config instead.
 func WithEngine(engine *fiber.App) Option {
 	return func(conf *Config) {
 		conf.engine = engine
 	}
 }
 
+// WithListen makes Start call app.Listen(addr, config...), so fiber's
+// ListenConfig (TLS, startup message, and so on) can be supplied. It replaces
+// any earlier WithListen, WithListener or WithAddr.
 func WithListen(addr string, config ...fiber.ListenConfig) Option {
 	return func(conf *Config) {
 		conf.listen = func(app *fiber.App) error {
@@ -118,6 +137,9 @@ func WithListen(addr string, config ...fiber.ListenConfig) Option {
 	}
 }
 
+// WithListener makes Start serve on ln with app.Listener(ln, config...)
+// instead of binding an address. Stop closes ln through fiber's shutdown. It
+// replaces any earlier WithListen, WithListener or WithAddr.
 func WithListener(ln net.Listener, config ...fiber.ListenConfig) Option {
 	return func(conf *Config) {
 		conf.listen = func(app *fiber.App) error {
@@ -127,7 +149,7 @@ func WithListener(ln net.Listener, config ...fiber.ListenConfig) Option {
 }
 
 // WithAddr sets the listen address. It is the framework-neutral equivalent of
-// WithListen, present on every adapter.
+// WithListen, present on every adapter. The default is ":8080".
 func WithAddr(addr string) Option {
 	return WithListen(addr)
 }
@@ -161,6 +183,10 @@ func WithTrustedProxies(proxies ...string) Option {
 	}
 }
 
+// Engine is the fiber-backed httpx.Engine returned by [New]. It also
+// implements httpx.TestRequester through [Engine.Do]. Its zero value is not
+// usable. Register routes and middleware before serving. An Engine is
+// single-use: once stopped, Start returns httpx.ErrEngineClosed.
 type Engine struct {
 	engine     *fiber.App
 	listen     func(*fiber.App) error
@@ -242,6 +268,10 @@ func (e *Engine) unmatchedFallback(err error) *httpx.MiddlewareFallback {
 	}
 }
 
+// New constructs a fiber-backed Engine configured by opts. The dynamic type is
+// *[Engine]. New does not listen; call Start to serve. It panics when
+// [WithTrustedProxies] was given an invalid entry or combined with
+// [WithEngine].
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	engine := &Engine{
@@ -283,6 +313,8 @@ func (e *Engine) UseNative(handlers ...fiber.Handler) {
 	}
 }
 
+// Group returns a [Router] for prefix with m registered on it as if by Use;
+// "" and "/" both mean the root.
 func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := e.chain.Sub()
 	sub.Use(m...)
@@ -294,6 +326,11 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+// Start serves with the configured listen function until [Engine.Stop]. It
+// returns nil once Stop ended it, httpx.ErrEngineClosed when Stop was already
+// called, and otherwise whatever fiber's Listen or Listener returns, such as
+// a bind failure. IsRunning becomes true just before fiber binds, so it may
+// briefly report true before the listener exists.
 func (e *Engine) Start() error {
 	if e.closed.Load() {
 		// fiber would happily restart after Shutdown; refuse for the uniform
@@ -302,7 +339,17 @@ func (e *Engine) Start() error {
 	}
 	e.running.Store(true)
 	defer e.running.Store(false)
-	return e.listen(e.engine)
+	err := e.listen(e.engine)
+	if err != nil && e.closed.Load() {
+		// Stop closed the listener under fasthttp, which returns nil only for
+		// an accept error it recognizes as a closed listener; a WithListener
+		// listener reporting its own error came back out of Serve. net/http's
+		// Serve answers ErrServerClosed for any accept error after Shutdown,
+		// so this is the same rule: once Stop was called, Start ending is the
+		// requested outcome, not a failure.
+		return nil
+	}
+	return err
 }
 
 // Stop aims at the same semantic as httpx.Close, which the net/http-backed
@@ -319,7 +366,8 @@ func (e *Engine) Start() error {
 // ForcedStopCutsConnections = false.
 //
 // A shutdown that genuinely failed is a different answer and keeps its error;
-// see classifyShutdownError.
+// see classifyShutdownError. Stop on an engine that never started returns nil
+// and marks it closed, so Start returns httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
 	if ctx == nil {

@@ -3,7 +3,11 @@ package fiberx
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
+	"time"
+
+	"github.com/gofiber/fiber/v3"
 )
 
 // The classification keeps a failed shutdown from being reported as a successful
@@ -39,5 +43,59 @@ func TestClassifyShutdownError(t *testing.T) {
 				t.Fatalf("classifyShutdownError = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A listener whose Accept reports its own error once closed, rather than one
+// fasthttp recognizes as "use of closed network connection" — a wrapping or
+// third-party listener, say.
+type opaqueCloseListener struct {
+	net.Listener
+}
+
+var errOpaqueClosed = errors.New("fiberx test: listener shut")
+
+func (l opaqueCloseListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if errors.Is(err, net.ErrClosed) {
+		return nil, errOpaqueClosed
+	}
+	return conn, err
+}
+
+// Start returns nil after a graceful Stop whatever error the listener reports
+// for having been closed: fasthttp passes any accept error it does not
+// recognize as a closed listener through Serve, and net/http's Serve answers
+// ErrServerClosed for every accept error after Shutdown, which the net/http
+// adapters turn into nil.
+func TestStartReturnsNilAfterStopWithOpaqueListener(t *testing.T) {
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	serving := make(chan struct{})
+	engine := New(WithListener(opaqueCloseListener{base}, fiber.ListenConfig{
+		DisableStartupMessage: true,
+		BeforeServeFunc:       func(*fiber.App) error { close(serving); return nil },
+	}))
+
+	served := make(chan error, 1)
+	go func() { served <- engine.Start() }()
+	<-serving
+	// BeforeServeFunc runs just before Serve; give the accept loop a moment.
+	time.Sleep(50 * time.Millisecond)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := engine.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop = %v, want nil", err)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Start after graceful Stop = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after Stop")
 	}
 }
