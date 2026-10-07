@@ -170,8 +170,9 @@ func (s *SSEWriter) flushBuf() error {
 //
 // Streamer.Stream's execution model applies, so fn's error is best-effort
 // cleanup: the response is already committed by the time fn runs, and there is
-// no way to un-commit it. fn should return promptly when a send fails or the
-// request context is done.
+// no way to un-commit it. fn should return promptly when a send fails. On
+// fiberx and hertzx the request context is not cancelled when the client
+// disconnects, so a failed send is the only reliable disconnect signal there.
 //
 // If ctx does not implement Streamer, ServerSentEvents returns
 // ErrStreamerNotSupported without writing to the response.
