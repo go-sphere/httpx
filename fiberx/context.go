@@ -486,7 +486,10 @@ func (c fiberContext[T]) Bytes(code int, b []byte, contentType string) error {
 			contentType = http.DetectContentType(b)
 		}
 		c.ctx.Set(fiber.HeaderContentType, contentType)
-		return c.ctx.Status(code).Send(b)
+		// SetBody copies: fiber's Send keeps b and serializes it after the
+		// handler returns, by which time the caller may have reused it.
+		c.ctx.Status(code).Response().SetBody(b)
+		return nil
 	})
 }
 
@@ -591,6 +594,10 @@ func (c fiberContext[T]) NativeContext() any {
 // error only terminates the stream. Each write inside fn is flushed to the
 // client immediately.
 //
+// fn runs on a fasthttp goroutine outside the handler's recovery layers, so
+// a panic in fn is recovered here and ends the stream instead of the process.
+// fn must not use the httpx.Context: fiber may already have recycled it.
+//
 // fiberContext intentionally does not implement httpx.Flusher: fiber cannot
 // flush mid-handler; probe with httpx.AsFlusher and fall back, or use Stream.
 func (c fiberContext[T]) Stream(code int, contentType string, fn func(w io.Writer) error) error {
@@ -599,6 +606,7 @@ func (c fiberContext[T]) Stream(code int, contentType string, fn func(w io.Write
 	}
 	c.ctx.Status(code)
 	return c.ctx.SendStreamWriter(func(w *bufio.Writer) {
+		defer func() { _ = recover() }()
 		_ = fn(bufioFlushWriter{w: w})
 	})
 }

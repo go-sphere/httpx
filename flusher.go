@@ -36,6 +36,8 @@ type Streamer interface {
 	// error from fn only terminates the stream — it cannot change the
 	// status or reach the caller. Treat fn's error as best-effort cleanup
 	// on every adapter: by the time fn runs, the response is committed.
+	// There fn also runs outside the handler's middleware (a panic is not
+	// seen by recovery layers) and must not use the Context it came from.
 	//
 	// In in-process test dispatch there is no live connection; writes are
 	// buffered and returned as the final response body.
