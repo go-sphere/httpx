@@ -101,6 +101,11 @@ func (c *hertzContext) RawQuery() string {
 }
 
 func (c *hertzContext) Header(key string) string {
+	// net/http moves Host out of the header map, so the other adapters report
+	// it as unset; hertz's GetHeader special-cases it and would answer.
+	if strings.EqualFold(key, "Host") {
+		return ""
+	}
 	return string(c.ctx.GetHeader(key))
 }
 
