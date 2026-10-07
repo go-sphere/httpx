@@ -288,6 +288,13 @@ func (w *stdResponseWriter) WriteHeader(code int) {
 	}
 	w.wroteHeader = true
 	w.rc.Set(responseCommittedKey, true)
+	w.applyHeader()
+	w.rc.Response.SetStatusCode(code)
+}
+
+// applyHeader copies the staged headers into hertz's response without
+// committing it.
+func (w *stdResponseWriter) applyHeader() {
 	for key, values := range w.header {
 		if strings.EqualFold(key, "Content-Length") {
 			if len(values) > 0 {
@@ -301,7 +308,6 @@ func (w *stdResponseWriter) WriteHeader(code int) {
 			w.rc.Response.Header.Add(key, value)
 		}
 	}
-	w.rc.Response.SetStatusCode(code)
 }
 
 func (w *stdResponseWriter) Write(b []byte) (int, error) {

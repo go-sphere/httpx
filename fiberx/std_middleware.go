@@ -19,7 +19,10 @@ import (
 // middleware's (possibly wrapped) writer, so body/header transformations
 // apply. Streaming responses (DataFromReader with unknown size) are not
 // replayed through the wrapper. If the middleware responds without calling
-// the next handler, the chain is short-circuited.
+// the next handler, the chain is short-circuited. A downstream error that left
+// the response uncommitted is not replayed: only the headers the middleware
+// staged are applied, and the error is returned to be rendered as on the
+// other adapters.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(next httpx.Handler) httpx.Handler { return next }
@@ -44,11 +47,20 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				ctx.SetContext(r.Context())
 				nextErr = next(ctx)
+				if nextErr != nil && !ctx.Committed() {
+					return
+				}
 				replayFiberResponse(fc, w)
 			})
 			w := &fiberResponseWriter{fc: fc}
 			middleware(inner).ServeHTTP(w, req)
-			w.finish()
+			if nextErr != nil && !w.wroteHeader {
+				// Replaying would commit an empty 200 and the error would
+				// never be rendered.
+				w.applyHeader()
+			} else {
+				w.finish()
+			}
 			return nextErr
 		}
 	}
@@ -93,6 +105,13 @@ func (w *fiberResponseWriter) WriteHeader(code int) {
 	}
 	w.wroteHeader = true
 	markResponseCommitted(w.fc)
+	w.applyHeader()
+	w.fc.Response().SetStatusCode(code)
+}
+
+// applyHeader copies the staged headers into fiber's response without
+// committing it.
+func (w *fiberResponseWriter) applyHeader() {
 	resp := w.fc.Response()
 	for key, values := range w.header {
 		if strings.EqualFold(key, "Content-Length") {
@@ -108,7 +127,6 @@ func (w *fiberResponseWriter) WriteHeader(code int) {
 			resp.Header.Add(key, value)
 		}
 	}
-	resp.SetStatusCode(code)
 }
 
 func (w *fiberResponseWriter) Write(p []byte) (int, error) {

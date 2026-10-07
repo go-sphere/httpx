@@ -340,6 +340,34 @@ func casesStdMiddleware(t *testing.T, r runner) {
 			t.Fatal("the handler ran after the std middleware short-circuited")
 		}
 	})
+
+	// The buffering adapters replay the downstream response through the
+	// middleware's writer; a handler error leaves nothing to replay, and
+	// replaying anyway committed an empty 200 the error could not override.
+	t.Run("StdMiddlewareHandlerError", func(t *testing.T) {
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("X-Std", "1")
+				next.ServeHTTP(w, req)
+			})
+		}
+		got := r.serve(t, func(router httpx.Router) {
+			router.Use(r.suite.StdMiddleware(mw))
+			router.GET("/std/error", func(ctx httpx.Context) error {
+				return httpx.NewForbiddenError("denied")
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/std/error", nil))
+
+		if got.Status != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403; body=%q", got.Status, got.Body)
+		}
+		if !strings.Contains(got.Body, "denied") {
+			t.Fatalf("the error was not rendered: body=%q", got.Body)
+		}
+		if got.Headers.Get("X-Std") != "1" {
+			t.Fatal("the std middleware's header did not reach the error response")
+		}
+	})
 }
 
 type stdCtxKey struct{}

@@ -17,7 +17,10 @@ import (
 // middleware's (possibly wrapped) writer, so body/header transformations
 // apply. Streaming responses (DataFromReader with a body stream) are not
 // replayed through the wrapper. If the middleware responds without calling
-// the next handler, the chain is short-circuited.
+// the next handler, the chain is short-circuited. A downstream error that left
+// the response uncommitted is not replayed: only the headers the middleware
+// staged are applied, and the error is returned to be rendered as on the
+// other adapters.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(next httpx.Handler) httpx.Handler { return next }
@@ -38,12 +41,21 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 				ran = true
 				ctx.SetContext(r.Context())
 				nextErr = next(ctx)
+				if nextErr != nil && !ctx.Committed() {
+					return
+				}
 				replayHertzResponse(rc, w)
 			})
 			w := &stdResponseWriter{rc: rc}
 			middleware(inner).ServeHTTP(w, req)
 			if !w.wroteHeader {
-				w.WriteHeader(rc.Response.StatusCode())
+				if nextErr != nil {
+					// Replaying would commit an empty 200 and the error would
+					// never be rendered.
+					w.applyHeader()
+				} else {
+					w.WriteHeader(rc.Response.StatusCode())
+				}
 			}
 			if !ran && !rc.IsAborted() {
 				rc.Abort()
