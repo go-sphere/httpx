@@ -38,7 +38,7 @@ type flushCounter struct{ w *unwrapOnlyWriter }
 
 func (f flushCounter) Header() http.Header         { return f.w.header }
 func (f flushCounter) WriteHeader(code int)        { f.w.status = code }
-func (f flushCounter) Write(p []byte) (int, error) { return f.w.plainWriter.Write(p) }
+func (f flushCounter) Write(p []byte) (int, error) { return f.w.Write(p) }
 func (f flushCounter) Flush()                      { f.w.flushes++ }
 
 func streamTwo(ctx httpx.Context) error {

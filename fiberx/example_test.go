@@ -23,7 +23,7 @@ func serve(engine httpx.Engine, method, target string) {
 		fmt.Println("error:", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("error:", err)
