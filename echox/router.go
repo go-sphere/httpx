@@ -70,7 +70,8 @@ type Router struct {
 	// httpx.MiddlewareChain.
 	chain *httpx.MiddlewareChain
 	// wildcards is the engine's table, shared with every Group made from it.
-	wildcards *wildcardTable
+	wildcards   *wildcardTable
+	maxBodySize int64
 }
 
 // Use registers httpx middleware on this scope, implementing
@@ -115,11 +116,12 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := r.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		group:      r.group.Group(echoGroupPrefix(r.basePath, base)),
-		basePath:   base,
-		errHandler: r.errHandler,
-		chain:      sub,
-		wildcards:  r.wildcards,
+		group:       r.group.Group(echoGroupPrefix(r.basePath, base)),
+		basePath:    base,
+		errHandler:  r.errHandler,
+		chain:       sub,
+		wildcards:   r.wildcards,
+		maxBodySize: r.maxBodySize,
 	}
 }
 
@@ -241,7 +243,11 @@ func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	h = r.chain.Compose(h)
 	return func(ec echo.Context) error {
 		ctx := newEchoContext(ec, r.wildcards)
-		if err := h(ctx); err != nil {
+		err := httpx.LimitRequestBody(ec.Response(), ec.Request(), r.maxBodySize)
+		if err == nil {
+			err = h(ctx)
+		}
+		if err != nil {
 			// Without a framework-neutral handler the error goes to echo's own
 			// path. So does an error after a committed response: nothing may
 			// write over it, but logging middleware must still see it.

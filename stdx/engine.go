@@ -28,6 +28,7 @@ type Config struct {
 	// trustProxies distinguishes "not configured" from "configured empty";
 	// both ignore forwarding headers, but only the first may change later.
 	trustProxies bool
+	maxBodySize  int64
 }
 
 // Option configures an [Engine] at construction. Options are applied in
@@ -93,6 +94,16 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) { conf.errHandler = errHandler }
 }
 
+// WithMaxBodySize limits request bodies on every route to n bytes; n <= 0,
+// the default, means no limit. A request declaring a larger Content-Length is
+// refused with a *http.MaxBytesError before the route's middleware runs, which
+// the configured error handler renders as 413. A body of unknown length is cut
+// at n bytes: the read that passes the limit fails with a *http.MaxBytesError,
+// which Bind* report as 413 and a handler returning it is rendered as 413.
+func WithMaxBodySize(n int64) Option {
+	return func(conf *Config) { conf.maxBodySize = n }
+}
+
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (which is
@@ -125,6 +136,7 @@ type Engine struct {
 
 	errHandler     httpx.ErrorHandler
 	trustedProxies []*net.IPNet
+	maxBodySize    int64
 
 	// chain is the engine scope, referenced by every group created from this
 	// engine; see Router.Use. notFound and notAllowed carry it into the
@@ -149,6 +161,7 @@ func New(opts ...Option) httpx.Engine {
 		server:         conf.server,
 		errHandler:     conf.errHandler,
 		trustedProxies: conf.trustedProxies,
+		maxBodySize:    conf.maxBodySize,
 		chain:          httpx.NewMiddlewareChain(),
 	}
 	engine.notFound = httpx.NewMiddlewareFallback(engine.chain,
@@ -221,7 +234,13 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	err := handler(ctx)
+	var err error
+	if r != nil {
+		err = httpx.LimitRequestBody(w, req, e.maxBodySize)
+	}
+	if err == nil {
+		err = handler(ctx)
+	}
 	if err != nil && !ctx.rw.written {
 		e.errHandler(ctx, err)
 		commitErrorStatus(&ctx.rw, err)

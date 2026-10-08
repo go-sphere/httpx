@@ -159,8 +159,9 @@ func NewInternalServerError(message string) Error {
 	return NewWithStatus(http.StatusInternalServerError, message)
 }
 
-// WrapBindError marks a binder failure as HTTP 400. Already classified
-// httpx.Error values are returned unchanged. A nil err stays nil.
+// WrapBindError marks a binder failure as HTTP 400, or as 413 when err's chain
+// holds a *http.MaxBytesError (the request body exceeded its limit). Already
+// classified httpx.Error values are returned unchanged. A nil err stays nil.
 func WrapBindError(err error) error {
 	if err == nil {
 		return nil
@@ -169,7 +170,15 @@ func WrapBindError(err error) error {
 	if errors.As(err, &he) {
 		return err
 	}
+	if isBodyTooLarge(err) {
+		return WithStatus(http.StatusRequestEntityTooLarge, err)
+	}
 	return BadRequestError(err)
+}
+
+func isBodyTooLarge(err error) bool {
+	var mbe *http.MaxBytesError
+	return errors.As(err, &mbe)
 }
 
 // ErrorBody is the JSON written by adapter default error handlers.
@@ -227,7 +236,8 @@ func httpStatusError(status int32) error {
 }
 
 // ParseError extracts status, code and message from StatusError, CodeError and
-// MessageError, falling back to defaults for unknown error types.
+// MessageError, falling back to defaults for unknown error types: status 413
+// when err's chain holds a *http.MaxBytesError, 500 otherwise.
 //
 // message is empty unless err carries one through MessageError, and is never
 // err.Error(): ParseError is the default ErrorParser of sphere/httpz, so its
@@ -246,9 +256,12 @@ func ParseError(err error) (code int32, status int32, message string) {
 		return he.GetCode(), he.GetStatus(), he.GetMessage()
 	}
 	var se StatusError
-	if errors.As(err, &se) {
+	switch {
+	case errors.As(err, &se):
 		status = se.GetStatus()
-	} else {
+	case isBodyTooLarge(err):
+		status = http.StatusRequestEntityTooLarge
+	default:
 		status = http.StatusInternalServerError
 	}
 	var ce CodeError

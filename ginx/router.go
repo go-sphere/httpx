@@ -24,7 +24,8 @@ type Router struct {
 	// gin handler slot, so httpx middleware runs inside everything registered
 	// through UseNative. It references the engine's chain rather than copying
 	// it; see httpx.MiddlewareChain.
-	chain *httpx.MiddlewareChain
+	chain       *httpx.MiddlewareChain
+	maxBodySize int64
 }
 
 // commitErrorStatus records the error's own status when the configured
@@ -85,9 +86,10 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := r.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		group:      r.group.Group(prefix),
-		errHandler: r.errHandler,
-		chain:      sub,
+		group:       r.group.Group(prefix),
+		errHandler:  r.errHandler,
+		chain:       sub,
+		maxBodySize: r.maxBodySize,
 	}
 }
 
@@ -189,7 +191,11 @@ func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 	h = r.chain.Compose(h)
 	return func(gc *gin.Context) {
 		ctx := newGinContext(gc)
-		if err := h(ctx); err != nil {
+		err := httpx.LimitRequestBody(gc.Writer, gc.Request, r.maxBodySize)
+		if err == nil {
+			err = h(ctx)
+		}
+		if err != nil {
 			_ = gc.Error(err)
 			// Skip the error handler when the response is already committed
 			// (or the chain aborted) so a partial response is not corrupted

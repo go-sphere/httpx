@@ -73,7 +73,8 @@ type Router struct {
 	// httpx.MiddlewareChain.
 	chain *httpx.MiddlewareChain
 	// order is the engine's route precedence keeper, shared by its groups.
-	order *routeOrder
+	order       *routeOrder
+	maxBodySize int64
 }
 
 // Use registers httpx middleware on this scope, implementing
@@ -126,11 +127,12 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := r.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		basePath:   joinPaths(r.basePath, prefix),
-		group:      r.group.Group(prefix),
-		errHandler: r.errHandler,
-		chain:      sub,
-		order:      r.order,
+		basePath:    joinPaths(r.basePath, prefix),
+		group:       r.group.Group(prefix),
+		errHandler:  r.errHandler,
+		chain:       sub,
+		order:       r.order,
+		maxBodySize: r.maxBodySize,
 	}
 }
 
@@ -266,12 +268,35 @@ func (r *Router) adaptHandler(h httpx.Handler, wildcard *wildcardRoute) fiber.Ha
 	h = r.chain.Compose(h)
 	handler := fiber.Handler(func(ctx fiber.Ctx) error {
 		fc := newFiberContext(ctx)
-		return handleFiberError(ctx, fc, h(fc), r.errHandler)
+		err := checkBodySize(ctx, r.maxBodySize)
+		if err == nil {
+			err = h(fc)
+		}
+		return handleFiberError(ctx, fc, err, r.errHandler)
 	})
 	if wildcard != nil {
 		handler = markWildcardRoute(handler, wildcard)
 	}
 	return handler
+}
+
+// checkBodySize refuses a request body over n bytes (n <= 0: no limit) with
+// the *http.MaxBytesError the net/http based adapters produce. fasthttp has
+// already buffered the body, so its length is known; a streamed body is
+// judged by its declared Content-Length, since measuring it would read it.
+func checkBodySize(native fiber.Ctx, n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	req := native.Request()
+	size := int64(req.Header.ContentLength())
+	if !req.IsBodyStream() {
+		size = int64(len(req.Body()))
+	}
+	if size > n {
+		return &http.MaxBytesError{Limit: n}
+	}
+	return nil
 }
 
 // handleFiberError routes a handler or middleware error either through the

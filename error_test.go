@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -206,5 +207,22 @@ func TestRenderErrorDoesNotLeak(t *testing.T) {
 	}
 	if body.Message == raw || body.Message != http.StatusText(http.StatusInternalServerError) {
 		t.Fatalf("leaked or wrong message: %q", body.Message)
+	}
+}
+
+func TestBodyTooLargeClassifiesAs413(t *testing.T) {
+	t.Parallel()
+	tooLarge := fmt.Errorf("read body: %w", &http.MaxBytesError{Limit: 8})
+
+	var he Error
+	if !errors.As(WrapBindError(tooLarge), &he) || he.GetStatus() != http.StatusRequestEntityTooLarge {
+		t.Fatalf("WrapBindError status = %v, want 413", he)
+	}
+	if _, status, _ := ParseError(tooLarge); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("ParseError status = %d, want 413", status)
+	}
+	// A status the error already carries still wins.
+	if _, status, _ := ParseError(BadRequestError(tooLarge)); status != http.StatusBadRequest {
+		t.Fatalf("ParseError on classified error = %d, want 400", status)
 	}
 }

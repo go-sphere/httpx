@@ -22,6 +22,7 @@ type Config struct {
 	server      *http.Server
 	errHandler  httpx.ErrorHandler
 	ipExtractor echo.IPExtractor
+	maxBodySize int64
 }
 
 // Option configures an [Engine] at construction. Options are applied in
@@ -150,6 +151,20 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	}
 }
 
+// WithMaxBodySize limits request bodies on every route registered through the
+// adapter to n bytes; n <= 0, the default, means no limit. A request declaring
+// a larger Content-Length is refused with a *http.MaxBytesError before the
+// route's httpx middleware runs, which the configured error handler renders as
+// 413. A body of unknown length is cut at n bytes: the read that passes the
+// limit fails with a *http.MaxBytesError, which Bind* report as 413 and a
+// handler returning it is rendered as 413. Native routes and native middleware
+// are not covered.
+func WithMaxBodySize(n int64) Option {
+	return func(conf *Config) {
+		conf.maxBodySize = n
+	}
+}
+
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (echo's
@@ -201,9 +216,10 @@ type Engine struct {
 	notAllowed *httpx.MiddlewareFallback
 	// wildcards is this engine's named-wildcard table; every Router it makes
 	// shares it, and no other engine can see it. See wildcardTable.
-	wildcards *wildcardTable
-	running   atomic.Bool
-	closed    atomic.Bool
+	wildcards   *wildcardTable
+	maxBodySize int64
+	running     atomic.Bool
+	closed      atomic.Bool
 }
 
 // New constructs an echo-backed Engine configured by opts. The dynamic type is
@@ -232,6 +248,7 @@ func New(opts ...Option) httpx.Engine {
 		nativeErrHandler: conf.engine.HTTPErrorHandler,
 		chain:            httpx.NewMiddlewareChain(),
 		wildcards:        wildcards,
+		maxBodySize:      conf.maxBodySize,
 	}
 	// The leaf reports the error echo raised, which is what the configured
 	// httpx.ErrorHandler received before the engine chain covered unmatched
@@ -337,11 +354,12 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := e.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		group:      e.engine.Group(echoGroupPrefix("/", base)),
-		basePath:   base,
-		errHandler: e.errHandler,
-		chain:      sub,
-		wildcards:  e.wildcards,
+		group:       e.engine.Group(echoGroupPrefix("/", base)),
+		basePath:    base,
+		errHandler:  e.errHandler,
+		chain:       sub,
+		wildcards:   e.wildcards,
+		maxBodySize: e.maxBodySize,
 	}
 }
 

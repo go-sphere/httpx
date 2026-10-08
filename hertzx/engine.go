@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/textproto"
 	"sync/atomic"
@@ -31,6 +32,7 @@ type Config struct {
 	errHandler        ErrorHandler
 	defaultMiddleware bool
 	clientIP          app.ClientIP
+	maxBodySize       int64
 }
 
 // Option configures an [Engine] at construction. Options are applied in
@@ -126,6 +128,22 @@ func WithDefaultMiddleware() Option {
 	}
 }
 
+// WithMaxBodySize limits request bodies on every route registered through the
+// adapter to n bytes; n <= 0, the default, adds no limit of the adapter's own.
+// A larger body is refused with a *http.MaxBytesError before the route's httpx
+// middleware runs, which the configured error handler renders as 413.
+//
+// hertz's server reads the whole body before routing and enforces its own
+// MaxRequestBodySize (4 MiB by default) first, answering with a plain-text 413
+// that no handler sees. [New] raises that limit to n when n exceeds it, on an
+// engine passed through [WithEngine] too. When the server streams request
+// bodies (server.WithStreamBody), only a declared Content-Length is checked.
+func WithMaxBodySize(n int64) Option {
+	return func(conf *Config) {
+		conf.maxBodySize = n
+	}
+}
+
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For / X-Real-IP are honored only when the direct peer is
 // inside the given IPs/CIDRs, and an empty list ignores forwarding headers
@@ -159,8 +177,10 @@ type Engine struct {
 	notFound   *httpx.MiddlewareFallback
 	notAllowed *httpx.MiddlewareFallback
 	clientIP   app.ClientIP
-	running    atomic.Bool
-	closed     atomic.Bool
+	// maxBodySize is handed to every Router; see WithMaxBodySize.
+	maxBodySize int64
+	running     atomic.Bool
+	closed      atomic.Bool
 }
 
 // New constructs a hertz-backed Engine configured by opts. The dynamic type is
@@ -174,11 +194,17 @@ func New(opts ...Option) httpx.Engine {
 	if conf.clientIP != nil {
 		conf.engine.SetClientIPFunc(conf.clientIP)
 	}
+	// hertz copies its options into the protocol server when it starts, so
+	// raising the limit here also reaches an engine supplied through WithEngine.
+	if serverOpts := conf.engine.GetOptions(); conf.maxBodySize > int64(serverOpts.MaxRequestBodySize) {
+		serverOpts.MaxRequestBodySize = int(min(conf.maxBodySize, math.MaxInt))
+	}
 	engine := &Engine{
-		engine:     conf.engine,
-		errHandler: conf.errHandler,
-		clientIP:   conf.clientIP,
-		chain:      httpx.NewMiddlewareChain(),
+		engine:      conf.engine,
+		errHandler:  conf.errHandler,
+		clientIP:    conf.clientIP,
+		chain:       httpx.NewMiddlewareChain(),
+		maxBodySize: conf.maxBodySize,
 	}
 	engine.installRouteFallback()
 	engine.running.Store(false)
@@ -268,9 +294,10 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := e.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		group:      e.engine.Group(prefix),
-		chain:      sub,
-		errHandler: e.errHandler,
+		group:       e.engine.Group(prefix),
+		chain:       sub,
+		errHandler:  e.errHandler,
+		maxBodySize: e.maxBodySize,
 	}
 }
 

@@ -28,7 +28,8 @@ type Router struct {
 	// hertz handler slot, so httpx middleware runs inside everything registered
 	// through UseNative. It references the engine's chain rather than copying
 	// it; see httpx.MiddlewareChain.
-	chain *httpx.MiddlewareChain
+	chain       *httpx.MiddlewareChain
+	maxBodySize int64
 }
 
 // Use registers httpx middleware on this scope, implementing
@@ -70,9 +71,10 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := r.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		group:      r.group.Group(prefix),
-		errHandler: r.errHandler,
-		chain:      sub,
+		group:       r.group.Group(prefix),
+		errHandler:  r.errHandler,
+		chain:       sub,
+		maxBodySize: r.maxBodySize,
 	}
 }
 
@@ -174,7 +176,11 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 	h = r.chain.Compose(h)
 	return func(ctx context.Context, rc *app.RequestContext) {
 		hc := newHertzContext(ctx, rc)
-		if err := h(hc); err != nil {
+		err := checkBodySize(rc, r.maxBodySize)
+		if err == nil {
+			err = h(hc)
+		}
+		if err != nil {
 			_ = rc.Error(err)
 			// Skip the error handler when the response is already committed
 			// (or the chain aborted) so a partial response is not corrupted
@@ -188,6 +194,24 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 			}
 		}
 	}
+}
+
+// checkBodySize refuses a request body over n bytes (n <= 0: no limit) with
+// the *http.MaxBytesError the net/http based adapters produce. hertz has
+// already buffered the body, so its length is known; a streamed body is judged
+// by its declared Content-Length, since measuring it would read it.
+func checkBodySize(rc *app.RequestContext, n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	size := int64(rc.Request.Header.ContentLength())
+	if !rc.Request.IsBodyStream() {
+		size = int64(len(rc.Request.Body()))
+	}
+	if size > n {
+		return &http.MaxBytesError{Limit: n}
+	}
+	return nil
 }
 
 // commitErrorStatus records the error's own status when the configured

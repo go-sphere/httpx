@@ -26,6 +26,7 @@ setup code is portable across all five:
 | `WithErrorHandler(h)` | `httpx.ErrorHandler` | Framework-neutral, on all five. `h` is called with a real adapter-backed `httpx.Context`. |
 | `WithNativeErrorHandler(h)` | adapter's own `ErrorHandler` | `ginx` and `hertzx` only — the two frameworks whose error-handler shape the adapter installs directly. |
 | `WithTrustedProxies(...)` | `...string` | Uniform `ClientIP` policy; an empty list ignores forwarding headers. |
+| `WithMaxBodySize(n)` | `int64` | Request body limit for routes registered through the adapter; over it is a 413 through the error handler. `n <= 0` (default) adds none, though `fiberx`/`hertzx` keep their framework's own 4 MiB limit, raised to `n` when `n` is larger. |
 | `WithEngine(e)` | native engine | Bring your own `*gin.Engine`, `*echo.Echo`, `*fiber.App`, `*server.Hertz`. |
 
 Two related names are *not* portable, on purpose:

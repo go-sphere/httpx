@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -23,6 +24,7 @@ type Config struct {
 	errHandler        httpx.ErrorHandler
 	trustedProxies    []string
 	setTrustedProxies bool
+	maxBodySize       int64
 }
 
 // Option configures an [Engine] at construction. Options are applied in
@@ -57,6 +59,9 @@ func NewConfig(opts ...Option) *Config {
 			CaseSensitive:           true,
 			StrictRouting:           true,
 			DisableHeadAutoRegister: true,
+		}
+		if conf.maxBodySize > fiber.DefaultBodyLimit {
+			fiberConf.BodyLimit = int(min(conf.maxBodySize, math.MaxInt))
 		}
 		if conf.setTrustedProxies && len(conf.trustedProxies) > 0 {
 			fiberConf.ProxyHeader = fiber.HeaderXForwardedFor
@@ -177,6 +182,23 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	}
 }
 
+// WithMaxBodySize limits request bodies on every route registered through the
+// adapter to n bytes; n <= 0, the default, adds no limit of the adapter's own.
+// A larger body is refused with a *http.MaxBytesError before the route's httpx
+// middleware runs, which the configured error handler renders as 413.
+//
+// fiber's server reads the whole body before routing and enforces its own
+// fiber.Config.BodyLimit (4 MiB by default) first, answering through
+// fiber.Config.ErrorHandler instead. An app built by the adapter has BodyLimit
+// raised to n when n exceeds it; an app passed through [WithEngine] keeps its
+// own. When that app streams request bodies (StreamRequestBody), only a
+// declared Content-Length is checked.
+func WithMaxBodySize(n int64) Option {
+	return func(conf *Config) {
+		conf.maxBodySize = n
+	}
+}
+
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
 // IPs/CIDRs, and an empty list ignores forwarding headers entirely (which is
@@ -211,6 +233,8 @@ type Engine struct {
 	notFound   *httpx.MiddlewareFallback
 	notAllowed *httpx.MiddlewareFallback
 	order      *routeOrder
+	// maxBodySize is handed to every Router; see WithMaxBodySize.
+	maxBodySize int64
 	// unescapePath caches the app's UnescapePath; see keepLiteralPlus.
 	unescapePath bool
 	running      atomic.Bool
@@ -311,11 +335,12 @@ func (e *Engine) unmatchedFallback(err error) *httpx.MiddlewareFallback {
 func New(opts ...Option) httpx.Engine {
 	conf := NewConfig(opts...)
 	engine := &Engine{
-		engine:     conf.engine,
-		listen:     conf.listen,
-		errHandler: conf.errHandler,
-		chain:      httpx.NewMiddlewareChain(),
-		order:      newRouteOrder(conf.engine),
+		engine:      conf.engine,
+		listen:      conf.listen,
+		errHandler:  conf.errHandler,
+		chain:       httpx.NewMiddlewareChain(),
+		order:       newRouteOrder(conf.engine),
+		maxBodySize: conf.maxBodySize,
 		// Config copies a large struct, so it is read once here.
 		unescapePath: conf.engine.Config().UnescapePath,
 	}
@@ -358,11 +383,12 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := e.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		basePath:   joinPaths("/", prefix),
-		group:      e.engine.Group(prefix),
-		chain:      sub,
-		errHandler: e.errHandler,
-		order:      e.order,
+		basePath:    joinPaths("/", prefix),
+		group:       e.engine.Group(prefix),
+		chain:       sub,
+		errHandler:  e.errHandler,
+		order:       e.order,
+		maxBodySize: e.maxBodySize,
 	}
 }
 

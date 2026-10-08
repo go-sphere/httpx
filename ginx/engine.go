@@ -28,6 +28,7 @@ type Config struct {
 	defaultMiddleware bool
 	trustedProxies    []string
 	setTrustedProxies bool
+	maxBodySize       int64
 }
 
 // Option configures an [Engine] at construction. Options are applied in
@@ -134,6 +135,20 @@ func WithAddr(addr string) Option {
 	}
 }
 
+// WithMaxBodySize limits request bodies on every route registered through the
+// adapter to n bytes; n <= 0, the default, means no limit. A request declaring
+// a larger Content-Length is refused with a *http.MaxBytesError before the
+// route's httpx middleware runs, which the configured error handler renders as
+// 413. A body of unknown length is cut at n bytes: the read that passes the
+// limit fails with a *http.MaxBytesError, which Bind* report as 413 and a
+// handler returning it is rendered as 413. Native routes and native middleware
+// are not covered.
+func WithMaxBodySize(n int64) Option {
+	return func(conf *Config) {
+		conf.maxBodySize = n
+	}
+}
+
 // WithDefaultMiddleware enables Gin's default Logger and Recovery middleware.
 // Without this option the engine starts with no middleware, matching the other adapters.
 func WithDefaultMiddleware() Option {
@@ -168,7 +183,8 @@ type Engine struct {
 	errHandler ErrorHandler
 	// chain is the engine scope, referenced by every group created from this
 	// engine; see Router.Use.
-	chain *httpx.MiddlewareChain
+	chain       *httpx.MiddlewareChain
+	maxBodySize int64
 	// notFound and notAllowed carry the engine chain into the unmatched-path
 	// answers; see installRouteFallback.
 	notFound   *httpx.MiddlewareFallback
@@ -196,10 +212,11 @@ func New(opts ...Option) httpx.Engine {
 	}
 	conf.server.Handler = conf.engine
 	engine := &Engine{
-		engine:     conf.engine,
-		server:     conf.server,
-		errHandler: conf.errHandler,
-		chain:      httpx.NewMiddlewareChain(),
+		engine:      conf.engine,
+		server:      conf.server,
+		errHandler:  conf.errHandler,
+		chain:       httpx.NewMiddlewareChain(),
+		maxBodySize: conf.maxBodySize,
 	}
 	engine.installRouteFallback()
 	return engine
@@ -282,9 +299,10 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	sub := e.chain.Sub()
 	sub.Use(m...)
 	return &Router{
-		group:      e.engine.Group(prefix),
-		errHandler: e.errHandler,
-		chain:      sub,
+		group:       e.engine.Group(prefix),
+		errHandler:  e.errHandler,
+		chain:       sub,
+		maxBodySize: e.maxBodySize,
 	}
 }
 
