@@ -1,10 +1,12 @@
 package fiberx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
@@ -28,7 +30,8 @@ type Config struct {
 type Option func(*Config)
 
 // NewConfig applies opts in order and fills the defaults: a fiber.App built
-// with [DefaultErrorHandler] and UnescapePath enabled, listening on ":8080",
+// with [DefaultErrorHandler], UnescapePath, CaseSensitive and StrictRouting
+// enabled and DisableHeadAutoRegister set, listening on ":8080",
 // and the adapter's httpx error renderer. It panics when [WithTrustedProxies]
 // is combined with [WithEngine]. [New] calls it; most callers pass options to
 // New directly.
@@ -40,13 +43,20 @@ func NewConfig(opts ...Option) *Config {
 	if conf.engine == nil {
 		fiberConf := fiber.Config{
 			ErrorHandler: DefaultErrorHandler,
-			// Fiber keeps the raw path by default, so route parameters would
-			// come back percent-encoded where gin, echo and hertz decode them.
-			// An engine supplied through WithEngine keeps its own setting —
-			// fiber.Config is immutable after fiber.New — so the context
-			// decodes route parameters itself when this is off (see
+			// Routes match the decoded path, as on the other adapters, so an
+			// encoded static segment still matches; routeFallback keeps a
+			// literal '+' from decoding to a space. An engine supplied
+			// through WithEngine keeps its own setting — fiber.Config is
+			// immutable after fiber.New — so the context decodes route
+			// parameters itself when this is off (see
 			// fiberContext.paramValue and BindURI).
 			UnescapePath: true,
+			// The httpx route grammar matches a path exactly as received:
+			// no case folding, no trailing-slash leniency, and no HEAD
+			// answered by a GET route.
+			CaseSensitive:           true,
+			StrictRouting:           true,
+			DisableHeadAutoRegister: true,
 		}
 		if conf.setTrustedProxies && len(conf.trustedProxies) > 0 {
 			fiberConf.ProxyHeader = fiber.HeaderXForwardedFor
@@ -116,10 +126,12 @@ func normalizeFiberError(err error) error {
 // WithEngine uses engine instead of an app the adapter builds. Its
 // fiber.Config is kept as is: fiber's ErrorHandler still answers the errors
 // that never reach the adapter, such as an oversized request body, and with
-// UnescapePath off the adapter decodes
-// route parameters itself. [New] registers one fallback handler on engine with
-// app.Use. Do not combine it with [WithTrustedProxies]; configure
-// TrustProxy on your own fiber.Config instead.
+// UnescapePath off the adapter decodes route parameters itself. Routing
+// follows the httpx route grammar only with CaseSensitive and StrictRouting
+// enabled and DisableHeadAutoRegister set, as [NewConfig] does. [New]
+// registers one fallback handler on engine with app.Use. Do not combine it
+// with [WithTrustedProxies]; configure TrustProxy on your own fiber.Config
+// instead.
 func WithEngine(engine *fiber.App) Option {
 	return func(conf *Config) {
 		conf.engine = engine
@@ -198,8 +210,11 @@ type Engine struct {
 	chain      *httpx.MiddlewareChain
 	notFound   *httpx.MiddlewareFallback
 	notAllowed *httpx.MiddlewareFallback
-	running    atomic.Bool
-	closed     atomic.Bool
+	order      *routeOrder
+	// unescapePath caches the app's UnescapePath; see keepLiteralPlus.
+	unescapePath bool
+	running      atomic.Bool
+	closed       atomic.Bool
 }
 
 // routeFallback renders the errors fiber raises for itself — an unmatched path,
@@ -222,6 +237,9 @@ type Engine struct {
 // over a committed response is dropped, never rendered over it.
 func (e *Engine) routeFallback() fiber.Handler {
 	return func(ctx fiber.Ctx) error {
+		if e.unescapePath {
+			keepLiteralPlus(ctx)
+		}
 		err := ctx.Next()
 		if err == nil {
 			return nil
@@ -257,6 +275,18 @@ func (e *Engine) routeFallback() fiber.Handler {
 	}
 }
 
+// keepLiteralPlus re-routes a request whose path holds a '+' with it escaped,
+// before any route is matched. With UnescapePath fiber decodes the path with
+// query semantics, turning '+' into a space, where a path decodes it as
+// itself (url.PathUnescape); "%2B" decodes to '+' either way.
+func keepLiteralPlus(ctx fiber.Ctx) {
+	raw := ctx.Request().URI().PathOriginal()
+	if bytes.IndexByte(raw, '+') < 0 {
+		return
+	}
+	ctx.Path(strings.ReplaceAll(string(raw), "+", "%2B"))
+}
+
 // unmatchedFallback returns the engine chain for the unmatched-path answer err
 // belongs to, or nil when err is not one fiber raised for an unmatched path.
 //
@@ -285,6 +315,9 @@ func New(opts ...Option) httpx.Engine {
 		listen:     conf.listen,
 		errHandler: conf.errHandler,
 		chain:      httpx.NewMiddlewareChain(),
+		order:      newRouteOrder(conf.engine),
+		// Config copies a large struct, so it is read once here.
+		unescapePath: conf.engine.Config().UnescapePath,
 	}
 	// The leaf reports the error fiber raised, which is what the configured
 	// httpx.ErrorHandler received before the engine chain covered unmatched
@@ -329,6 +362,7 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 		group:      e.engine.Group(prefix),
 		chain:      sub,
 		errHandler: e.errHandler,
+		order:      e.order,
 	}
 }
 

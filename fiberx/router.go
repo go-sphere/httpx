@@ -72,6 +72,8 @@ type Router struct {
 	// chain references the engine's chain rather than copying it; see
 	// httpx.MiddlewareChain.
 	chain *httpx.MiddlewareChain
+	// order is the engine's route precedence keeper, shared by its groups.
+	order *routeOrder
 }
 
 // Use registers httpx middleware on this scope, implementing
@@ -128,6 +130,7 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 		group:      r.group.Group(prefix),
 		errHandler: r.errHandler,
 		chain:      sub,
+		order:      r.order,
 	}
 }
 
@@ -154,12 +157,19 @@ func (r *Router) normalizeWildcardPath(path string) (string, *wildcardRoute) {
 
 // Handle registers h for method (upper-cased) and path on the fiber group,
 // wrapped in the httpx middleware registered so far on this scope and its
-// parents. A named wildcard is rewritten for fiber and its name kept. It
-// panics on an invalid wildcard (httpx.ValidateWildcardPath).
+// parents. A named wildcard is rewritten for fiber and its name kept.
+//
+// Precedence follows the httpx route grammar regardless of registration
+// order: a static segment beats a parameter, a parameter beats a wildcard.
+// It panics on an invalid wildcard (httpx.ValidateWildcardPath), and when
+// honoring that precedence would move the route across a handler registered
+// on the fiber app directly that could match the route's path, such as root
+// UseNative middleware registered between two overlapping routes.
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	methods := []string{strings.ToUpper(method)}
 	fixed, wildcard := r.normalizeWildcardPath(path)
 	r.group.Add(methods, fixed, r.adaptHandler(h, wildcard))
+	r.order.place(methods)
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
@@ -169,10 +179,11 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 }
 
 // Any registers h for path with fiber's All, so the method set beyond the
-// standard ones is fiber's.
+// standard ones is fiber's. Precedence is as for Handle.
 func (r *Router) Any(path string, h httpx.Handler) {
 	fixed, wildcard := r.normalizeWildcardPath(path)
 	r.group.All(fixed, r.adaptHandler(h, wildcard))
+	r.order.place(r.order.methods)
 }
 
 // Static serves the directory root at prefix; it is StaticFS with

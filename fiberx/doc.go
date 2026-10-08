@@ -48,12 +48,24 @@
 //   - Implements httpx.Streamer, httpx.StdHandlerMounter and
 //     httpx.TestRequester, but not httpx.Flusher: fiber buffers the response
 //     until the handler returns, and a Stream callback runs after that.
+//   - An app built by the adapter routes like the other adapters: case
+//     sensitive, strict about trailing slashes, no HEAD answered by a GET
+//     route, and a literal '+' in the path kept as '+'.
 //   - fiber.Config is immutable after fiber.New, so an app supplied with
-//     WithEngine keeps its own ErrorHandler and UnescapePath settings and
-//     cannot be combined with WithTrustedProxies. httpx handler errors are
-//     still rendered by the adapter.
+//     WithEngine keeps its own ErrorHandler, UnescapePath, CaseSensitive,
+//     StrictRouting and DisableHeadAutoRegister settings and cannot be
+//     combined with WithTrustedProxies. httpx handler errors are still
+//     rendered by the adapter.
+//   - Route precedence does not depend on registration order: the adapter
+//     reorders fiber's stack so a static segment beats a parameter and a
+//     parameter beats a wildcard.
 //   - Register UseNative middleware before the routes it should wrap: fiber
-//     matches its stack in registration order.
+//     matches its stack in registration order. A route that would have to
+//     move across such a middleware to keep its precedence panics, unless the
+//     middleware's prefix cannot match the route's path.
+//   - Behind AdaptStdMiddleware a streamed response (Stream, SSE, a
+//     DataFromReader body stream) keeps streaming; the middleware sees its
+//     headers but cannot transform its body.
 //   - Stop closes the listeners but cannot cut connections still in flight.
 //     Start returns nil once Stop ended it, even when a WithListener listener
 //     reports its own error for having been closed; Stop before Start
