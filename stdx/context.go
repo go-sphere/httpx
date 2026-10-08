@@ -13,12 +13,16 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"github.com/go-sphere/httpx"
 )
 
-var _ httpx.Context = (*stdContext)(nil)
+var (
+	_ httpx.Context              = (*stdContext)(nil)
+	_ httpx.ResponseHeaderEditor = (*stdContext)(nil)
+)
 
 // defaultMultipartMemory mirrors gin's default: parse up to 32 MiB of a
 // multipart form in memory, spill the rest to temporary files.
@@ -550,6 +554,17 @@ func (c *stdContext) Redirect(code int, location string) error {
 
 func (c *stdContext) SetHeader(key, value string) {
 	c.rw.Header().Set(key, value)
+}
+
+func (c *stdContext) AddHeader(key, value string) {
+	if c.rw.written {
+		return
+	}
+	c.rw.Header().Add(key, value)
+}
+
+func (c *stdContext) ResponseHeaderValues(key string) []string {
+	return slices.Clone(c.rw.Header().Values(key))
 }
 
 func (c *stdContext) SetCookie(cookie *http.Cookie) {

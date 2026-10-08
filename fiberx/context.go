@@ -19,8 +19,10 @@ import (
 )
 
 var (
-	_ httpx.Context = fiberContext[*fiber.DefaultCtx]{}
-	_ httpx.Context = fiberContext[fiber.Ctx]{}
+	_ httpx.Context              = fiberContext[*fiber.DefaultCtx]{}
+	_ httpx.Context              = fiberContext[fiber.Ctx]{}
+	_ httpx.ResponseHeaderEditor = fiberContext[*fiber.DefaultCtx]{}
+	_ httpx.ResponseHeaderEditor = fiberContext[fiber.Ctx]{}
 )
 
 // The default context is a pointer, so this value fits directly into an
@@ -538,6 +540,25 @@ func (c fiberContext[T]) SetHeader(key, value string) {
 		return
 	}
 	c.ctx.Set(key, value)
+}
+
+func (c fiberContext[T]) AddHeader(key, value string) {
+	if c.Committed() {
+		return
+	}
+	c.ctx.Response().Header.Add(key, value)
+}
+
+func (c fiberContext[T]) ResponseHeaderValues(key string) []string {
+	raw := c.ctx.Response().Header.PeekAll(key)
+	if len(raw) == 0 {
+		return nil
+	}
+	values := make([]string, len(raw))
+	for i, v := range raw {
+		values[i] = string(v)
+	}
+	return values
 }
 
 func (c fiberContext[T]) SetCookie(cookie *http.Cookie) {

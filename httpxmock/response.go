@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/go-sphere/httpx"
@@ -112,6 +113,25 @@ func (c *Context) SetHeader(key, value string) {
 	defer c.mu.Unlock()
 	c.note("SetHeader")
 	c.res.Header().Set(key, value)
+}
+
+// AddHeader appends value to a response header, keeping the values already
+// set. It is dropped once the response has committed.
+func (c *Context) AddHeader(key, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.note("AddHeader")
+	if !c.res.committed {
+		c.res.Header().Add(key, value)
+	}
+}
+
+// ResponseHeaderValues returns the values of one response header as the
+// response carries them, or nil.
+func (c *Context) ResponseHeaderValues(key string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.res.sentHeader().Values(key))
 }
 
 // SetCookie appends a Set-Cookie header. A nil cookie is ignored. Like

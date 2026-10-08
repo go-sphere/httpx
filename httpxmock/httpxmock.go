@@ -18,6 +18,8 @@ var (
 	_ httpx.Context  = (*Context)(nil)
 	_ httpx.Flusher  = (*Context)(nil)
 	_ httpx.Streamer = (*Context)(nil)
+
+	_ httpx.ResponseHeaderEditor = (*Context)(nil)
 )
 
 // Context is an in-memory httpx.Context backed by an *http.Request and a

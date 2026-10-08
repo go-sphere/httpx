@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -384,6 +385,26 @@ func TestDefaultErrorHandlerRendersThroughTheMock(t *testing.T) {
 	}
 	if got := ctx.BodyString(); got != `{"success":false,"code":0,"message":"nope"}` {
 		t.Errorf("body = %q", got)
+	}
+}
+
+func TestResponseHeaderEditor(t *testing.T) {
+	ctx := httpxmock.New(nil)
+	editor, ok := httpx.AsResponseHeaderEditor(ctx)
+	if !ok {
+		t.Fatal("*httpxmock.Context does not implement httpx.ResponseHeaderEditor")
+	}
+	ctx.SetHeader("Vary", "Accept-Encoding")
+	editor.AddHeader("Vary", "Origin")
+	if got := editor.ResponseHeaderValues("vary"); !slices.Equal(got, []string{"Accept-Encoding", "Origin"}) {
+		t.Fatalf("Vary = %q", got)
+	}
+	if err := ctx.NoContent(http.StatusNoContent); err != nil {
+		t.Fatal(err)
+	}
+	editor.AddHeader("X-Late", "1")
+	if got := editor.ResponseHeaderValues("X-Late"); got != nil {
+		t.Fatalf("X-Late = %q, want nil after commit", got)
 	}
 }
 

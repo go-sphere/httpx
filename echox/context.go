@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,7 +20,8 @@ import (
 )
 
 var (
-	_ httpx.Context = (*echoContext)(nil)
+	_ httpx.Context              = (*echoContext)(nil)
+	_ httpx.ResponseHeaderEditor = (*echoContext)(nil)
 )
 
 type echoContext struct {
@@ -376,6 +378,17 @@ func (c *echoContext) Redirect(code int, location string) error {
 
 func (c *echoContext) SetHeader(key, value string) {
 	c.ctx.Response().Header().Set(key, value)
+}
+
+func (c *echoContext) AddHeader(key, value string) {
+	if c.ctx.Response().Committed {
+		return
+	}
+	c.ctx.Response().Header().Add(key, value)
+}
+
+func (c *echoContext) ResponseHeaderValues(key string) []string {
+	return slices.Clone(c.ctx.Response().Header().Values(key))
 }
 
 func (c *echoContext) SetCookie(cookie *http.Cookie) {

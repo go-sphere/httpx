@@ -17,7 +17,10 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-var _ httpx.Context = (*hertzContext)(nil)
+var (
+	_ httpx.Context              = (*hertzContext)(nil)
+	_ httpx.ResponseHeaderEditor = (*hertzContext)(nil)
+)
 
 type hertzContext struct {
 	ctx     *app.RequestContext
@@ -360,6 +363,22 @@ func (c *hertzContext) SetHeader(key, value string) {
 		return
 	}
 	c.ctx.Header(key, value)
+}
+
+func (c *hertzContext) AddHeader(key, value string) {
+	if c.Committed() {
+		return
+	}
+	c.ctx.Response.Header.Add(key, value)
+}
+
+func (c *hertzContext) ResponseHeaderValues(key string) []string {
+	values := c.ctx.Response.Header.GetAll(key)
+	// hertz answers Set-Cookie with one empty string when no cookie is set.
+	if len(values) == 0 || len(values) == 1 && values[0] == "" {
+		return nil
+	}
+	return values
 }
 
 func (c *hertzContext) SetCookie(cookie *http.Cookie) {

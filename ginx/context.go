@@ -11,6 +11,7 @@ import (
 	"net/textproto"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -22,7 +23,10 @@ import (
 	"github.com/go-sphere/httpx"
 )
 
-var _ httpx.Context = ginContext{}
+var (
+	_ httpx.Context              = ginContext{}
+	_ httpx.ResponseHeaderEditor = ginContext{}
+)
 
 var queryBinder = queryBinding{}
 
@@ -426,6 +430,17 @@ func (c ginContext) Redirect(code int, location string) error {
 
 func (c ginContext) SetHeader(key, value string) {
 	c.ctx.Header(key, value)
+}
+
+func (c ginContext) AddHeader(key, value string) {
+	if c.ctx.Writer.Written() {
+		return
+	}
+	c.ctx.Writer.Header().Add(key, value)
+}
+
+func (c ginContext) ResponseHeaderValues(key string) []string {
+	return slices.Clone(c.ctx.Writer.Header().Values(key))
 }
 
 func (c ginContext) SetCookie(cookie *http.Cookie) {
