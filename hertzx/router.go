@@ -273,6 +273,9 @@ type stdResponseWriter struct {
 	rc          *app.RequestContext
 	header      http.Header
 	wroteHeader bool
+	// streaming is set once the response streams past this writer; later
+	// writes are dropped rather than appended to the stream.
+	streaming bool
 }
 
 func (w *stdResponseWriter) Header() http.Header {
@@ -311,6 +314,9 @@ func (w *stdResponseWriter) applyHeader() {
 }
 
 func (w *stdResponseWriter) Write(b []byte) (int, error) {
+	if w.streaming {
+		return len(b), nil
+	}
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}

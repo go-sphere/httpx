@@ -424,6 +424,7 @@ func (c *hertzContext) Flush() error {
 		if w == nil {
 			return nil
 		}
+		commitPendingStdWriters(c.ctx)
 		body := bytes.Clone(c.ctx.Response.Body())
 		c.ctx.Response.ResetBody()
 		c.ctx.Response.HijackWriter(resp.NewChunkedBodyWriter(&c.ctx.Response, w))

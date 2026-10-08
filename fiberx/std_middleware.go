@@ -17,12 +17,15 @@ import (
 // otel/chi/gzip ecosystem. Because fiber buffers the response, the downstream
 // chain runs first into fiber's buffer, which is then replayed through the
 // middleware's (possibly wrapped) writer, so body/header transformations
-// apply. Streaming responses (DataFromReader with unknown size) are not
-// replayed through the wrapper. If the middleware responds without calling
-// the next handler, the chain is short-circuited. A downstream error that left
-// the response uncommitted is not replayed: only the headers the middleware
-// staged are applied, and the error is returned to be rendered as on the
-// other adapters.
+// apply. A streamed response (Stream, ServerSentEvents, DataFromReader with a
+// body stream) is not replayed: it keeps its stream, the headers the
+// middleware set before calling next, except Content-Length and
+// Content-Encoding, are added where the handler did not set the same key, and
+// whatever the middleware writes after next returns is dropped. If the
+// middleware responds without calling the next handler, the chain is
+// short-circuited. A downstream error that left the response uncommitted is
+// not replayed: only the headers the middleware staged are applied, and the
+// error is returned to be rendered as on the other adapters.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(next httpx.Handler) httpx.Handler { return next }
@@ -44,22 +47,28 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 			// adapters do not have.
 			req = req.WithContext(fc.Context())
 			var nextErr error
+			base := &fiberResponseWriter{fc: fc}
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				ctx.SetContext(r.Context())
 				nextErr = next(ctx)
 				if nextErr != nil && !ctx.Committed() {
 					return
 				}
+				if fc.Response().IsBodyStream() {
+					// Body would read the stream to its end inside the
+					// handler, so the client would get nothing until it ends.
+					base.passStream()
+					return
+				}
 				replayFiberResponse(fc, w)
 			})
-			w := &fiberResponseWriter{fc: fc}
-			middleware(inner).ServeHTTP(w, req)
-			if nextErr != nil && !w.wroteHeader {
+			middleware(inner).ServeHTTP(base, req)
+			if nextErr != nil && !base.wroteHeader {
 				// Replaying would commit an empty 200 and the error would
 				// never be rendered.
-				w.applyHeader()
+				base.applyHeader()
 			} else {
-				w.finish()
+				base.finish()
 			}
 			return nextErr
 		}
@@ -90,6 +99,28 @@ type fiberResponseWriter struct {
 	fc          fiber.Ctx
 	header      http.Header
 	wroteHeader bool
+	// streaming is set once the downstream response is a body stream: any
+	// write would replace that stream, so later writes are discarded.
+	streaming bool
+}
+
+// passStream commits w over a streamed downstream response without touching
+// its body: the staged headers are added for the keys the handler left unset.
+func (w *fiberResponseWriter) passStream() {
+	w.wroteHeader = true
+	w.streaming = true
+	markResponseCommitted(w.fc)
+	resp := w.fc.Response()
+	for key, values := range w.header {
+		// The stream bypasses the middleware's writer, so a length or encoding
+		// it staged would not describe the body.
+		if strings.EqualFold(key, "Content-Length") || strings.EqualFold(key, "Content-Encoding") || len(resp.Header.Peek(key)) > 0 {
+			continue
+		}
+		for _, value := range values {
+			resp.Header.Add(key, value)
+		}
+	}
 }
 
 func (w *fiberResponseWriter) Header() http.Header {
@@ -130,6 +161,9 @@ func (w *fiberResponseWriter) applyHeader() {
 }
 
 func (w *fiberResponseWriter) Write(p []byte) (int, error) {
+	if w.streaming {
+		return len(p), nil
+	}
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}

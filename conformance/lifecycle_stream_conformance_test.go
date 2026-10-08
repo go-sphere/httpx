@@ -88,63 +88,99 @@ func TestEngineSingleUseConformance(t *testing.T) {
 func TestStreamIncrementalDeliveryConformance(t *testing.T) {
 	for _, name := range conformanceFrameworks {
 		t.Run(name, func(t *testing.T) {
-			addr := reserveAddrTB(t)
-			engine := newTrustedProxyEngine(t, name, addr, nil)
+			assertStreamIncremental(t, name, nil)
+		})
+	}
+}
 
-			gate := make(chan struct{})
-			var once sync.Once
-			openGate := func() { once.Do(func() { close(gate) }) }
-			defer openGate()
-
-			engine.Group("").GET("/sse", func(ctx httpx.Context) error {
-				s, ok := httpx.AsStreamer(ctx)
-				if !ok {
-					return httpx.NewInternalServerError("Streamer not supported")
-				}
-				return s.Stream(http.StatusOK, "text/event-stream", func(w io.Writer) error {
-					if _, err := io.WriteString(w, "data: one\n\n"); err != nil {
-						return err
-					}
-					<-gate
-					_, err := io.WriteString(w, "data: two\n\n")
-					return err
+// A net/http middleware around the route must not turn a stream into one
+// buffered response: the first event still arrives while the callback runs.
+func TestStreamThroughStdMiddlewareIsIncrementalConformance(t *testing.T) {
+	for _, name := range proxyFrameworks {
+		t.Run(name, func(t *testing.T) {
+			resp := assertStreamIncremental(t, name, stdMiddlewareAdapters[name](func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-Std", "staged")
+					next.ServeHTTP(w, r)
 				})
-			})
-
-			stop := startEngineAndWait(t, engine, addr)
-			defer stop()
-
-			reqCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+addr+"/sse", nil)
-			if err != nil {
-				t.Fatalf("build request: %v", err)
-			}
-			resp, err := (&http.Client{}).Do(req)
-			if err != nil {
-				t.Fatalf("request failed: %v", err)
-			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("%s status = %d", name, resp.StatusCode)
-			}
-
-			reader := bufio.NewReader(resp.Body)
-			first, err := reader.ReadString('\n')
-			if err != nil {
-				t.Fatalf("%s reading first event: %v", name, err)
-			}
-			if first != "data: one\n" {
-				t.Fatalf("%s first line = %q", name, first)
-			}
-			openGate()
-			rest, err := io.ReadAll(reader)
-			if err != nil {
-				t.Fatalf("%s reading remainder: %v", name, err)
-			}
-			if !strings.Contains(string(rest), "data: two") {
-				t.Fatalf("%s remainder = %q, want it to contain %q", name, rest, "data: two")
+			}))
+			if got := resp.Header.Get("X-Std"); got != "staged" {
+				t.Errorf("%s: X-Std = %q, want %q", name, got, "staged")
 			}
 		})
 	}
+}
+
+// assertStreamIncremental serves a two-event stream behind mw (when non-nil)
+// on a real listener and fails unless the first event is read before the
+// callback is allowed to finish. It returns the response for header checks.
+func assertStreamIncremental(t *testing.T, name string, mw httpx.Middleware) *http.Response {
+	t.Helper()
+	addr := reserveAddrTB(t)
+	engine := newTrustedProxyEngine(t, name, addr, nil)
+	if engine == nil {
+		t.Fatalf("unknown framework %q", name)
+		return nil
+	}
+	router := engine.Group("")
+	if mw != nil {
+		router.Use(mw)
+	}
+
+	gate := make(chan struct{})
+	var once sync.Once
+	openGate := func() { once.Do(func() { close(gate) }) }
+	defer openGate()
+
+	router.GET("/sse", func(ctx httpx.Context) error {
+		s, ok := httpx.AsStreamer(ctx)
+		if !ok {
+			return httpx.NewInternalServerError("Streamer not supported")
+		}
+		return s.Stream(http.StatusOK, "text/event-stream", func(w io.Writer) error {
+			if _, err := io.WriteString(w, "data: one\n\n"); err != nil {
+				return err
+			}
+			<-gate
+			_, err := io.WriteString(w, "data: two\n\n")
+			return err
+		})
+	})
+
+	stop := startEngineAndWait(t, engine, addr)
+	defer stop()
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+addr+"/sse", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil || resp == nil {
+		t.Fatalf("request failed: %v", err)
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s status = %d", name, resp.StatusCode)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	first, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("%s reading first event: %v", name, err)
+	}
+	if first != "data: one\n" {
+		t.Fatalf("%s first line = %q", name, first)
+	}
+	openGate()
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("%s reading remainder: %v", name, err)
+	}
+	if !strings.Contains(string(rest), "data: two") {
+		t.Fatalf("%s remainder = %q, want it to contain %q", name, rest, "data: two")
+	}
+	return resp
 }
