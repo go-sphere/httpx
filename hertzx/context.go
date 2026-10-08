@@ -336,6 +336,9 @@ func streamSize(size int64) int {
 }
 
 func (c *hertzContext) File(path string) error {
+	if err := httpx.CheckServeFile(path); err != nil {
+		return err
+	}
 	return c.writeBody(func() error {
 		c.ctx.File(path)
 		return nil

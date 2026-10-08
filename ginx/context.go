@@ -413,8 +413,7 @@ func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, si
 }
 
 func (c ginContext) File(path string) error {
-	c.ctx.File(path)
-	return nil
+	return httpx.ServeFile(c.ctx.Writer, c.ctx.Request, path)
 }
 
 func (c ginContext) Redirect(code int, location string) error {

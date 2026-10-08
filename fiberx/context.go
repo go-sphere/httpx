@@ -516,6 +516,9 @@ func streamSize(size int64) int {
 }
 
 func (c fiberContext[T]) File(path string) error {
+	if err := httpx.CheckServeFile(path); err != nil {
+		return err
+	}
 	return c.writeBody(func() error {
 		return c.ctx.SendFile(path)
 	})

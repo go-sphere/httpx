@@ -361,6 +361,9 @@ func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, 
 }
 
 func (c *echoContext) File(path string) error {
+	if err := httpx.CheckServeFile(path); err != nil {
+		return err
+	}
 	return c.ctx.File(path)
 }
 

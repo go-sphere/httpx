@@ -238,17 +238,19 @@ func (c *Context) DataFromReader(code int, contentType string, r io.Reader, size
 	return err
 }
 
-// File serves the named file through net/http's http.ServeFile, so Range
+// File serves the named file through httpx.ServeFile, so Range
 // requests, If-Modified-Since and content sniffing behave as they do on a
-// real adapter. A missing file is answered with a 404 body rather than
-// reported as an error, which is what ServeFile does and what the adapters
-// therefore do.
+// real adapter. A path that is missing or not a regular file writes nothing
+// and returns the error httpx.ServeFile reports (404 for a directory or
+// a missing file), as on every adapter.
 func (c *Context) File(path string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("File")
 	start := c.res.body.Len()
-	http.ServeFile(&c.res, c.req, path)
+	if err := httpx.ServeFile(&c.res, c.req, path); err != nil {
+		return err
+	}
 	c.writes = append(c.writes, ResponseWrite{
 		Kind: KindFile,
 		Code: c.res.status,
@@ -258,8 +260,8 @@ func (c *Context) File(path string) error {
 	return nil
 }
 
-// Redirect commits a redirect to location. A code outside 300-308 is rejected
-// with an error and nothing is written, per httpx.ValidRedirectCode.
+// Redirect commits a redirect to location. A code httpx.ValidRedirectCode
+// refuses is rejected with an error and nothing is written.
 func (c *Context) Redirect(code int, location string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -419,7 +421,7 @@ func (w lockedWriter) Write(p []byte) (int, error) {
 }
 
 // recorder is the response under construction. It is an http.ResponseWriter
-// so http.ServeFile and http.Redirect can write through it, which is how File
+// so httpx.ServeFile and http.Redirect can write through it, which is how File
 // and Redirect get real net/http behavior instead of an approximation of it.
 //
 // It models net/http's commit rules directly: header and status are captured

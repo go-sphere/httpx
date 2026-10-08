@@ -211,12 +211,15 @@ type Responder interface {
 	// handler has returned. Callers must not reuse or close r themselves.
 	DataFromReader(code int, contentType string, r io.Reader, size int64) error
 
-	// File writes the contents of the named file to the response and commits
-	// it, using the framework's optimized transfer where available.
+	// File writes the contents of the named regular file to the response and
+	// commits it, using the framework's optimized transfer where available.
+	// A path that is missing or names anything else, a directory included,
+	// writes nothing and returns the error CheckServeFile reports (404, never
+	// a listing or a redirect).
 	File(path string) error
 
-	// Redirect commits a redirect to location. The code must be a valid
-	// redirect status (300-308); implementations return an error for other
+	// Redirect commits a redirect to location. The code must be one
+	// ValidRedirectCode accepts; implementations return an error for other
 	// codes without writing the response.
 	Redirect(code int, location string) error
 }
@@ -317,11 +320,16 @@ type Context interface {
 }
 
 // ValidRedirectCode reports whether code is acceptable for Responder.Redirect:
-// any redirect status in the 300-308 range. Adapters share this check so an
-// invalid code is reported as an error instead of panicking (gin) or being
-// silently rewritten to 302 (hertz).
+// 300, 301, 302, 303, 307 or 308. 304, 305 and 306 are in the 3xx range but do
+// not redirect. Adapters share this check so an invalid code is reported as an
+// error instead of panicking (gin) or being silently rewritten to 302 (hertz).
 func ValidRedirectCode(code int) bool {
-	return code >= http.StatusMultipleChoices && code <= http.StatusPermanentRedirect
+	switch code {
+	case http.StatusMultipleChoices, http.StatusMovedPermanently, http.StatusFound,
+		http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
 }
 
 // AsNativeContext returns ctx's underlying framework context as T. It reports

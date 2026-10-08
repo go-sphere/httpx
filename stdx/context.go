@@ -537,8 +537,7 @@ func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, s
 }
 
 func (c *stdContext) File(path string) error {
-	http.ServeFile(&c.rw, c.req, path)
-	return nil
+	return httpx.ServeFile(&c.rw, c.req, path)
 }
 
 func (c *stdContext) Redirect(code int, location string) error {
@@ -656,7 +655,7 @@ type responseWriter struct {
 	// committed. Before that point the real Header() has no side effect, so
 	// the cache is exact; after it, net/http snapshots the map on access so
 	// later changes are not sent, and the call goes through again to keep
-	// that. http.ServeFile alone reads or writes the header a dozen times.
+	// that. http.ServeContent alone reads or writes the header a dozen times.
 	header  http.Header
 	status  int
 	written bool

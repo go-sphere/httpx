@@ -386,3 +386,11 @@ func TestDefaultErrorHandlerRendersThroughTheMock(t *testing.T) {
 		t.Errorf("body = %q", got)
 	}
 }
+
+func TestFileRefusesDirectory(t *testing.T) {
+	ctx := httpxmock.New(nil)
+	_, status, _ := httpx.ParseError(ctx.File(t.TempDir()))
+	if status != http.StatusNotFound || ctx.Committed() {
+		t.Fatalf("status = %d committed = %v, want a 404 error and nothing written", status, ctx.Committed())
+	}
+}
