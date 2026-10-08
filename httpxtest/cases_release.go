@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-sphere/httpx"
@@ -14,6 +15,7 @@ func init() { register("ReleaseRegression", casesReleaseRegression) }
 func casesReleaseRegression(t *testing.T, run runner) {
 	t.Run("CapabilitiesAtEveryDepth", func(t *testing.T) { releaseConvertedCapabilities(t, run) })
 	t.Run("EmptyCommitMatrix", func(t *testing.T) { releaseEmptyCommitMatrix(t, run) })
+	t.Run("EmptyWriteCommits", func(t *testing.T) { releaseEmptyWriteCommits(t, run) })
 	t.Run("HeaderCase", func(t *testing.T) { releaseHeaderCase(t, run) })
 	t.Run("StatusAfterCommit", func(t *testing.T) { releaseStatusAfterCommit(t, run) })
 	t.Run("StdMiddlewareInChain", func(t *testing.T) { releaseStdMiddlewareInChain(t, run) })
@@ -190,6 +192,50 @@ func releaseConvertedCapabilities(t *testing.T, run runner) {
 	}
 	if got.Status != 200 || got.Body != want {
 		t.Fatalf("unexpected converted stream: %+v", got)
+	}
+}
+
+// Every body-writing method commits even when it writes no bytes, so an error
+// returned afterwards cannot replace the response the handler decided.
+func releaseEmptyWriteCommits(t *testing.T, run runner) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		write  func(c httpx.Context) error
+		// anyBody skips the body check where the framework writes its own
+		// (a redirect's HTML link).
+		anyBody bool
+	}{
+		{"TextEmpty", 202, func(c httpx.Context) error { return c.Text(202, "") }, false},
+		{"BytesNil", 202, func(c httpx.Context) error { return c.Bytes(202, nil, "application/octet-stream") }, false},
+		{"DataFromReaderUnknownSize", 202, func(c httpx.Context) error {
+			return c.DataFromReader(202, "application/octet-stream", strings.NewReader(""), -1)
+		}, false},
+		{"DataFromReaderZeroSize", 202, func(c httpx.Context) error {
+			return c.DataFromReader(202, "application/octet-stream", strings.NewReader(""), 0)
+		}, false},
+		{"JSONNoContent", 204, func(c httpx.Context) error { return c.JSON(204, map[string]any{"ignored": true}) }, false},
+		{"NoContent", 204, func(c httpx.Context) error { return c.NoContent(204) }, false},
+		{"Redirect", 302, func(c httpx.Context) error { return c.Redirect(302, "/elsewhere") }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var committed bool
+			got := run.serve(t, func(router httpx.Router) {
+				router.GET("/", func(c httpx.Context) error {
+					if err := tc.write(c); err != nil {
+						return err
+					}
+					committed = c.Committed()
+					return errors.New("late failure")
+				})
+			}, httptest.NewRequest("GET", "/", nil))
+			if !committed {
+				t.Errorf("Committed = false after %s", tc.name)
+			}
+			if got.Status != tc.status || !tc.anyBody && got.Body != "" {
+				t.Fatalf("%s then error: status=%d body=%q; want %d with an empty body", tc.name, got.Status, got.Body, tc.status)
+			}
+		})
 	}
 }
 

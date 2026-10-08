@@ -13,6 +13,9 @@ type Options struct {
 	// ErrorHandler, when non-nil, must be installed as the engine's
 	// framework-neutral error handler (the adapter's WithErrorHandler option).
 	ErrorHandler httpx.ErrorHandler
+	// MaxBodySize, when positive, must be installed as the engine's request
+	// body limit (the adapter's WithMaxBodySize option).
+	MaxBodySize int64
 }
 
 // Caps declares the optional behavior an adapter supports. Cases depending on
@@ -43,6 +46,13 @@ type Caps struct {
 	// needs a real connection to hold open — so the conformance module verifies
 	// it against actual behavior instead.
 	ForcedStopCutsConnections bool
+	// RawPathRouting reports that routes are matched against the path as
+	// received, percent-escapes included, so a static segment a client
+	// encodes does not match. Only a fiber app built with UnescapePath off and
+	// passed through fiberx.WithEngine does this; every adapter-built engine
+	// matches the decoded path. RequestEdges/EncodedStaticSegment checks the
+	// declaration.
+	RawPathRouting bool
 }
 
 // Suite is what an adapter provides to run the shared cases.

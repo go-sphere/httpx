@@ -26,6 +26,9 @@
 //				if opts.ErrorHandler != nil {
 //					engineOpts = append(engineOpts, stdx.WithErrorHandler(opts.ErrorHandler))
 //				}
+//				if opts.MaxBodySize > 0 {
+//					engineOpts = append(engineOpts, stdx.WithMaxBodySize(opts.MaxBodySize))
+//				}
 //				return stdx.New(engineOpts...)
 //			},
 //			StdMiddleware: stdx.AdaptStdMiddleware,

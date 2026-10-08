@@ -137,6 +137,59 @@ func casesRouter(t *testing.T, r runner) {
 		}
 	})
 
+	// Precedence is a property of the route table, not of the order it was
+	// written in: generated code registers routes in declaration order, so the
+	// broader pattern is often first.
+	t.Run("StaticBeatsParamRegardlessOfOrder", func(t *testing.T) {
+		register := func(router httpx.Router) {
+			router.GET("/order/files/*path", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "wildcard:"+ctx.Param("path"))
+			})
+			router.GET("/order/:id", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "param:"+ctx.Param("id"))
+			})
+			router.GET("/order/new", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "static")
+			})
+		}
+
+		for _, tc := range []struct{ name, path, want string }{
+			{"Static", "/order/new", "static"},
+			{"Param", "/order/42", "param:42"},
+			{"Wildcard", "/order/files/a/b.txt", "wildcard:a/b.txt"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := r.serve(t, register, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.path, nil))
+				if got.Status != http.StatusOK || got.Body != tc.want {
+					t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, tc.want)
+				}
+			})
+		}
+	})
+
+	// A path matches exactly as received: no case folding and no
+	// trailing-slash leniency, as on the stdx reference router. A layer that
+	// filters on Path() relies on the route it guards not being reachable
+	// under another spelling. The trailing-slash form is only checked not to
+	// reach the handler: gin and hertz answer it with a redirect.
+	t.Run("ExactPathMatch", func(t *testing.T) {
+		register := func(router httpx.Router) {
+			router.GET("/exact/admin", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "admin")
+			})
+		}
+		for _, target := range []string{"/exact/ADMIN", "/Exact/admin"} {
+			got := r.serve(t, register, httptest.NewRequest(http.MethodGet, "http://example.com"+target, nil))
+			if got.Status != http.StatusNotFound {
+				t.Errorf("GET %s: status=%d body=%q, want 404", target, got.Status, got.Body)
+			}
+		}
+		got := r.serve(t, register, httptest.NewRequest(http.MethodGet, "http://example.com/exact/admin/", nil))
+		if got.Status == http.StatusOK || got.Body == "admin" {
+			t.Errorf("GET /exact/admin/: status=%d body=%q, want it not to reach the handler", got.Status, got.Body)
+		}
+	})
+
 	t.Run("Handle", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
 			router.Handle(http.MethodPut, "/api/handle", func(ctx httpx.Context) error {

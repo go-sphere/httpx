@@ -193,6 +193,95 @@ func casesWithJSON(t *testing.T, r runner) {
 			t.Fatalf("status = %d, want %d; body=%q", got.Status, http.StatusTeapot, got.Body)
 		}
 	})
+
+	// File serves regular files only. A directory or a missing path is a 404
+	// rendered by the error handler: never a listing, a redirect to the
+	// directory's server path, or a body naming it.
+	t.Run("FileRefusesDirectoryAndMissingPath", func(t *testing.T) {
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "sub")
+		if err := os.Mkdir(sub, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "index.html"), []byte("index"), 0o600); err != nil {
+			t.Fatalf("write index: %v", err)
+		}
+		for _, tc := range []struct{ name, path, target string }{
+			{"Directory", sub, "/file/dir"},
+			{"DirectoryTrailingSlash", sub, "/file/dir/"},
+			{"Missing", filepath.Join(dir, "missing.txt"), "/file/missing"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := r.serveWith(t, Options{ErrorHandler: statusTextErrorHandler}, func(router httpx.Router) {
+					router.GET(tc.target, func(ctx httpx.Context) error {
+						return ctx.File(tc.path)
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.target, nil))
+				if got.Status != http.StatusNotFound || got.Body != "err:404" {
+					t.Fatalf("status=%d body=%q, want 404 %q", got.Status, got.Body, "err:404")
+				}
+				if loc := got.Headers.Get("Location"); loc != "" {
+					t.Fatalf("Location = %q, want none", loc)
+				}
+			})
+		}
+	})
+
+	// The request URL plays no part in File: a URL ending in /index.html
+	// serves the file rather than redirecting to "./".
+	t.Run("FileIgnoresIndexHTMLRequestPath", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "page.html")
+		if err := os.WriteFile(path, []byte("page"), 0o600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/site/index.html", func(ctx httpx.Context) error {
+				return ctx.File(path)
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/site/index.html", nil))
+		if got.Status != http.StatusOK || got.Body != "page" {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "page")
+		}
+		if loc := got.Headers.Get("Location"); loc != "" {
+			t.Fatalf("Location = %q, want none", loc)
+		}
+	})
+
+	// ResponseHeaderEditor appends where SetHeader replaces, reads back what is
+	// set, and like every header write is dropped once the response commits.
+	t.Run("ResponseHeaderEditorAppends", func(t *testing.T) {
+		probed := true
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/headers/add", func(ctx httpx.Context) error {
+				editor, ok := httpx.AsResponseHeaderEditor(ctx)
+				if !ok {
+					probed = false
+					return nil
+				}
+				ctx.SetHeader("Vary", "Accept-Encoding")
+				editor.AddHeader("Vary", "Origin")
+				vary := editor.ResponseHeaderValues("vary")
+				unset := editor.ResponseHeaderValues("X-Unset")
+				if err := ctx.Text(http.StatusOK, fmt.Sprintf("%s|%d", strings.Join(vary, ","), len(unset))); err != nil {
+					return err
+				}
+				editor.AddHeader("X-Late", "1")
+				return nil
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/headers/add", nil))
+		if !probed {
+			t.Skipf("%s: Context does not implement httpx.ResponseHeaderEditor", r.suite.Name)
+		}
+		if want := "Accept-Encoding,Origin|0"; got.Status != http.StatusOK || got.Body != want {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, want)
+		}
+		if vary := got.Headers.Values("Vary"); strings.Join(vary, ",") != "Accept-Encoding,Origin" {
+			t.Fatalf("Vary = %q, want [Accept-Encoding Origin]", vary)
+		}
+		if late := got.Headers.Get("X-Late"); late != "" {
+			t.Fatalf("X-Late = %q, want none: AddHeader after commit must be dropped", late)
+		}
+	})
 }
 
 // The standard context.Context behind a request, and its separation from the

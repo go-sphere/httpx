@@ -2,6 +2,7 @@ package httpxtest
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -178,6 +179,42 @@ func casesCommit(t *testing.T, r runner) {
 		}
 		if loc := got.Headers.Get("Location"); loc != "" {
 			t.Errorf("Location = %q, want it dropped", loc)
+		}
+	})
+
+	// Stream is a body write like any other: after a commit it neither moves
+	// the status nor relabels the content, and its bytes follow the ones
+	// already written.
+	t.Run("StreamAfterCommitAppends", func(t *testing.T) {
+		var streamed bool
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/commit/stream", func(ctx httpx.Context) error {
+				if err := ctx.Text(http.StatusOK, "first"); err != nil {
+					return err
+				}
+				s, ok := httpx.AsStreamer(ctx)
+				if !ok {
+					return nil
+				}
+				streamed = true
+				return s.Stream(http.StatusInternalServerError, "text/event-stream", func(w io.Writer) error {
+					_, err := io.WriteString(w, "|second")
+					return err
+				})
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/commit/stream", nil))
+
+		if !streamed {
+			t.Skipf("%s: Context does not implement httpx.Streamer", r.suite.Name)
+		}
+		if got.Status != http.StatusOK {
+			t.Errorf("status = %d, want %d", got.Status, http.StatusOK)
+		}
+		if ct := got.Headers.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+			t.Errorf("Content-Type = %q, want the committed %q", ct, "text/plain; charset=utf-8")
+		}
+		if got.Body != "first|second" {
+			t.Errorf("body = %q, want %q", got.Body, "first|second")
 		}
 	})
 

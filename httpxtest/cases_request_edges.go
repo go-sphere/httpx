@@ -79,6 +79,57 @@ func casesRequestEdges(t *testing.T, r runner) {
 		}, req)
 	})
 
+	// A '+' in a path is itself, not a space: only form and query encoding give
+	// it that meaning. Param, Params, BindURI and Path must all read it so.
+	t.Run("PlusInPathParam", func(t *testing.T) {
+		for _, tc := range []struct{ name, pattern, target, param, want, path string }{
+			{"Param", "/edges/plus/:id", "/edges/plus/a+b%2Bc", "id", "a+b+c", "/edges/plus/a+b+c"},
+			{"LeadingPlus", "/edges/plus/:id", "/edges/plus/+8613800", "id", "+8613800", "/edges/plus/+8613800"},
+			{"Wildcard", "/edges/plusw/*rest", "/edges/plusw/x+y/z", "rest", "x+y/z", "/edges/plusw/x+y/z"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := r.serve(t, func(router httpx.Router) {
+					router.GET(tc.pattern, func(ctx httpx.Context) error {
+						var in struct {
+							ID   string `uri:"id"`
+							Rest string `uri:"rest"`
+						}
+						if err := ctx.BindURI(&in); err != nil {
+							return err
+						}
+						return ctx.Text(http.StatusOK, strings.Join([]string{
+							ctx.Param(tc.param), ctx.Params()[tc.param], in.ID + in.Rest, ctx.Path(),
+						}, "|"))
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.target, nil))
+				want := strings.Join([]string{tc.want, tc.want, tc.want, tc.path}, "|")
+				if got.Status != http.StatusOK || got.Body != want {
+					t.Fatalf("status=%d body=%q, want 200 %q (Param|Params|BindURI|Path)", got.Status, got.Body, want)
+				}
+			})
+		}
+	})
+
+	// Routes match the decoded path, so a static segment a client
+	// percent-encodes still reaches its route, unless Caps.RawPathRouting
+	// declares otherwise.
+	t.Run("EncodedStaticSegment", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/edges/caf\u00e9/menu", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "static")
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/edges/caf%C3%A9/menu", nil))
+		if r.suite.Caps.RawPathRouting {
+			if got.Status != http.StatusNotFound {
+				t.Fatalf("status=%d, want 404: Caps.RawPathRouting is declared", got.Status)
+			}
+			return
+		}
+		if got.Status != http.StatusOK || got.Body != "static" {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "static")
+		}
+	})
+
 	t.Run("NonASCIIPathSegment", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/edges/decode/"+"%E4%B8%AD%E6%96%87", nil)
 

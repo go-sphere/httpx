@@ -36,6 +36,22 @@ func casesRouteFallback(t *testing.T, r runner) {
 		r.assertGolden(t, register, httptest.NewRequest(http.MethodGet, "http://example.com/items/1", nil))
 	})
 
+	// HEAD is a method like any other: a GET route does not answer it, and the
+	// 405 does not advertise it in Allow.
+	t.Run("HeadWithoutRouteIsNotAllowed", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/head/items", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "listed")
+			})
+		}, httptest.NewRequest(http.MethodHead, "http://example.com/head/items", nil))
+		if got.Status != http.StatusMethodNotAllowed {
+			t.Fatalf("HEAD /head/items: status = %d, want 405", got.Status)
+		}
+		if allow := got.Headers.Get("Allow"); strings.Contains(allow, http.MethodHead) {
+			t.Errorf("Allow = %q, want no HEAD: no HEAD route is registered", allow)
+		}
+	})
+
 	// The golden contract drops the charset (see contractOf), so the exact
 	// Content-Type is asserted here: echo labels JSON "application/json" and the
 	// other four add "; charset=utf-8", which a client trusting the label rather
@@ -126,6 +142,33 @@ func casesRouteFallback(t *testing.T, r runner) {
 		}
 		if got.Headers.Get("X-Handled") != "1" {
 			t.Fatalf("X-Handled = %q, want %q", got.Headers.Get("X-Handled"), "1")
+		}
+	})
+
+	// A layer that answers an unmatched path and still returns the fallback's
+	// error owns the response: the error must not be rendered after it, which
+	// would append a second document or overwrite the answer.
+	t.Run("CommittedUnmatchedPathKeepsItsBody", func(t *testing.T) {
+		for _, tc := range []struct{ name, target string }{
+			{"unmatched path", "/nope"},
+			{"wrong method", "/items/1"},
+		} {
+			got := r.serveEngine(t, Options{}, func(engine httpx.Engine) {
+				engine.Use(func(next httpx.Handler) httpx.Handler {
+					return func(ctx httpx.Context) error {
+						if err := ctx.Text(http.StatusAccepted, "answered"); err != nil {
+							return err
+						}
+						return next(ctx)
+					}
+				})
+				register(engine.Group(""))
+			}, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.target, nil))
+
+			if got.Status != http.StatusAccepted || got.Body != "answered" {
+				t.Fatalf("%s: status=%d body=%q, want 202 %q: the error was rendered over a committed response",
+					tc.name, got.Status, got.Body, "answered")
+			}
 		}
 	})
 

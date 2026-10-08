@@ -45,6 +45,9 @@ func httpxtestSuites() []httpxtest.Suite {
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, ginx.WithErrorHandler(opts.ErrorHandler))
 				}
+				if opts.MaxBodySize > 0 {
+					engineOpts = append(engineOpts, ginx.WithMaxBodySize(opts.MaxBodySize))
+				}
 				return ginx.New(engineOpts...)
 			},
 			StdMiddleware: ginx.AdaptStdMiddleware,
@@ -66,6 +69,9 @@ func httpxtestSuites() []httpxtest.Suite {
 				var engineOpts []fiberx.Option
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, fiberx.WithErrorHandler(opts.ErrorHandler))
+				}
+				if opts.MaxBodySize > 0 {
+					engineOpts = append(engineOpts, fiberx.WithMaxBodySize(opts.MaxBodySize))
 				}
 				return fiberx.New(engineOpts...)
 			},
@@ -91,6 +97,9 @@ func httpxtestSuites() []httpxtest.Suite {
 				engineOpts := []echox.Option{echox.WithEngine(echo.New())}
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, echox.WithErrorHandler(opts.ErrorHandler))
+				}
+				if opts.MaxBodySize > 0 {
+					engineOpts = append(engineOpts, echox.WithMaxBodySize(opts.MaxBodySize))
 				}
 				return echox.New(engineOpts...)
 			},
@@ -122,6 +131,9 @@ func httpxtestSuites() []httpxtest.Suite {
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, hertzx.WithErrorHandler(opts.ErrorHandler))
 				}
+				if opts.MaxBodySize > 0 {
+					engineOpts = append(engineOpts, hertzx.WithMaxBodySize(opts.MaxBodySize))
+				}
 				return hertzx.New(engineOpts...)
 			},
 			StdMiddleware: hertzx.AdaptStdMiddleware,
@@ -146,6 +158,9 @@ func httpxtestSuites() []httpxtest.Suite {
 				var engineOpts []stdx.Option
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, stdx.WithErrorHandler(opts.ErrorHandler))
+				}
+				if opts.MaxBodySize > 0 {
+					engineOpts = append(engineOpts, stdx.WithMaxBodySize(opts.MaxBodySize))
 				}
 				return stdx.New(engineOpts...)
 			},
@@ -182,10 +197,21 @@ func fiberxOwnEngineSuite() httpxtest.Suite {
 		panic("fiberxOwnEngineSuite: suite order changed")
 	}
 	suite.Name = "fiberx-own-engine"
+	suite.Caps.RawPathRouting = true
 	suite.NewEngine = func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
-		engineOpts := []fiberx.Option{fiberx.WithEngine(fiber.New())}
+		// Routing is the caller's configuration on such an app; these three
+		// are what the route grammar needs (see fiberx.WithEngine). The rest,
+		// UnescapePath included, stays at fiber's defaults.
+		engineOpts := []fiberx.Option{fiberx.WithEngine(fiber.New(fiber.Config{
+			CaseSensitive:           true,
+			StrictRouting:           true,
+			DisableHeadAutoRegister: true,
+		}))}
 		if opts.ErrorHandler != nil {
 			engineOpts = append(engineOpts, fiberx.WithErrorHandler(opts.ErrorHandler))
+		}
+		if opts.MaxBodySize > 0 {
+			engineOpts = append(engineOpts, fiberx.WithMaxBodySize(opts.MaxBodySize))
 		}
 		return fiberx.New(engineOpts...)
 	}

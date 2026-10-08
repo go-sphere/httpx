@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -442,19 +443,24 @@ func casesRegression(t *testing.T, r runner) {
 	})
 
 	// An invalid redirect code is a rendered error, not a panic (gin) and not a
-	// silent rewrite to 302 (hertz).
+	// silent rewrite to 302 (hertz). 304, 305 and 306 lie in the 3xx range but
+	// do not redirect.
 	t.Run("InvalidRedirectCode", func(t *testing.T) {
-		got := r.serve(t, func(router httpx.Router) {
-			router.GET("/redirect/bad", func(ctx httpx.Context) error {
-				return ctx.Redirect(999, "http://example.com/elsewhere")
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/redirect/bad", nil))
+		for _, code := range []int{999, http.StatusNotModified, http.StatusUseProxy, 306} {
+			t.Run(strconv.Itoa(code), func(t *testing.T) {
+				got := r.serve(t, func(router httpx.Router) {
+					router.GET("/redirect/bad", func(ctx httpx.Context) error {
+						return ctx.Redirect(code, "http://example.com/elsewhere")
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com/redirect/bad", nil))
 
-		if got.Status != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want 500; body=%q", got.Status, got.Body)
-		}
-		if loc := got.Headers.Get("Location"); loc != "" {
-			t.Fatalf("Location = %q, want it unset for an invalid code", loc)
+				if got.Status != http.StatusInternalServerError {
+					t.Fatalf("status = %d, want 500; body=%q", got.Status, got.Body)
+				}
+				if loc := got.Headers.Get("Location"); loc != "" {
+					t.Fatalf("Location = %q, want it unset for an invalid code", loc)
+				}
+			})
 		}
 	})
 
