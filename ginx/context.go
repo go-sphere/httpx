@@ -11,6 +11,7 @@ import (
 	"net/textproto"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -394,16 +395,21 @@ func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, si
 			_ = rc.Close()
 		}()
 	}
-	if size < 0 {
-		if contentType != "" {
-			c.ctx.Header("Content-Type", contentType)
-		}
-		c.ctx.Status(code)
-		_, err := io.Copy(c.ctx.Writer, r)
-		return err
+	if contentType != "" {
+		c.ctx.Header("Content-Type", contentType)
 	}
-	c.ctx.DataFromReader(code, size, contentType, r, nil)
-	return nil
+	if size >= 0 {
+		c.ctx.Header("Content-Length", strconv.FormatInt(size, 10))
+	}
+	c.ctx.Status(code)
+	// gin's own DataFromReader records a copy error in c.Errors instead of
+	// returning it, and an empty reader leaves the header unwritten.
+	c.ctx.Writer.WriteHeaderNow()
+	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+		return nil
+	}
+	_, err := io.Copy(c.ctx.Writer, r)
+	return err
 }
 
 func (c ginContext) File(path string) error {

@@ -218,7 +218,8 @@ type Engine struct {
 // because this handler is installed by New, before any Use call.
 //
 // Only fiber's own 404 and 405 are treated as unmatched, matched by identity
-// against the package values fiber raises for itself.
+// against the package values fiber raises for itself. An error that comes back
+// over a committed response is dropped, never rendered over it.
 func (e *Engine) routeFallback() fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		err := ctx.Next()
@@ -239,7 +240,12 @@ func (e *Engine) routeFallback() fiber.Handler {
 				return nil
 			}
 		}
-		if e.errHandler == nil || responseDecided(ctx) {
+		if responseDecided(ctx) {
+			// Returned to fiber, the error would reach its ErrorHandler, which
+			// renders over the committed response.
+			return nil
+		}
+		if e.errHandler == nil {
 			return err
 		}
 		e.errHandler(newFiberContext(ctx), normalizeFiberError(err))

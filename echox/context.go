@@ -317,6 +317,12 @@ func (c *echoContext) JSON(code int, v any) error {
 	if header := c.ctx.Response().Header(); header.Get(echo.HeaderContentType) == "" {
 		header.Set(echo.HeaderContentType, "application/json; charset=utf-8")
 	}
+	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+		// echo would write the encoded body, which net/http rejects for these
+		// codes with ErrBodyNotAllowed.
+		c.ctx.Response().WriteHeader(code)
+		return nil
+	}
 	return c.ctx.JSON(code, v)
 }
 

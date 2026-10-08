@@ -437,16 +437,19 @@ func (c *hertzContext) Flush() error {
 }
 
 // Stream implements httpx.Streamer: each write inside fn is flushed to the
-// client immediately.
+// client immediately. On a committed response code and contentType are
+// ignored and fn's bytes follow the body already written.
 func (c *hertzContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
-	if contentType != "" {
-		c.ctx.SetContentType(contentType)
+	if !c.Committed() {
+		if contentType != "" {
+			c.ctx.SetContentType(contentType)
+		}
+		c.ctx.Status(code)
+		// The response is committed from here on: the status and content type
+		// are decided and, over a real connection, already flushed. Recording
+		// it keeps an error returned by fn from being rendered over the stream.
+		c.ctx.Set(responseCommittedKey, true)
 	}
-	c.ctx.Status(code)
-	// The response is committed from here on: the status and content type are
-	// decided and, over a real connection, already flushed. Recording it keeps
-	// an error returned by fn from being rendered over the stream.
-	c.ctx.Set(responseCommittedKey, true)
 	if err := c.Flush(); err != nil {
 		return err
 	}

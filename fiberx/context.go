@@ -598,16 +598,37 @@ func (c fiberContext[T]) NativeContext() any {
 // a panic in fn is recovered here and ends the stream instead of the process.
 // fn must not use the httpx.Context: fiber may already have recycled it.
 //
+// On a committed response code and contentType are ignored and fn's bytes
+// follow the body already written. A response that is already a stream cannot
+// be appended to, so Stream on it is a no-op.
+//
 // fiberContext intentionally does not implement httpx.Flusher: fiber cannot
 // flush mid-handler; probe with httpx.AsFlusher and fall back, or use Stream.
 func (c fiberContext[T]) Stream(code int, contentType string, fn func(w io.Writer) error) error {
-	if contentType != "" {
-		c.ctx.Set(fiber.HeaderContentType, contentType)
+	var sent []byte
+	if c.Committed() {
+		resp := c.ctx.Response()
+		if resp.IsBodyStream() {
+			return nil
+		}
+		// SendStreamWriter replaces the buffered body, so it is carried into
+		// the stream ahead of fn's bytes.
+		sent = bytes.Clone(resp.Body())
+	} else {
+		if contentType != "" {
+			c.ctx.Set(fiber.HeaderContentType, contentType)
+		}
+		c.ctx.Status(code)
 	}
-	c.ctx.Status(code)
 	return c.ctx.SendStreamWriter(func(w *bufio.Writer) {
 		defer func() { _ = recover() }()
-		_ = fn(bufioFlushWriter{w: w})
+		fw := bufioFlushWriter{w: w}
+		if len(sent) > 0 {
+			if _, err := fw.Write(sent); err != nil {
+				return
+			}
+		}
+		_ = fn(fw)
 	})
 }
 

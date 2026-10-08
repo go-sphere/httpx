@@ -229,7 +229,8 @@ func staticLeaf(err error) httpx.Handler {
 // fallbackHandler runs the engine chain and renders whatever comes back out of
 // it. A layer that answers the request itself — a CORS preflight for a path no
 // route matched, a single-page-app rewrite — returns nil and no error is
-// rendered, which is the same rule a route's chain follows.
+// rendered, which is the same rule a route's chain follows. Nor is an error
+// rendered over a response a layer already committed.
 //
 // The error is deliberately not added to hertz's error list here, unlike on the
 // route path: hertz has already recorded 404/405 and the fallback is the last
@@ -238,7 +239,7 @@ func staticLeaf(err error) httpx.Handler {
 func (e *Engine) fallbackHandler(fb *httpx.MiddlewareFallback) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
 		err := fb.Handler()(newHertzContext(ctx, rc))
-		if err == nil {
+		if err == nil || hertzResponseCommitted(rc) {
 			return
 		}
 		e.errHandler(ctx, rc, err)
