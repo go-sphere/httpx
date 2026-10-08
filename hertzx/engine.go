@@ -363,7 +363,10 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 		if len(body) > 0 {
-			hctx.Request.SetBodyStream(bytes.NewReader(body), len(body))
+			// Buffered, as hertz's server delivers a body outside streaming
+			// mode, so in-process dispatch reads it the way a handler does in
+			// production.
+			hctx.Request.SetBody(body)
 		}
 	}
 	for key, values := range req.Header {

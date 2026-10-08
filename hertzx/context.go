@@ -178,8 +178,11 @@ func (c *hertzContext) BodyRaw() ([]byte, error) {
 }
 
 func (c *hertzContext) BodyReader() io.ReadCloser {
-	if stream := c.ctx.Request.BodyStream(); stream != nil {
-		return httpx.NewReadCloser(stream, c.ctx.Request.CloseBodyStream)
+	// BodyStream never returns nil (an absent stream is protocol.NoBody), and
+	// a server not in streaming mode buffers the body instead, so the stream
+	// is only the body when IsBodyStream says so.
+	if c.ctx.Request.IsBodyStream() {
+		return httpx.NewReadCloser(c.ctx.Request.BodyStream(), c.ctx.Request.CloseBodyStream)
 	}
 	body := c.ctx.Request.Body()
 	if len(body) == 0 {

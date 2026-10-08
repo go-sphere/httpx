@@ -1,7 +1,6 @@
 package conformance
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -360,7 +359,7 @@ func doHertzRequest(t *testing.T, h *server.Hertz, req *http.Request) responseSn
 	hctx.Request.Header.SetMethod(req.Method)
 	hctx.Request.SetRequestURI(urlStr)
 	if len(bodyBytes) > 0 {
-		hctx.Request.SetBodyStream(bytes.NewReader(bodyBytes), len(bodyBytes))
+		hctx.Request.SetBody(bodyBytes)
 	}
 	for key, values := range req.Header {
 		for _, value := range values {
