@@ -80,7 +80,8 @@ not consume the body); keep them in every adapter.
   guard it with a package-level lock.
 - `Bind*` **decode only and never validate**; a `binding` tag means nothing to
   httpx. Validation belongs above the transport (`protoc-gen-sphere` emits
-  `protovalidate.Validate`). Decode failures go through `WrapBindError` (400).
+  `protovalidate.Validate`). Decode failures go through `WrapBindError` (400; 413 for a
+  `*http.MaxBytesError`).
   ginx lets gin validate (gin's validator is process-wide) and discards the
   verdict in `decodeError`.
 
@@ -92,6 +93,15 @@ Anything else, e.g. a custom-method suffix like `/v1/reports:generate`, has
 **no restriction and no promise**: the frameworks disagree and cannot be made
 to agree. Do not add a validator, a `RouterFeature`, a registration panic, or a
 conformance case for such shapes.
+
+Matching follows `stdx`: a path matches exactly as received after decoding
+(case sensitive, a literal `+` stays `+`, and a trailing-slash variant never
+reaches the route; gin and hertz redirect it, the others 404), a static
+segment beats a parameter and a parameter beats a wildcard regardless of
+registration order, and a GET route does not answer HEAD (405 without HEAD in
+`Allow`). fiberx gets this from its `NewConfig` defaults (`CaseSensitive`,
+`StrictRouting`, `DisableHeadAutoRegister`), `keepLiteralPlus` and
+`routeOrder`; an app passed through `fiberx.WithEngine` keeps its own config.
 
 Adapters without named wildcards (echox, fiberx) normalize `/*name` at
 registration so `Param(name)` works (`FixWildcardPathIfNeed`,
@@ -117,9 +127,12 @@ method does, even with an empty body.
 Optional capabilities are separate interfaces probed by helpers:
 `AsNativeContext[T]`, `MountStd`, `AsTestRequester`, `AsFlusher` (a writer that
 cannot flush is a no-op, never an error; fiberx has no flusher), `AsStreamer`
-(on fiberx the callback runs after the handler returns, outside middleware),
-and `RouterFeatureProvider`. `ServerSentEvents` (`sse.go`) builds SSE on
-`Streamer`.
+(on fiberx the callback runs after the handler returns, outside middleware;
+behind `AdaptStdMiddleware` the stream is passed through, not replayed),
+`AsResponseHeaderEditor` (append to and read response headers), and
+`RouterFeatureProvider`. `ServerSentEvents` (`sse.go`) builds SSE on
+`Streamer`. `File` serves regular files only: every adapter calls
+`httpx.CheckServeFile` first, so a directory or missing path is a 404 error.
 
 ### Errors
 
@@ -156,7 +169,8 @@ error is rendered at the route, not at the failing layer.
   covers them.
 - `UseNative` (ginx, echox, fiberx, hertzx) hands a framework middleware to the
   framework chain. It always runs outside the `Use` layers on the same scope.
-  On fiberx, register it before the routes it should wrap.
+  On fiberx, register it before the routes it should wrap; a route whose
+  precedence would move it across one panics.
 - stdx has **no `UseNative`**: its `AdaptStdMiddleware` is the native form.
 - `AdaptStdMiddleware` mounts `func(http.Handler) http.Handler` on every
   adapter. Do not reintroduce `AdaptGinMiddleware`-style bridges: a native
@@ -178,6 +192,9 @@ Shared options:
 - `WithAddr`.
 - `WithTrustedProxies`: an empty list ignores forwarding headers.
 - `WithErrorHandler`.
+- `WithMaxBodySize(n)`: checked per route before the httpx chain runs
+  (`httpx.LimitRequestBody` on net/http, buffered length on fiber/hertz); an
+  oversized body is a `*http.MaxBytesError`, which classifies as 413.
 - `From<Framework>` builds a `Context` from a native one. `FromStd` has no
   engine, so `FullPath` and `Param` are empty.
 

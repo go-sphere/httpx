@@ -1,5 +1,106 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **Breaking** for third-party adapters run through `httpxtest`: new cases
+  pin contracts an adapter may not meet yet, and fail until it does. The
+  `BodyLimit` group requires the adapter to wire `Options.MaxBodySize` to its
+  own body limit; `Router/StaticBeatsParamRegardlessOfOrder`,
+  `Router/ExactPathMatch`, `RouteFallback/HeadWithoutRouteIsNotAllowed`,
+  `RequestEdges/PlusInPathParam`, `RequestEdges/EncodedStaticSegment`,
+  `Response/FileRefusesDirectoryAndMissingPath`,
+  `Response/FileIgnoresIndexHTMLRequestPath` and the 304/305/306 subtests of
+  `Regression/InvalidRedirectCode` require the routing, `File` and `Redirect`
+  behaviour described below. New `Caps.RawPathRouting` declares an engine
+  that matches routes against the still-encoded path (a caller-built fiber
+  app with UnescapePath off).
+- **Breaking** `fiberx`: an engine built by the adapter now routes
+  like stdx and the other adapters: case sensitive (`/ADMIN` no longer matches
+  `/admin`), strict about trailing slashes (`/users/1/` no longer matches
+  `/users/:id`), and a GET route no longer answers HEAD (405, and `Allow` no
+  longer lists HEAD). `NewConfig` sets `CaseSensitive`, `StrictRouting` and
+  `DisableHeadAutoRegister`; an app passed through `WithEngine` keeps its own
+  settings.
+- **Breaking** `fiberx`: route precedence no longer depends on
+  registration order: `/users/new` beats `/users/:id` registered before it,
+  and a parameter beats a wildcard. A route that would have to move across a
+  `UseNative` middleware (or anything registered on the fiber app directly)
+  whose path could match it now panics at registration.
+
+### Added
+
+- `WithMaxBodySize(n int64)` on all five adapters: a request body over `n`
+  bytes on a route registered through the adapter is answered 413 through the
+  configured error handler, before the route's httpx middleware runs (a body
+  of unknown length on ginx/echox/stdx fails the read that passes `n`
+  instead). The default adds no limit; fiberx and hertzx keep their
+  framework's own limit (4 MiB), raised to `n` when `n` is larger (on fiberx
+  only for an app the adapter builds). Root helper `httpx.LimitRequestBody`
+  and `httpxtest.Options.MaxBodySize`.
+- `httpx.ResponseHeaderEditor` / `httpx.AsResponseHeaderEditor`: an optional
+  capability, implemented by all five adapters and `httpxmock`, to append to a
+  response header (`AddHeader`, e.g. `Vary`) and read back its values
+  (`ResponseHeaderValues`). httpxtest case
+  `Response/ResponseHeaderEditorAppends`.
+- `httpx.CheckServeFile`, the check every `File` implementation runs first,
+  and `httpx.ServeFile`, a `File` for adapters writing through a net/http
+  `ResponseWriter` (used by ginx, stdx and `httpxmock`).
+
+### Changed
+
+- **Behaviour change** `File` on every adapter (and `httpxmock`) serves
+  regular files only. A missing path or a directory writes nothing and returns
+  a 404 `httpx.Error` rendered by the error handler: hertzx no longer returns
+  an HTML directory listing naming the server path, fiberx no longer
+  redirects to the directory's absolute server path, ginx/stdx no longer
+  write net/http's plain-text 404 (or list or redirect a directory) while
+  returning nil, and echox no longer serves a directory's `index.html` or
+  reports a missing file as 500. ginx and stdx serve through
+  `http.ServeContent`, so a request URL ending in `/index.html` is no longer
+  redirected to `./` nor one containing `..` rejected, as on the other
+  adapters.
+- **Behaviour change** `ParseError` (and so `ClassifyError`/`RenderError`)
+  classifies an error carrying no status whose chain holds a
+  `*http.MaxBytesError` as 413 instead of 500.
+- **Behaviour change** `ValidRedirectCode`, and so `Redirect` on every
+  adapter and `httpxmock`, accepts only 300, 301, 302, 303, 307 and 308: 304,
+  305 and 306 now return an error and write nothing instead of sending a
+  `Location` the client never follows. httpxtest case
+  `Regression/InvalidRedirectCode` covers them.
+
+### Fixed
+
+- `WrapBindError` reports a `*http.MaxBytesError` (request body over its
+  limit) as 413 instead of 400.
+- `fiberx`: a literal `+` in the path is no longer decoded to a space in
+  `Param`, `Params` and `BindURI` (`/u/+8613800` gave `" 8613800"`); route
+  parameters now decode like `url.PathUnescape`, as on the other adapters.
+- `fiberx`: `AdaptStdMiddleware` no longer buffers a streamed response
+  (`Stream`, SSE, `DataFromReader` with a body stream) until it ends; the
+  stream is passed through with the headers the middleware set before
+  calling next, except `Content-Length` and `Content-Encoding`, which would
+  not describe a body that bypasses the middleware's writer.
+- `hertzx`: `BodyReader` returned an empty body on a real server, which
+  buffers the request instead of streaming it; `Engine.Do` now delivers the
+  body the same way, so in-process tests see what production sees.
+- `ginx`, `hertzx`, `fiberx`: an engine-scope layer that committed a response
+  for an unmatched path (404/405) and still returned the error no longer gets a
+  second error document appended (gin, hertz) or its response replaced (fiber).
+- `hertzx`, `fiberx`: `Stream` on a committed response follows the post-commit
+  rule: status and Content-Type stay frozen and the streamed bytes follow the
+  body already written (fiber dropped that body; hertz rewrote the header).
+- `ginx`: `DataFromReader` commits even when the reader is empty, and returns
+  the copy error for a known size too (gin recorded it in `c.Errors` only).
+- `echox`: `JSON` with 1xx/204/304 writes no body, so it no longer returns
+  `http.ErrBodyNotAllowed` on a real server.
+- `hertzx`: headers an `AdaptStdMiddleware` layer set before calling next,
+  except `Content-Length` and `Content-Encoding`, reach the client on a
+  streamed response (`Stream`, `Flush`, SSE) for the keys the handler did not
+  set, so the stream keeps its own `Content-Type`, and what the layer writes
+  after the stream started is dropped instead of appended to it.
+
 ## v0.0.5
 
 The first release of `stdx`, and the release where the five adapters stopped
