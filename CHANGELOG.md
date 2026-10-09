@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- `httpxtest` case `RouteFallback/EngineMiddlewareSeesEmptyFullPath`: for an
+  unmatched path (404) and a path that exists under another method (405),
+  `FullPath()` in engine-scope middleware must be the empty string, not the raw
+  request path, so telemetry that labels by route stays low-cardinality. All
+  five adapters (and a caller-built fiber app) already satisfy it, so it runs
+  unconditionally and adds no `Caps` field, like the other routing-behaviour
+  cases. A third-party adapter that reports the raw path fails this case until
+  it returns an empty `FullPath()` for unmatched requests.
+
 ## v0.0.6 (2026-10-08)
 
 ### Breaking changes

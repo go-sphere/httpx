@@ -206,4 +206,36 @@ func casesRouteFallback(t *testing.T, r runner) {
 				got, "engine-before,engine-after")
 		}
 	})
+
+	// Telemetry middleware labels metrics and spans with FullPath, so an
+	// unmatched request must report the empty string and never the raw request
+	// path, which is unbounded and makes a label of every probe URL.
+	t.Run("EngineMiddlewareSeesEmptyFullPath", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, target string
+			wantStatus   int
+		}{
+			{"unmatched path", "/nope/1234", http.StatusNotFound},
+			{"wrong method", "/items/1", http.StatusMethodNotAllowed},
+		} {
+			var seen []string
+			got := r.serveEngine(t, Options{}, func(engine httpx.Engine) {
+				engine.Use(func(next httpx.Handler) httpx.Handler {
+					return func(ctx httpx.Context) error {
+						seen = append(seen, ctx.FullPath())
+						return next(ctx)
+					}
+				})
+				register(engine.Group(""))
+			}, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.target, nil))
+
+			if got.Status != tc.wantStatus {
+				t.Fatalf("%s: status = %d, want %d", tc.name, got.Status, tc.wantStatus)
+			}
+			if len(seen) != 1 || seen[0] != "" {
+				t.Fatalf("%s: FullPath() in engine middleware = %q, want one empty value: an unmatched request must not report its raw path",
+					tc.name, seen)
+			}
+		}
+	})
 }
