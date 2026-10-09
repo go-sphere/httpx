@@ -3,6 +3,8 @@ package stdx
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -354,5 +356,41 @@ func TestRouterFeatures(t *testing.T) {
 	}
 	if fixed, param := httpx.FixWildcardPathIfNeed(r, "/files/*filepath"); fixed != "/files/*filepath" || param != "filepath" {
 		t.Fatalf("FixWildcardPathIfNeed = (%q, %q); a natively matched pattern must be left alone", fixed, param)
+	}
+}
+
+// TestRegistrationFollowsRouteGrammarFixture registers every path of the
+// shared grammar fixture: valid ones must be accepted, invalid ones must panic.
+func TestRegistrationFollowsRouteGrammarFixture(t *testing.T) {
+	data, err := os.ReadFile("../testdata/route_grammar.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noop := func(ctx httpx.Context) error { return nil }
+	n := 0
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.SplitN(line, " ", 3)
+		if len(fields) != 3 {
+			t.Fatalf("malformed fixture line %q", line)
+		}
+		verdict, path := fields[0], fields[2]
+		n++
+		t.Run(path, func(t *testing.T) {
+			_, r := newTestEngine(t)
+			panicked := func() (p bool) {
+				defer func() { p = recover() != nil }()
+				r.GET(path, noop)
+				return false
+			}()
+			if want := verdict == "invalid"; panicked != want {
+				t.Fatalf("GET %q panicked = %v, want %v", path, panicked, want)
+			}
+		})
+	}
+	if n == 0 {
+		t.Fatal("route grammar fixture is empty")
 	}
 }

@@ -1,0 +1,34 @@
+# Route grammar fixture: the wildcard shapes every httpx adapter accepts or
+# rejects at registration time (httpx.ValidateWildcardPath).
+#
+# Source of truth: httpx. protoc-gen-sphere keeps a byte-identical copy
+# (generate/http/testdata/golden/route_grammar.golden); change httpx first,
+# then copy the file verbatim. The fixture pins the grammar only, not what an
+# adapter does with a valid route at run time.
+#
+# Format: one case per line, "<verdict> <category> <path>", separated by
+# single spaces. Lines starting with '#' and blank lines are ignored.
+#   verdict   valid | invalid
+#   category  ok                    no wildcard, or one named final wildcard
+#             not-segment-start     '*' does not begin its own path segment
+#             not-final             wildcard is followed by more segments
+#             multiple              more than one wildcard in the final segment
+#             anonymous             bare '*' with no name
+valid ok /
+valid ok /health
+valid ok /users/:id
+valid ok /users/:id/posts/:post
+valid ok /files/*name
+valid ok /files/*filepath
+valid ok /a/b/c/*rest
+valid ok /*all
+invalid anonymous /files/*
+invalid anonymous /*
+invalid not-segment-start /foo*bar
+invalid not-segment-start /files/pre*name
+invalid not-segment-start *name
+invalid not-final /a/*x/b
+invalid not-final /a/*rest/
+invalid not-final /a/*x/b/*y
+invalid multiple /a/**
+invalid multiple /a/*x*y
