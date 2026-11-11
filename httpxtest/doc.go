@@ -39,7 +39,8 @@
 // package, so the suite states what a response must look like instead of
 // asserting that the adapters agree with each other. Set HTTPX_UPDATE_GOLDEN=1
 // to rewrite them from a source checkout, then run the suite for every adapter
-// to confirm they all still match. The package is deliberately importable from
+// to confirm they all still match. A full, passing run also fails on an
+// embedded golden file that no case produces. The package is deliberately importable from
 // outside this repository, so a third-party adapter can certify itself against
 // the same contract as the official five.
 //

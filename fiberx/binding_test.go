@@ -1,8 +1,11 @@
 package fiberx
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-sphere/httpx"
@@ -89,5 +92,43 @@ func TestBindHeaderRestoresHost(t *testing.T) {
 	}
 	if hostInMW != "example.com" {
 		t.Fatalf("Host() = %q in a layer above the handler, want %q", hostInMW, "example.com")
+	}
+}
+
+// rejectAll is a StructValidator that fails every struct it is given.
+type rejectAll struct{}
+
+func (rejectAll) Validate(any) error { return errors.New("validator ran") }
+
+// Bind* decodes and never validates, so a StructValidator configured on an app
+// passed through WithEngine must not run for any binder.
+func TestBindSkipsAppStructValidator(t *testing.T) {
+	engine := New(WithEngine(fiber.New(fiber.Config{StructValidator: rejectAll{}})))
+	engine.Group("").POST("/bind/:id", func(ctx httpx.Context) error {
+		var dst struct {
+			ID    string `uri:"id" json:"-"`
+			Name  string `json:"name" query:"name" form:"name"`
+			Trace string `header:"X-Trace"`
+		}
+		for name, bind := range map[string]func(any) error{
+			"JSON": ctx.BindJSON, "Query": ctx.BindQuery, "URI": ctx.BindURI, "Header": ctx.BindHeader,
+		} {
+			if err := bind(&dst); err != nil {
+				return ctx.Text(http.StatusBadRequest, name+": "+err.Error())
+			}
+		}
+		return ctx.Text(http.StatusOK, dst.ID+"|"+dst.Name+"|"+dst.Trace)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/bind/7?name=q", strings.NewReader(`{"name":"j"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trace", "t")
+	resp, err := engine.(httpx.TestRequester).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%q, want 200: a binder ran the app's validator", resp.StatusCode, body)
 	}
 }

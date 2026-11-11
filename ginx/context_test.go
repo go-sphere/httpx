@@ -36,3 +36,33 @@ func TestDataFromReaderReturnsCopyError(t *testing.T) {
 		}
 	}
 }
+
+// failingWriter is a ResponseWriter whose connection is gone: every body write
+// fails.
+type failingWriter struct {
+	*httptest.ResponseRecorder
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error)       { return 0, w.err }
+func (w failingWriter) WriteString(string) (int, error) { return 0, w.err }
+
+// Text and Bytes report a failed write to the handler instead of leaving it in
+// gin's c.Errors.
+func TestTextAndBytesReturnWriteError(t *testing.T) {
+	failed := errors.New("client gone")
+	for name, write := range map[string]func(httpx.Context) error{
+		"Text":  func(c httpx.Context) error { return c.Text(http.StatusOK, "text") },
+		"Bytes": func(c httpx.Context) error { return c.Bytes(http.StatusOK, []byte("png"), "image/png") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			gc, _ := gin.CreateTestContext(failingWriter{ResponseRecorder: httptest.NewRecorder(), err: failed})
+			if err := write(FromGin(gc)); !errors.Is(err, failed) {
+				t.Fatalf("%s = %v, want the write error", name, err)
+			}
+			if len(gc.Errors) != 0 {
+				t.Fatalf("gin recorded %v; the error belongs to the caller", gc.Errors)
+			}
+		})
+	}
+}

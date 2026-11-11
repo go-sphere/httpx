@@ -80,18 +80,9 @@ type ResponseWrite struct {
 // silently ignored rather than reported, and a later body write appends. So
 // a handler that calls JSON twice leaves the first status and both bodies.
 //
-// That is what all five adapters do, measured rather than assumed: every one
-// answers such a handler with 200, the header set before the first write, and
-// the two encodings concatenated.
-//
-// It was three of the five when this package was written. Three inherit the
-// behavior from the ResponseWriter they write through; fiberx and hertzx
-// buffer until the handler returns, so nothing had committed while it ran and
-// both reported 500 with the late header — fiberx losing the first body
-// entirely. They now reproduce the rule rather than expose their buffering,
-// pinned by httpxtest's Commit group. net/http was the right model to follow
-// either way: it is what the standard library does, and a middleware that
-// tries to rewrite an already-answered response has to be correct against it.
+// That is what all five adapters do, pinned by httpxtest's Commit group: every
+// one answers such a handler with 200, the header set before the first write,
+// and the two encodings concatenated.
 
 // Status sets the status code without writing a body. It has no effect once
 // the response has committed.
@@ -131,6 +122,7 @@ func (c *Context) AddHeader(key, value string) {
 func (c *Context) ResponseHeaderValues(key string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.note("ResponseHeaderValues")
 	return slices.Clone(c.res.sentHeader().Values(key))
 }
 
@@ -316,17 +308,18 @@ func (c *Context) StatusCode() int {
 	return c.res.status
 }
 
-// Response read-back. None of these count as a call, so a test can inspect
-// the response without disturbing CallCount.
-
 // Committed reports whether the response has been written, which is
 // httpx.ResponseInfo.Committed: the response header is out, so the status and
 // headers are frozen and a later write appends.
 func (c *Context) Committed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.note("Committed")
 	return c.res.committed
 }
+
+// Response read-back. None of these count as a call, so a test can inspect
+// the response without disturbing CallCount.
 
 // Body returns a copy of the response body.
 func (c *Context) Body() []byte {

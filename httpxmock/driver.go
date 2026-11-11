@@ -72,13 +72,6 @@ func (h *Handler) Calls() int {
 // layers are skipped, matching httpx.ComposeMiddleware, so a table that leaves
 // one out does not have to special-case it.
 //
-// This exists because the three lines it replaces had been written four times
-// in sphere — twice as a concrete func over that package's fake context, and
-// twice as a generic one over a nextRecorder interface whose only purpose was
-// to let a plain-bool and an atomic-bool variant of the same fake share the
-// driver. A Context and a Handler that are both race-safe delete the interface,
-// the type parameter and the duplicate fakes together.
-//
 // Layers run outermost-first, the order httpx.ComposeMiddleware gives them:
 //
 //	Run(ctx, next.Handle, logging, auth) // logging wraps auth wraps next

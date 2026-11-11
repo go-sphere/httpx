@@ -2,16 +2,140 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **Breaking** `stdx`: a server the adapter creates (the default, or
+  `WithAddr`) now has `ReadHeaderTimeout` (10 s, `DefaultReadHeaderTimeout`)
+  and `IdleTimeout` (120 s, `DefaultIdleTimeout`), so a client that sends its
+  headers slowly or leaves a keep-alive connection idle no longer holds it
+  forever. No whole-request read or write timeout is set. A server supplied
+  with `WithServer` is unchanged.
+
+- **Breaking** behaviour on every adapter, aligning them on one contract:
+  - `BindForm` binds the form body only (urlencoded and multipart fields);
+    URL query values are `BindQuery`'s. ginx, echox and hertzx used to bind
+    query values too. hertzx decodes the body with go-playground/form, so
+    `*multipart.FileHeader` fields are no longer filled by `BindForm`; use
+    `FormFile`.
+  - A Content-Type set with `SetHeader` before a write is replaced by `Text`,
+    `Bytes` and `DataFromReader` (with a type), and kept by `JSON`, so a
+    handler can answer `application/problem+json`. `DataFromReader` with an
+    empty type leaves the header alone (echox used to label it text/plain).
+  - After the response is committed, `SetHeader`, `SetCookie` and the
+    Content-Type of a later write no longer change what
+    `ResponseHeaderValues` reports, which is now the response as sent.
+    fiberx and hertzx no longer report the framework's default Content-Type
+    when nothing set one; fiberx's `NewConfig` sets
+    `DisableDefaultContentType`.
+  - `DataFromReader` with 1xx/204/304 commits the status, closes the reader
+    unread and returns nil, like `Text`, `Bytes` and `JSON`.
+  - `Stream` sends the status line and headers before its callback runs.
+  - `WithErrorHandler(nil)` is ignored on every adapter: the handler
+    configured before it stays (echox and stdx used to reset to the
+    default). ginx's `WithNativeErrorHandler(nil)` is ignored too.
+- **Breaking** `echox`: route errors are always rendered inside the route, at
+  the end of the composed chain, as on ginx and with `WithErrorHandler`.
+  With the default configuration an echo middleware registered with
+  `UseNative` now gets nil back from `next` and reads the rendered status from
+  the response, instead of receiving the error. An `HTTPErrorHandler` set on
+  the echo instance after `New` renders route errors too.
+- **Breaking** `fiberx`: `BodyReader` and `Bind*` read the raw request body:
+  a gzip body is no longer decompressed (no other adapter did), and an unknown
+  `Content-Encoding` no longer writes a 415 into the response. `BindJSON` uses
+  the app's `JSONDecoder`. Multipart parsing still goes through fasthttp.
+- **Breaking** for third-party adapters run through `httpxtest`: the new cases
+  below pin contracts an adapter may not meet yet.
+
 ### Added
 
-- `httpxtest` case `RouteFallback/EngineMiddlewareSeesEmptyFullPath`: for an
-  unmatched path (404) and a path that exists under another method (405),
-  `FullPath()` in engine-scope middleware must be the empty string, not the raw
-  request path, so telemetry that labels by route stays low-cardinality. All
-  five adapters (and a caller-built fiber app) already satisfy it, so it runs
-  unconditionally and adds no `Caps` field, like the other routing-behaviour
-  cases. A third-party adapter that reports the raw path fails this case until
-  it returns an empty `FullPath()` for unmatched requests.
+- Support levels, stated in the README and every package's documentation:
+  `stdx` is the reference implementation and sphere's default engine, `ginx`
+  is production-ready and implements every interface, `echox` is
+  experimental, and `fiberx` and `hertzx` are incomplete reference adapters
+  not meant for production.
+- `httpxtest` cases. `Regression/JSONMarshalErrorKeepsStatus`,
+  `Contract/StdMiddlewareCallsNextTwice`,
+  `RouteFallback/EngineMiddlewareReplacesNotFoundError`,
+  `ContextBoundary/ValueReachesErrorHandler`,
+  `Response/FileUnreadableIsForbidden`, `Response/FileKeepsRequestURL`,
+  `Response/BodylessStatusDropsBody`, `Response/SetHeaderEmptyValueIsSent`,
+  `Response/RedirectKeepsEveryValidCode`, `Request/BindFormIgnoresQuery`, the
+  `Headers` group (Content-Type precedence, unset and post-commit headers) and
+  the `StdBridge` group (HandleStd and `AdaptStdMiddleware` against the
+  response the chain built). Every `TestRequester` response must also carry a
+  net/http status line ("200 OK").
+- Each adapter runs the shared suite from its own module
+  (`<adapter>/conformance_test.go`); `make golden` records and verifies there.
+- `LICENSE` (MIT), which the README already referred to.
+
+### Changed
+
+- Error responses are cheaper: `ParseError`/`ClassifyError` no longer
+  allocate (about 340 ns and 7 allocations down to under 50 ns and none), and
+  stdx's `DefaultErrorHandler` writes the error body without reflection,
+  byte-identical to `encoding/json`. A stdx 404 costs about 105 ns and no
+  allocation, down from about 590 ns and 3.
+- `httpx.CheckServeFile` also opens the file, so an unreadable file is a 403
+  on every adapter instead of the framework's 404 on fiberx and hertzx.
+- hertzx `Stop` waits for in-flight requests until its context is done (hertz
+  capped the wait at `ExitWaitTimeout`, 5 s by default); the standard
+  transport's own 30 s cap remains.
+- `httpxtest.Scenario.BenchmarkOnly` is deprecated; no scenario sets it.
+- `httpxmock` counts `Committed` and `ResponseHeaderValues` in `CallCount`.
+- `httpxtest`: duplicate cases are removed (their unique assertions folded
+  into the cases kept), the `ReleaseRegression` group is gone, and `Run` ends
+  with a `GoldenFilesInUse` check that fails on a golden file no case uses.
+  The `StandardContext` contract no longer pins `Done`/`Deadline`, which
+  depend on how the request was built.
+- `conformance`: every real-listener, stress and `BenchmarkFramework` test runs
+  on all five adapters (stdx was missing from several); weak lifecycle tests
+  covered by `TestEngineLifecycleErrorsConformance` are removed; stdx-only
+  regressions moved to `stdx`.
+- `make api-compat` compares against the latest released tag (override with
+  `API_BASELINE`) and includes `stdx`.
+- `benchmarks/report.py` derives the network section's conclusion from the
+  run and reads framework versions from the compiled binary;
+  `benchmarks/network.py` writes under `results/latest/` by default.
+
+### Fixed
+
+- ginx, echox and stdx: the temporary files of a multipart upload larger than
+  the in-memory budget (32 MiB) are removed after the request even when a
+  layer called `SetContext` before the form was parsed. net/http only removes
+  them for the request it served, so they were left on disk.
+- fiberx and hertzx: a `Stop` right after `Start` no longer leaves the server
+  serving with `Start` never returning and `IsRunning` reporting false.
+- A failed `JSON` encode no longer leaves the requested status behind on
+  echox, fiberx and stdx.
+- stdx `AdaptStdMiddleware` no longer hangs when the net/http middleware calls
+  `next` more than once.
+- stdx and echox recognize a multipart body whatever the case of its media
+  type (hertzx matches it case-sensitively, as hertz does).
+- net/http bridges (`HandleStd`, `AdaptStdMiddleware`): a mounted handler or
+  middleware sees the headers the chain set, its `Header().Set` replaces and
+  `Del` deletes; a write into a committed response appends (fiberx, hertzx);
+  a middleware that stops the chain without writing leaves an outer error to
+  be rendered (ginx, fiberx, hertzx); `WriteHeader` alone commits (ginx); the
+  hertzx writer implements `http.Flusher` and passes a streamed body through
+  instead of buffering it.
+- echox: an engine-scope layer that replaces the 404/405 error has its error
+  rendered; an `echo.ErrNotFound` returned by a route (or by `File`) is no
+  longer mistaken for an unmatched path; `Text` and `Bytes` with 1xx/204/304
+  succeed without a body; `File` goes through `httpx.ServeFile`; each method
+  keeps its own named-wildcard name (GET `/files/*a` and POST `/files/*b`).
+- hertzx: `File` leaves the request URI alone and serves names containing
+  `#`, `?` or `%`; `Redirect(300)` sends 300 rather than 302; the error
+  handler receives the context set with `SetContext`; `Flush` sends the
+  status line and headers before any body; `Do` reports a "200 OK" status
+  line; a committing write no longer allocates hertz's key map.
+- fiberx: `File` serves names containing `#`, `?` or `%`; `Bind*` no longer
+  runs a `StructValidator` configured on an app passed through `WithEngine`;
+  `ClientIP` no longer returns a view of pooled request memory; `Do` has no
+  1 s timeout; `HandleStd`/`Static` follow the post-commit rules.
+- ginx: `Text` and `Bytes` return write errors instead of recording them in
+  gin's error list.
+- ginx and hertzx: `SetHeader(key, "")` sends an empty header instead of
+  deleting it.
 
 ## v0.0.6 (2026-10-08)
 

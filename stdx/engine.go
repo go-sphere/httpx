@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-sphere/httpx"
 )
@@ -25,10 +26,7 @@ type Config struct {
 	server         *http.Server
 	errHandler     httpx.ErrorHandler
 	trustedProxies []*net.IPNet
-	// trustProxies distinguishes "not configured" from "configured empty";
-	// both ignore forwarding headers, but only the first may change later.
-	trustProxies bool
-	maxBodySize  int64
+	maxBodySize    int64
 }
 
 // Option configures an [Engine] at construction. Options are applied in
@@ -36,15 +34,16 @@ type Config struct {
 type Option func(*Config)
 
 // NewConfig applies opts in order and fills the defaults: an http.Server
-// listening on ":8080" and [DefaultErrorHandler]. [New] calls it; most callers
-// pass options to New directly.
+// listening on ":8080" (see [WithAddr] for its timeouts) and
+// [DefaultErrorHandler]. [New] calls it; most callers pass options to New
+// directly.
 func NewConfig(opts ...Option) *Config {
 	conf := &Config{}
 	for _, opt := range opts {
 		opt(conf)
 	}
 	if conf.server == nil {
-		conf.server = &http.Server{Addr: ":8080"}
+		conf.server = newServer(":8080")
 	}
 	if conf.errHandler == nil {
 		conf.errHandler = DefaultErrorHandler
@@ -58,12 +57,18 @@ func NewConfig(opts ...Option) *Config {
 // so this is interchangeable with httpx.DefaultErrorHandler.
 func DefaultErrorHandler(ctx httpx.Context, err error) {
 	status, body := httpx.RenderError(err)
+	if c, ok := ctx.(*stdContext); ok {
+		c.scratch = appendErrorBody(c.scratch[:0], body)
+		_ = c.writeJSONBytes(status, c.scratch)
+		return
+	}
 	_ = ctx.JSON(status, body)
 }
 
 // WithServer supplies the http.Server to serve with. [New] installs the
 // engine as its Handler, replacing any handler already set; the server's
-// other fields (timeouts, Addr) are kept. Start serves plain HTTP on a
+// other fields (timeouts, Addr) are kept, none of the defaults [WithAddr]
+// describes is applied. Start serves plain HTTP on a
 // listener it binds itself, so the server's TLS configuration is not used.
 //
 // Order matters with [WithAddr]: WithAddr after WithServer sets Addr on this
@@ -75,13 +80,34 @@ func WithServer(server *http.Server) Option {
 // WithAddr sets the listen address, creating the http.Server when none was
 // supplied. It is the framework-neutral option present on every adapter. The
 // default is ":8080"; an empty address listens on ":http".
+//
+// A server the adapter creates limits how long a client may take to send its
+// request headers ([DefaultReadHeaderTimeout]) and how long an idle keep-alive
+// connection stays open ([DefaultIdleTimeout]), so slow or idle clients cannot
+// hold connections forever. It sets no read or write timeout for the whole
+// request, which would cut uploads and streamed responses; supply a server
+// with [WithServer] to choose other limits.
 func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		if conf.server == nil {
-			conf.server = &http.Server{Addr: addr}
+			conf.server = newServer(addr)
 		} else {
 			conf.server.Addr = addr
 		}
+	}
+}
+
+// The timeouts of a server the adapter creates; see [WithAddr].
+const (
+	DefaultReadHeaderTimeout = 10 * time.Second
+	DefaultIdleTimeout       = 120 * time.Second
+)
+
+func newServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		IdleTimeout:       DefaultIdleTimeout,
 	}
 }
 
@@ -89,9 +115,14 @@ func WithAddr(addr string) Option {
 // by httpx handlers and middleware, and the 404/405 answers for unmatched
 // requests, are rendered through it unless the response is already committed.
 // If the handler renders nothing, the error's own status is still sent. A nil
-// errHandler keeps [DefaultErrorHandler].
+// errHandler is ignored: the handler configured before it, or
+// [DefaultErrorHandler], stays in place.
 func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
-	return func(conf *Config) { conf.errHandler = errHandler }
+	return func(conf *Config) {
+		if errHandler != nil {
+			conf.errHandler = errHandler
+		}
+	}
 }
 
 // WithMaxBodySize limits request bodies on every route to n bytes; n <= 0,
@@ -118,7 +149,6 @@ func WithTrustedProxies(proxies ...string) Option {
 			panic(err)
 		}
 		conf.trustedProxies = cidrs
-		conf.trustProxies = true
 	}
 }
 
@@ -175,7 +205,6 @@ func New(opts ...Option) httpx.Engine {
 		return ctx
 	}
 	engine.server.Handler = engine
-	engine.running.Store(false)
 	return engine
 }
 
@@ -260,6 +289,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// owes a response; without this the server would answer 200.
 		ctx.rw.WriteHeader(ctx.rw.status)
 	}
+	removeReplacedMultipartForm(req, ctx.req)
 
 	// Recycled without a defer: a context whose handler panicked is left to
 	// the garbage collector rather than handed to the next request, and the
@@ -283,6 +313,16 @@ func commitErrorStatus(rw *responseWriter, err error) {
 	}
 	_, status, _ := httpx.ClassifyError(err)
 	rw.status = int(status)
+}
+
+// removeReplacedMultipartForm deletes the temporary files of a multipart form
+// parsed on cur, a request that replaced orig during the chain (SetContext, a
+// net/http middleware). net/http removes them only for the request it served,
+// so without this an upload spilled to disk would stay there.
+func removeReplacedMultipartForm(orig, cur *http.Request) {
+	if cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
+		_ = cur.MultipartForm.RemoveAll()
+	}
 }
 
 // staticLeaf is the innermost handler of an unmatched-path chain: it reports the
@@ -326,9 +366,7 @@ func (e *Engine) Start() error {
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
 	// httpx.Close force-closes when the graceful drain fails, so the server is
-	// down whatever it returns — the running flag has to fall with it. Storing
-	// it only on a nil error left IsRunning reporting true for the rest of the
-	// process after a stop the caller's deadline cut short.
+	// down whatever it returns and the running flag falls with it.
 	defer e.running.Store(false)
 	return httpx.Close(ctx, e.server)
 }
@@ -372,7 +410,7 @@ func (e *Engine) clientIP(req *http.Request) string {
 		if ip == "" {
 			continue
 		}
-		// Parsed once and handed to the range check, which used to re-parse it.
+		// Parsed once and handed to the range check.
 		parsed := net.ParseIP(ip)
 		if parsed == nil {
 			// A malformed entry ends the chain: everything to its left is

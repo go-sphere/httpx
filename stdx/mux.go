@@ -1,6 +1,7 @@
 package stdx
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/go-sphere/httpx"
@@ -259,27 +260,18 @@ func (n *node) walkTerminal(method string) (*route, []string) {
 	if r := n.routes.get(method); r != nil {
 		return r, nil
 	}
-	// A wildcard is deliberately not tried here; see walkChoice.
+	// A wildcard is deliberately not tried here. It would make
+	// /assets/*filepath answer a bare /assets, and then a table holding both
+	// /:p0 and /v1/*rest would answer /v1 from the wildcard while every
+	// framework answers it from /:p0. /assets/ still reaches the wildcard: a
+	// trailing slash is an empty segment, not an exhausted path, so it is
+	// matched with an empty remainder.
 	return nil, n.routes.methods()
 }
 
+// walkChoice handles a level where more than one branch could match. rest is
+// never empty here; walk resolves an exhausted path through walkTerminal.
 func (n *node) walkChoice(method, rest string, values *[]string) (*route, []string) {
-	if rest == "" {
-		if n.routes == nil {
-			return nil, nil
-		}
-		if r := n.routes.get(method); r != nil {
-			return r, nil
-		}
-		// A wildcard is deliberately not tried here. It would make
-		// /assets/*filepath answer a bare /assets, and then a table holding
-		// both /:p0 and /v1/*rest would answer /v1 from the wildcard while
-		// every framework answers it from /:p0. /assets/ still reaches the
-		// wildcard: a trailing slash is an empty segment, not an exhausted
-		// path, so it goes through the branch below with an empty remainder.
-		return nil, n.routes.methods()
-	}
-
 	seg, next := cutSegment(rest)
 	var allow []string
 
@@ -332,18 +324,9 @@ func trimLeadingSlash(s string) string {
 
 func mergeMethods(dst, src []string) []string {
 	for _, m := range src {
-		if !containsString(dst, m) {
+		if !slices.Contains(dst, m) {
 			dst = append(dst, m)
 		}
 	}
 	return dst
-}
-
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }

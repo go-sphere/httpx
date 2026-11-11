@@ -98,8 +98,8 @@ The script looks for vegeta on `PATH` and in `~/go/bin`, and accepts `--vegeta /
 ## Scenarios and measurement boundaries
 
 Scenarios are defined once, in `httpxtest/scenarios.go`, and shared by the contract tests and
-the benchmarks — adding a scenario adds both a contract and a benchmark. `BenchmarkOnly` marks
-the ones whose response is too large to record as a golden.
+the benchmarks — adding a scenario adds both a contract and a benchmark. A response too large
+to review is recorded as a `json-sha256` digest rather than left out.
 
 The in-process tables drive each framework's own dispatcher: gin, echo and net/http through
 `ServeHTTP` with a reused request and a writer that discards the body; fiber through its

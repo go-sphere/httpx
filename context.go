@@ -132,8 +132,9 @@ type Binder interface {
 	// BindQuery decodes URL query parameters into dst using `query` tags.
 	BindQuery(dst any) error
 
-	// BindForm decodes form and multipart form fields into dst using `form`
-	// tags, and may trigger form or multipart parsing.
+	// BindForm decodes the fields of a form or multipart form body into dst
+	// using `form` tags, and may trigger form or multipart parsing. URL query
+	// values are not bound; BindQuery decodes those.
 	BindForm(dst any) error
 
 	// BindURI decodes route parameters into dst using `uri` tags.
@@ -173,6 +174,14 @@ type Binder interface {
 // two over buffering frameworks (fiber, hertz) reproduce it, because a buffered
 // response would otherwise still be rewritable after the point at which a
 // client has conceptually received it.
+//
+// A status that carries no body (1xx, 204, 304) is committed by every
+// body-writing method without one: the bytes are dropped, a reader passed to
+// DataFromReader is closed without being read, and the call returns nil.
+//
+// A Content-Type set with SetHeader before the write is replaced by the one the
+// method writes, except by JSON, which keeps it so a handler can answer with a
+// type such as application/problem+json.
 type Responder interface {
 	// Status sets the HTTP status code. It does not write a body, and has no
 	// effect — and reports no error — once the response is committed.
@@ -184,7 +193,9 @@ type Responder interface {
 	// SetCookie adds a Set-Cookie header to the response.
 	SetCookie(cookie *http.Cookie)
 
-	// JSON writes v as an "application/json" response and commits it.
+	// JSON writes v as an "application/json; charset=utf-8" response and
+	// commits it. A Content-Type already set on the response is kept. An
+	// encode error writes nothing and leaves the status as it was.
 	JSON(code int, v any) error
 
 	// Text writes s as a "text/plain; charset=utf-8" response and commits it.
@@ -202,7 +213,9 @@ type Responder interface {
 	//
 	// size is the total number of bytes to write, or -1 when unknown. It is an
 	// int64 so a caller holding a file size or object-store length can pass it
-	// through without a truncating conversion.
+	// through without a truncating conversion. A non-empty contentType
+	// replaces any Content-Type already set; an empty one leaves the header
+	// as it stands.
 	//
 	// Reader lifecycle: implementations either consume r synchronously before
 	// returning (net/http based adapters) or hand it to the framework and
@@ -295,7 +308,7 @@ type Context interface {
 	// derived from the underlying framework context. It is safe to hand to
 	// downstream business logic, database calls or RPC clients.
 	//
-	// Cancellation is best-effort: on net/http based adapters (gin, echo) the
+	// Cancellation is best-effort: on net/http based adapters (gin, echo, stdx) the
 	// context respects request cancellation and deadlines; on fasthttp/hertz
 	// based adapters it may be connection-scoped or context.Background() and
 	// may not be canceled when the client disconnects. Do not rely on Done()

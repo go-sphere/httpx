@@ -18,7 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"github.com/gin-gonic/gin/codec/json"
-	"github.com/gin-gonic/gin/render"
 	"github.com/go-playground/validator/v10"
 	"github.com/go-sphere/httpx"
 )
@@ -93,15 +92,12 @@ func (c ginContext) Query(key string) string {
 }
 
 func (c ginContext) Queries() map[string][]string {
+	// URL.Query parses afresh on every call, so the map is already the caller's.
 	queries := c.ctx.Request.URL.Query()
 	if len(queries) == 0 {
 		return nil
 	}
-	out := make(map[string][]string, len(queries))
-	for k, v := range queries {
-		out[k] = append([]string(nil), v...)
-	}
-	return out
+	return queries
 }
 
 func (c ginContext) RawQuery() string {
@@ -187,12 +183,15 @@ func (c ginContext) BindQuery(dst any) error {
 	return bind(dst, func() error { return queryBinder.Bind(c.ctx.Request, dst) })
 }
 
+// BindForm binds the form body only. Both bindings it picks read body values
+// (gin's multipart binding reads MultipartForm, FormPost reads PostForm);
+// gin's binding.Form would read req.Form, which merges in the URL query.
 func (c ginContext) BindForm(dst any) error {
 	contentType := c.ctx.GetHeader("Content-Type")
 	if strings.HasPrefix(strings.ToLower(contentType), "multipart/") {
 		return bind(dst, func() error { return c.ctx.ShouldBindWith(dst, binding.FormMultipart) })
 	}
-	return bind(dst, func() error { return c.ctx.ShouldBindWith(dst, binding.Form) })
+	return bind(dst, func() error { return c.ctx.ShouldBindWith(dst, binding.FormPost) })
 }
 
 // BindURI binds route parameters the same way Param reads them. It cannot be
@@ -348,6 +347,32 @@ func (c ginContext) Status(code int) {
 	c.ctx.Status(code)
 }
 
+// Content-Type values are assigned as ready-made slices, as gin's renderers
+// do, which saves an allocation per response. append on a full slice always
+// reallocates, so a later Header().Add cannot write into the shared value.
+var (
+	jsonContentType = []string{"application/json; charset=utf-8"}
+	textContentType = []string{"text/plain; charset=utf-8"}
+)
+
+// setContentType labels the response with v unless it is already committed,
+// so ResponseHeaderValues never reports a type the client did not receive.
+// With keep, a Content-Type the handler set itself wins.
+func (c ginContext) setContentType(v []string, keep bool) {
+	if c.ctx.Writer.Written() {
+		return
+	}
+	h := c.ctx.Writer.Header()
+	if keep && len(h["Content-Type"]) > 0 {
+		return
+	}
+	h["Content-Type"] = v
+}
+
+func bodyless(code int) bool {
+	return code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified
+}
+
 func (c ginContext) JSON(code int, v any) error {
 	// Use Gin's configured codec, but marshal directly so failures return
 	// as errors instead of being buried in Gin's c.Errors.
@@ -360,10 +385,8 @@ func (c ginContext) JSON(code int, v any) error {
 		return err
 	}
 	c.ctx.Status(code)
-	// Match Gin's JSON renderer: reuse its content-type header and let the
-	// HTTP server calculate Content-Length instead of rendering as generic Data.
-	(render.JSON{}).WriteContentType(c.ctx.Writer)
-	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+	c.setContentType(jsonContentType, true)
+	if bodyless(code) {
 		c.ctx.Writer.WriteHeaderNow()
 		return nil
 	}
@@ -371,9 +394,18 @@ func (c ginContext) JSON(code int, v any) error {
 	return err
 }
 
+// Text, like Bytes, writes directly rather than through gin's Render, which
+// records a write error in c.Errors and returns nothing.
 func (c ginContext) Text(code int, s string) error {
-	c.ctx.String(code, s)
-	return nil
+	c.ctx.Status(code)
+	c.setContentType(textContentType, false)
+	if bodyless(code) {
+		c.ctx.Writer.WriteHeaderNow()
+		return nil
+	}
+	// An empty s still commits: gin's WriteString writes the header first.
+	_, err := c.ctx.Writer.WriteString(s)
+	return err
 }
 
 func (c ginContext) NoContent(code int) error {
@@ -389,8 +421,14 @@ func (c ginContext) Bytes(code int, b []byte, contentType string) error {
 	if contentType == "" {
 		contentType = http.DetectContentType(b)
 	}
-	c.ctx.Data(code, contentType, b)
-	return nil
+	c.ctx.Status(code)
+	c.setContentType([]string{contentType}, false)
+	if bodyless(code) {
+		c.ctx.Writer.WriteHeaderNow()
+		return nil
+	}
+	_, err := c.ctx.Writer.Write(b)
+	return err
 }
 
 func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
@@ -400,16 +438,16 @@ func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, si
 		}()
 	}
 	if contentType != "" {
-		c.ctx.Header("Content-Type", contentType)
+		c.setContentType([]string{contentType}, false)
 	}
-	if size >= 0 {
-		c.ctx.Header("Content-Length", strconv.FormatInt(size, 10))
+	if size >= 0 && !c.ctx.Writer.Written() {
+		c.ctx.Writer.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	c.ctx.Status(code)
 	// gin's own DataFromReader records a copy error in c.Errors instead of
 	// returning it, and an empty reader leaves the header unwritten.
 	c.ctx.Writer.WriteHeaderNow()
-	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+	if bodyless(code) {
 		return nil
 	}
 	_, err := io.Copy(c.ctx.Writer, r)
@@ -429,7 +467,11 @@ func (c ginContext) Redirect(code int, location string) error {
 }
 
 func (c ginContext) SetHeader(key, value string) {
-	c.ctx.Header(key, value)
+	if c.ctx.Writer.Written() {
+		return
+	}
+	// Not gin's c.Header, which deletes the header for an empty value.
+	c.ctx.Writer.Header().Set(key, value)
 }
 
 func (c ginContext) AddHeader(key, value string) {
@@ -444,7 +486,7 @@ func (c ginContext) ResponseHeaderValues(key string) []string {
 }
 
 func (c ginContext) SetCookie(cookie *http.Cookie) {
-	if cookie != nil {
+	if cookie != nil && !c.ctx.Writer.Written() {
 		http.SetCookie(c.ctx.Writer, cookie)
 	}
 }
@@ -496,14 +538,16 @@ func (c ginContext) Flush() error {
 	return nil
 }
 
-// Stream implements httpx.Streamer: each write inside fn is flushed to the
-// client immediately.
+// Stream implements httpx.Streamer: the status line and headers are flushed
+// to the client before fn runs, and so is each write inside fn.
 func (c ginContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
 	if contentType != "" {
-		c.ctx.Header("Content-Type", contentType)
+		c.setContentType([]string{contentType}, false)
 	}
 	c.ctx.Status(code)
+	// WriteHeader in net/http only buffers the header; the flush sends it.
 	c.ctx.Writer.WriteHeaderNow()
+	c.ctx.Writer.Flush()
 	return fn(ginFlushWriter{w: c.ctx.Writer})
 }
 

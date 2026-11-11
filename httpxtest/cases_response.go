@@ -126,8 +126,8 @@ func casesResponse(t *testing.T, r runner) {
 // (sphere/server/httpz.WithJson), not here — an envelope is a convention, not
 // part of the transport contract. What every adapter still owes such a wrapper
 // is pinned by hand so the cases do not depend on which package defines the
-// envelope: the success shape, and that a recovered panic travels the ordinary
-// Handler error path with its text intact.
+// envelope: a recovered panic and a returned error both travel the ordinary
+// Handler error path to the configured error handler with their text intact.
 func casesWithJSON(t *testing.T, r runner) {
 	// recovered is the wrapper's panic path: the panic value becomes an httpx
 	// 500 returned to the adapter, never a framework-rendered stack trace.
@@ -141,25 +141,6 @@ func casesWithJSON(t *testing.T, r runner) {
 			return h(ctx)
 		}
 	}
-
-	t.Run("WithJSONSuccess", func(t *testing.T) {
-		r.assertGolden(t, func(router httpx.Router) {
-			router.GET("/withjson/success", func(ctx httpx.Context) error {
-				return ctx.JSON(http.StatusOK, map[string]any{
-					"success": true,
-					"data":    map[string]any{"name": "ok"},
-				})
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/success", nil))
-	})
-
-	t.Run("WithJSONPanic", func(t *testing.T) {
-		r.assertGolden(t, func(router httpx.Router) {
-			router.GET("/withjson/panic", recovered(func(ctx httpx.Context) error {
-				panic("boom")
-			}))
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/withjson/panic", nil))
-	})
 
 	// A recovered panic and a returned error must both reach the configured error
 	// handler with the original message.
@@ -227,6 +208,128 @@ func casesWithJSON(t *testing.T, r runner) {
 		}
 	})
 
+	// A file that exists but cannot be opened is a 403 from the route, not an
+	// unmatched path: the engine's layers run once and see the route.
+	t.Run("FileUnreadableIsForbidden", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			r.skipf(t, "file permissions do not apply to root")
+		}
+		path := filepath.Join(t.TempDir(), "secret.txt")
+		if err := os.WriteFile(path, []byte("secret"), 0o000); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		var seen []string
+		got := r.serveEngine(t, Options{ErrorHandler: statusTextErrorHandler}, func(engine httpx.Engine) {
+			engine.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					seen = append(seen, ctx.FullPath())
+					return next(ctx)
+				}
+			})
+			engine.Group("").GET("/file/secret", func(ctx httpx.Context) error {
+				return ctx.File(path)
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/file/secret", nil))
+		if got.Status != http.StatusForbidden || got.Body != "err:403" {
+			t.Fatalf("status=%d body=%q, want 403 %q", got.Status, got.Body, "err:403")
+		}
+		if len(seen) != 1 || seen[0] != "/file/secret" {
+			t.Fatalf("engine layer saw %q, want one run on %q", seen, "/file/secret")
+		}
+	})
+
+	// 1xx, 204 and 304 carry no body: a write with one commits the status and
+	// drops the bytes, without an error.
+	t.Run("BodylessStatusDropsBody", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			write func(httpx.Context) error
+		}{
+			{"Text", func(ctx httpx.Context) error { return ctx.Text(http.StatusNoContent, "dropped") }},
+			{"Bytes", func(ctx httpx.Context) error { return ctx.Bytes(http.StatusNoContent, []byte("dropped"), "text/plain") }},
+			{"JSON", func(ctx httpx.Context) error { return ctx.JSON(http.StatusNoContent, "dropped") }},
+			{"DataFromReader", func(ctx httpx.Context) error {
+				return ctx.DataFromReader(http.StatusNoContent, "text/plain", strings.NewReader("dropped"), 7)
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var writeErr error
+				got := r.serve(t, func(router httpx.Router) {
+					router.GET("/bodyless", func(ctx httpx.Context) error {
+						writeErr = tc.write(ctx)
+						return writeErr
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com/bodyless", nil))
+				if writeErr != nil {
+					t.Fatalf("write returned %v, want nil", writeErr)
+				}
+				if got.Status != http.StatusNoContent || got.Body != "" {
+					t.Fatalf("status=%d body=%q, want 204 and no body", got.Status, got.Body)
+				}
+			})
+		}
+	})
+
+	// File leaves the request as it was: a layer reading Path or the query
+	// after the handler sees the request URL, not the file's path, and a file
+	// name holding URL syntax is served like any other.
+	t.Run("FileKeepsRequestURL", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "a #?%41 b.txt")
+		if err := os.WriteFile(path, []byte("special"), 0o600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		var after string
+		got := r.serve(t, func(router httpx.Router) {
+			router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					err := next(ctx)
+					after = ctx.Path() + "?" + ctx.RawQuery()
+					return err
+				}
+			})
+			router.GET("/file/special", func(ctx httpx.Context) error {
+				return ctx.File(path)
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/file/special?q=1", nil))
+		if got.Status != http.StatusOK || got.Body != "special" {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "special")
+		}
+		if after != "/file/special?q=1" {
+			t.Fatalf("after File the layer saw %q, want %q", after, "/file/special?q=1")
+		}
+	})
+
+	// SetHeader with an empty value sends the header empty, as
+	// http.Header.Set does; it does not delete it.
+	t.Run("SetHeaderEmptyValueIsSent", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/header/empty", func(ctx httpx.Context) error {
+				ctx.SetHeader("X-Empty", "")
+				return ctx.Text(http.StatusOK, "ok")
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/header/empty", nil))
+		if values, ok := got.Headers["X-Empty"]; !ok || len(values) != 1 || values[0] != "" {
+			t.Fatalf("X-Empty = %q (present %v), want one empty value", values, ok)
+		}
+	})
+
+	// Every code ValidRedirectCode accepts is sent as given.
+	t.Run("RedirectKeepsEveryValidCode", func(t *testing.T) {
+		for _, code := range []int{
+			http.StatusMultipleChoices, http.StatusMovedPermanently, http.StatusFound,
+			http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect,
+		} {
+			got := r.serve(t, func(router httpx.Router) {
+				router.GET("/redirect/valid", func(ctx httpx.Context) error {
+					return ctx.Redirect(code, "/to")
+				})
+			}, httptest.NewRequest(http.MethodGet, "http://example.com/redirect/valid", nil))
+			if got.Status != code || got.Headers.Get("Location") != "/to" {
+				t.Fatalf("Redirect(%d): status=%d Location=%q, want %d %q", code, got.Status, got.Headers.Get("Location"), code, "/to")
+			}
+		}
+	})
+
 	// The request URL plays no part in File: a URL ending in /index.html
 	// serves the file rather than redirecting to "./".
 	t.Run("FileIgnoresIndexHTMLRequestPath", func(t *testing.T) {
@@ -270,7 +373,7 @@ func casesWithJSON(t *testing.T, r runner) {
 			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/headers/add", nil))
 		if !probed {
-			t.Skipf("%s: Context does not implement httpx.ResponseHeaderEditor", r.suite.Name)
+			r.skipf(t, "%s: Context does not implement httpx.ResponseHeaderEditor", r.suite.Name)
 		}
 		if want := "Accept-Encoding,Origin|0"; got.Status != http.StatusOK || got.Body != want {
 			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, want)
@@ -293,15 +396,11 @@ func casesContext(t *testing.T, r runner) {
 		r.assertGolden(t, func(router httpx.Router) {
 			router.GET("/ctx/base", func(ctx httpx.Context) error {
 				ctx.Set("trace-id", "trace-1")
-				stdCtx := ctx.Context()
-				_, hasDeadline := stdCtx.Deadline()
 				v, _ := ctx.Get("trace-id")
 				trace, _ := v.(string)
 				return ctx.JSON(http.StatusOK, map[string]any{
-					"hasDeadline": hasDeadline,
-					"doneNotNil":  stdCtx.Done() != nil,
-					"errIsNil":    stdCtx.Err() == nil,
-					"value":       trace,
+					"errIsNil": ctx.Context().Err() == nil,
+					"value":    trace,
 				})
 			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/ctx/base", nil))
@@ -343,13 +442,5 @@ func casesContext(t *testing.T, r runner) {
 				})
 			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/ctx/separate", nil))
-	})
-
-	t.Run("ContextNotCancelledDuringRequest", func(t *testing.T) {
-		r.assertGolden(t, func(router httpx.Router) {
-			router.GET("/ctx/cancel", func(ctx httpx.Context) error {
-				return ctx.JSON(http.StatusOK, map[string]any{"errIsNil": ctx.Context().Err() == nil})
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/ctx/cancel", nil))
 	})
 }

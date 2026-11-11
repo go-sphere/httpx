@@ -1,18 +1,19 @@
 package conformance
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-sphere/httpx"
+	"github.com/go-sphere/httpx/httpxtest"
 )
 
 func countOpenFDs(t *testing.T) int {
@@ -32,11 +33,12 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	for _, name := range conformanceFrameworks {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, name)
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine := a.NewEngine(t, httpxtest.Options{})
+			router := engine.Group("")
 
-			h.Router.GET("/api/ping", func(ctx httpx.Context) error {
+			router.GET("/api/ping", func(ctx httpx.Context) error {
 				q := ctx.Query("q")
 				return ctx.JSON(http.StatusOK, map[string]string{
 					"message": "pong",
@@ -44,12 +46,12 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 				})
 			})
 
-			h.Router.HEAD("/api/head", func(ctx httpx.Context) error {
+			router.HEAD("/api/head", func(ctx httpx.Context) error {
 				ctx.SetHeader("X-Custom-Test", "adversarial-head")
 				return ctx.NoContent(http.StatusOK)
 			})
 
-			h.Router.POST("/api/echo", func(ctx httpx.Context) error {
+			router.POST("/api/echo", func(ctx httpx.Context) error {
 				body, err := ctx.BodyRaw()
 				if err != nil {
 					return ctx.Text(http.StatusBadRequest, err.Error())
@@ -57,86 +59,89 @@ func TestAdversarialConcurrentRequestsAllAdapters(t *testing.T) {
 				return ctx.Text(http.StatusOK, string(body))
 			})
 
-			h.Router.StaticFS("/static", os.DirFS(tmpDir))
+			router.StaticFS("/static", os.DirFS(tmpDir))
 
 			const concurrency = 60
 			const reqsPerWorker = 30
 			var wg sync.WaitGroup
-			errCh := make(chan error, concurrency*reqsPerWorker)
-
-			wg.Add(concurrency)
-			for w := 0; w < concurrency; w++ {
-				workerID := w
-				go func() {
-					defer wg.Done()
-					for i := 0; i < reqsPerWorker; i++ {
-						switch i % 5 {
-						case 0:
-							req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://example.com/api/ping?q=w%d-i%d", workerID, i), nil)
-							resp := h.Do(t, req)
-							if resp.Status != http.StatusOK {
-								errCh <- fmt.Errorf("worker %d GET status: got %d, want 200", workerID, resp.Status)
-								return
-							}
-						case 1:
-							req := httptest.NewRequest(http.MethodHead, "http://example.com/api/head", nil)
-							resp := h.Do(t, req)
-							if resp.Status != http.StatusOK && resp.Status != http.StatusNoContent {
-								errCh <- fmt.Errorf("worker %d HEAD status: got %d", workerID, resp.Status)
-								return
-							}
-							if resp.Headers.Get("X-Custom-Test") != "adversarial-head" {
-								errCh <- fmt.Errorf("worker %d HEAD header missing: got %q", workerID, resp.Headers.Get("X-Custom-Test"))
-								return
-							}
-						case 2:
-							payload := fmt.Sprintf("echo-payload-w%d-i%d", workerID, i)
-							req := httptest.NewRequest(http.MethodPost, "http://example.com/api/echo", bytes.NewBufferString(payload))
-							resp := h.Do(t, req)
-							if resp.Status != http.StatusOK {
-								errCh <- fmt.Errorf("worker %d POST status: got %d", workerID, resp.Status)
-								return
-							}
-							if resp.Body != payload {
-								errCh <- fmt.Errorf("worker %d POST body mismatch: got %q, want %q", workerID, resp.Body, payload)
-								return
-							}
-						case 3:
-							req := httptest.NewRequest(http.MethodGet, "http://example.com/static/sample.txt", nil)
-							resp := h.Do(t, req)
-							if resp.Status != http.StatusOK {
-								errCh <- fmt.Errorf("worker %d static GET status: got %d", workerID, resp.Status)
-								return
-							}
-							if resp.Body != string(staticContent) {
-								errCh <- fmt.Errorf("worker %d static GET body mismatch: got %q", workerID, resp.Body)
-								return
-							}
-						case 4:
-							// HEAD static: 200 with an empty body on every adapter.
-							req := httptest.NewRequest(http.MethodHead, "http://example.com/static/sample.txt", nil)
-							resp := h.Do(t, req)
-							if resp.Status != http.StatusOK {
-								errCh <- fmt.Errorf("%s worker %d static HEAD status: got %d", name, workerID, resp.Status)
-								return
-							}
-							if len(resp.Body) != 0 {
-								errCh <- fmt.Errorf("%s worker %d static HEAD must have empty body, got %q", name, workerID, resp.Body)
-								return
-							}
+			errCh := make(chan error, concurrency)
+			for worker := range concurrency {
+				wg.Go(func() {
+					for i := range reqsPerWorker {
+						if err := adversarialRequest(engine, worker, i, string(staticContent)); err != nil {
+							errCh <- fmt.Errorf("worker %d request %d: %w", worker, i, err)
+							return
 						}
 					}
-				}()
+				})
 			}
-
 			wg.Wait()
 			close(errCh)
 
 			for err := range errCh {
-				t.Errorf("%s concurrent failure: %v", name, err)
+				t.Errorf("concurrent failure: %v", err)
 			}
 		})
 	}
+}
+
+// adversarialRequest sends request i of a worker, cycling through the routes
+// of TestAdversarialConcurrentRequestsAllAdapters, and checks the response.
+func adversarialRequest(engine httpx.Engine, worker, i int, staticContent string) error {
+	var req *http.Request
+	var check func(responseSnapshot) error
+	switch i % 5 {
+	case 0:
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://example.com/api/ping?q=w%d-i%d", worker, i), nil)
+		check = func(resp responseSnapshot) error {
+			if resp.Status != http.StatusOK {
+				return fmt.Errorf("GET status: got %d, want 200", resp.Status)
+			}
+			return nil
+		}
+	case 1:
+		req = httptest.NewRequest(http.MethodHead, "http://example.com/api/head", nil)
+		check = func(resp responseSnapshot) error {
+			if resp.Status != http.StatusOK && resp.Status != http.StatusNoContent {
+				return fmt.Errorf("HEAD status: got %d", resp.Status)
+			}
+			if got := resp.Headers.Get("X-Custom-Test"); got != "adversarial-head" {
+				return fmt.Errorf("HEAD header missing: got %q", got)
+			}
+			return nil
+		}
+	case 2:
+		payload := fmt.Sprintf("echo-payload-w%d-i%d", worker, i)
+		req = httptest.NewRequest(http.MethodPost, "http://example.com/api/echo", strings.NewReader(payload))
+		check = func(resp responseSnapshot) error {
+			if resp.Status != http.StatusOK || resp.Body != payload {
+				return fmt.Errorf("POST: got %d %q, want 200 %q", resp.Status, resp.Body, payload)
+			}
+			return nil
+		}
+	case 3:
+		req = httptest.NewRequest(http.MethodGet, "http://example.com/static/sample.txt", nil)
+		check = func(resp responseSnapshot) error {
+			if resp.Status != http.StatusOK || resp.Body != staticContent {
+				return fmt.Errorf("static GET: got %d %q", resp.Status, resp.Body)
+			}
+			return nil
+		}
+	default:
+		// HEAD static: 200 with an empty body on every adapter.
+		req = httptest.NewRequest(http.MethodHead, "http://example.com/static/sample.txt", nil)
+		check = func(resp responseSnapshot) error {
+			if resp.Status != http.StatusOK || resp.Body != "" {
+				return fmt.Errorf("static HEAD: got %d %q, want 200 and no body", resp.Status, resp.Body)
+			}
+			return nil
+		}
+	}
+	resp, err := serveInProcess(engine, req)
+	if err != nil {
+		return err
+	}
+	return check(resp)
 }
 
 func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
@@ -147,74 +152,54 @@ func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	for _, name := range conformanceFrameworks {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, name)
-			h.Router.StaticFS("/files", os.DirFS(tmpDir))
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine := a.NewEngine(t, httpxtest.Options{})
+			engine.Group("").StaticFS("/files", os.DirFS(tmpDir))
 
-			method := http.MethodHead
-			expectedStatus := http.StatusOK
+			// headStatic serves one HEAD request for the file and reports any
+			// deviation as an error, so workers can call it.
+			headStatic := func() error {
+				req := httptest.NewRequest(http.MethodHead, "http://example.com/files/leak_check.txt", nil)
+				resp, err := serveInProcess(engine, req)
+				if err != nil {
+					return err
+				}
+				if resp.Status != http.StatusOK || len(resp.Body) != 0 {
+					return fmt.Errorf("HEAD: status %d with %d body bytes, want 200 and no body", resp.Status, len(resp.Body))
+				}
+				return nil
+			}
+			hammer := func(workers, perWorker int) {
+				t.Helper()
+				var wg sync.WaitGroup
+				errCh := make(chan error, workers)
+				for range workers {
+					wg.Go(func() {
+						for range perWorker {
+							if err := headStatic(); err != nil {
+								errCh <- err
+								return
+							}
+						}
+					})
+				}
+				wg.Wait()
+				close(errCh)
+				for err := range errCh {
+					t.Fatal(err)
+				}
+			}
 
 			// Warm up at the measurement concurrency so lazily created runtime FDs
 			// (fasthttp workers, pollers) exist before the baseline count.
-			var warmWg sync.WaitGroup
-			warmupFailures := make(chan int, 50*5)
-			warmWg.Add(50)
-			for w := 0; w < 50; w++ {
-				go func() {
-					defer warmWg.Done()
-					for i := 0; i < 5; i++ {
-						warmupReq := httptest.NewRequest(method, "http://example.com/files/leak_check.txt", nil)
-						resp := h.Do(t, warmupReq)
-						if resp.Status != expectedStatus {
-							warmupFailures <- resp.Status
-							return
-						}
-					}
-				}()
-			}
-			warmWg.Wait()
-			close(warmupFailures)
-			for status := range warmupFailures {
-				t.Fatalf("%s warmup status: got %d, want %d", name, status, expectedStatus)
-			}
+			hammer(50, 5)
 
 			runtime.GC()
 			time.Sleep(50 * time.Millisecond)
 			initialFDs := countOpenFDs(t)
 
-			const totalRequests = 500
-			const concurrency = 50
-			var wg sync.WaitGroup
-			errCh := make(chan error, totalRequests)
-
-			wg.Add(concurrency)
-			reqsPerWorker := totalRequests / concurrency
-			for w := 0; w < concurrency; w++ {
-				workerID := w
-				go func() {
-					defer wg.Done()
-					for i := 0; i < reqsPerWorker; i++ {
-						req := httptest.NewRequest(method, "http://example.com/files/leak_check.txt", nil)
-						r := h.Do(t, req)
-						if r.Status != expectedStatus {
-							errCh <- fmt.Errorf("%s worker %d req %d got status %d, want %d", name, workerID, i, r.Status, expectedStatus)
-							return
-						}
-						if expectedStatus == http.StatusOK && len(r.Body) != 0 {
-							errCh <- fmt.Errorf("%s worker %d req %d expected empty body for HEAD, got %d bytes", name, workerID, i, len(r.Body))
-							return
-						}
-					}
-				}()
-			}
-
-			wg.Wait()
-			close(errCh)
-
-			for err := range errCh {
-				t.Fatalf("error during HEAD stress: %v", err)
-			}
+			hammer(50, 10)
 
 			// A per-request leak would show ~500; allow 5 for transient runtime FDs
 			// (fasthttp workers/timers), re-counting until they settle.
@@ -227,9 +212,9 @@ func TestAdversarialStaticHEADZeroFDLeaks(t *testing.T) {
 					break
 				}
 			}
-			t.Logf("[%s] Open FDs before: %d, diff after 500 HEAD requests: %d", name, initialFDs, diff)
+			t.Logf("open FDs before: %d, diff after 500 HEAD requests: %d", initialFDs, diff)
 			if diff > 5 {
-				t.Fatalf("%s leaked file descriptors! Initial: %d (leaked %d FDs)", name, initialFDs, diff)
+				t.Fatalf("leaked %d file descriptors (%d open before)", diff, initialFDs)
 			}
 		})
 	}

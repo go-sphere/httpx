@@ -24,14 +24,19 @@ import (
 type routeOrder struct {
 	app     *fiber.App
 	methods []string
-	shapes  map[*fiber.Route][]routeSegment
+	// caseSensitive is the app's CaseSensitive, read once: Config copies a
+	// large struct.
+	caseSensitive bool
+	shapes        map[*fiber.Route][]routeSegment
 }
 
 func newRouteOrder(app *fiber.App) *routeOrder {
+	conf := app.Config()
 	return &routeOrder{
-		app:     app,
-		methods: app.Config().RequestMethods,
-		shapes:  make(map[*fiber.Route][]routeSegment),
+		app:           app,
+		methods:       conf.RequestMethods,
+		caseSensitive: conf.CaseSensitive,
+		shapes:        make(map[*fiber.Route][]routeSegment),
 	}
 }
 
@@ -147,7 +152,7 @@ func (o *routeOrder) place(methods []string) {
 			continue
 		}
 		for _, route := range routes[target : len(routes)-1] {
-			if _, ok := o.shapes[route]; !ok && mayMatch(route.Path, shape, o.app.Config().CaseSensitive) {
+			if _, ok := o.shapes[route]; !ok && mayMatch(route.Path, shape, o.caseSensitive) {
 				panic(fmt.Sprintf("fiberx: %s %s must take precedence over %s, but a handler registered on the fiber app directly (UseNative, a mount, a native route) sits between them; register those before the routes",
 					method, added.Path, routes[target].Path))
 			}

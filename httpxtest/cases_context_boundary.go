@@ -2,6 +2,7 @@ package httpxtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,33 @@ type (
 const boundaryStoreKey = "boundary.store"
 
 func casesContextBoundary(t *testing.T, r runner) {
+	// The error handler renders with the Context the chain ran on, so a value a
+	// layer added with SetContext — a trace ID, a logger — reaches it, for a
+	// route's error and for an unmatched path alike.
+	t.Run("ValueReachesErrorHandler", func(t *testing.T) {
+		opts := Options{ErrorHandler: func(ctx httpx.Context, err error) {
+			v, _ := ctx.Context().Value(boundaryCtxKey{}).(string)
+			_ = ctx.Text(http.StatusTeapot, "value="+v)
+		}}
+		register := func(engine httpx.Engine) {
+			engine.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					ctx.SetContext(context.WithValue(ctx.Context(), boundaryCtxKey{}, "set-above"))
+					return next(ctx)
+				}
+			})
+			engine.Group("").GET("/boundary/fail", func(httpx.Context) error {
+				return errors.New("fail")
+			})
+		}
+		for _, target := range []string{"/boundary/fail", "/boundary/nope"} {
+			got := r.serveEngine(t, opts, register, httptest.NewRequest(http.MethodGet, "http://example.com"+target, nil))
+			if got.Status != http.StatusTeapot || got.Body != "value=set-above" {
+				t.Fatalf("%s: status=%d body=%q, want 418 %q", target, got.Status, got.Body, "value=set-above")
+			}
+		}
+	})
+
 	// A value set by a layer below is visible to a layer above once next
 	// returns, including one set by the handler itself. The outer layer is the
 	// only writer here so the observation can be the response body; a header
@@ -98,7 +126,7 @@ func casesContextBoundary(t *testing.T, r runner) {
 				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 				_, _ = fmt.Fprintf(w, "context=%q store=%q", value, stored)
 			})) {
-				t.Skip("adapter does not implement httpx.StdHandlerMounter")
+				r.skipf(t, "adapter does not implement httpx.StdHandlerMounter")
 			}
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/boundary/mounted", nil))
 
@@ -115,7 +143,7 @@ func casesContextBoundary(t *testing.T, r runner) {
 	// golden contracts record.
 	t.Run("ValueReachesStdMiddleware", func(t *testing.T) {
 		if r.suite.StdMiddleware == nil {
-			t.Skipf("%s: no StdMiddleware hook declared", r.suite.Name)
+			r.skipf(t, "%s: no StdMiddleware hook declared", r.suite.Name)
 		}
 		mw := func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

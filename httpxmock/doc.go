@@ -1,15 +1,11 @@
 // Package httpxmock provides a complete in-memory httpx.Context for unit
 // tests of middleware and handlers.
 //
-// It exists because of what test authors reach for otherwise: a struct that
-// embeds httpx.Context and overrides the two or three methods the test needs.
-// The embedded nil interface fills out the method set so the type compiles,
-// and every method the code under test touches but the test did not
-// anticipate panics with a nil dereference. Seventeen such fakes had
-// accumulated across the sphere repository, each a slightly different subset
-// of the same surface, several of them duplicated a second time with
-// sync/atomic fields so a stress test could share one. This package is the
-// one implementation they collapse into.
+// It replaces what test authors reach for otherwise: a struct that embeds
+// httpx.Context and overrides the two or three methods the test needs. The
+// embedded nil interface fills out the method set so the type compiles, and
+// every method the code under test touches but the test did not anticipate
+// panics with a nil dereference.
 //
 // The rule that makes it worth having is that nothing here is left unfilled:
 // every method of httpx.Context has a real body, so a method the test never
@@ -64,7 +60,7 @@
 // Run and Handler are the second half of the package: a middleware cannot be
 // driven by a Context alone, it needs something at the bottom of the chain,
 // and "did the request get past this layer" is the first thing every such
-// test asks. See Run for the four downstream copies of those three lines.
+// test asks.
 //
 // The Context is both the thing under test and the recorder: response state
 // is read back off the same object that was passed in. A separate recorder
@@ -72,8 +68,7 @@
 // because a middleware only ever receives the Context — anything it can
 // observe about the response, it observes through ResponseInfo on that
 // value — so splitting the two would mean handing tests a second object that
-// exists only to be read. Every one of the fakes this replaces already read
-// its response state off the fake itself.
+// exists only to be read.
 //
 // # Concurrency
 //
@@ -81,6 +76,6 @@
 // the real adapters, whose contexts are single-goroutine and may be pooled,
 // and it is not a statement about them: it is here so that a stress test can
 // share one Context without the test author writing a second, atomic copy of
-// the type, which is exactly what happened three times downstream. Code that
-// passes a real httpx.Context between goroutines is still wrong.
+// the type. Code that passes a real httpx.Context between goroutines is still
+// wrong.
 package httpxmock

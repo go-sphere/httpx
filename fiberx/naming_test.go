@@ -198,9 +198,4 @@ func TestFromFiberNamedWildcardScope(t *testing.T) {
 // DefaultErrorHandler is fiber's native shape: the naming rule says it is the
 // value the adapter installs on the framework, so it must stay assignable to
 // fiber.Config.ErrorHandler, where NewConfig puts it.
-func TestDefaultErrorHandlerIsNativeShape(t *testing.T) {
-	cfg := fiber.Config{ErrorHandler: DefaultErrorHandler}
-	if cfg.ErrorHandler == nil {
-		t.Fatal("DefaultErrorHandler is not usable as fiber.Config.ErrorHandler")
-	}
-}
+var _ fiber.ErrorHandler = DefaultErrorHandler

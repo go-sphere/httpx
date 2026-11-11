@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/go-sphere/httpx"
 )
@@ -63,6 +64,10 @@ type stdContext struct {
 	// requests; uriBuf backs its single-element slices.
 	uriValues url.Values
 	uriBuf    [8][1]string
+
+	// scratch is the buffer DefaultErrorHandler encodes into, reused across
+	// requests.
+	scratch []byte
 }
 
 // reset prepares a pooled context for one request. engine and native are set
@@ -105,7 +110,14 @@ func (c *stdContext) recycle() {
 	default:
 		clear(c.keys)
 	}
+	if cap(c.scratch) > maxRetainedScratch {
+		c.scratch = nil
+	}
 }
+
+// maxRetainedScratch bounds the error-body buffer a recycled context keeps,
+// for the same reason as maxRetainedKeys.
+const maxRetainedScratch = 4 << 10
 
 // Native is what AsNativeContext yields on this adapter: the plain net/http
 // pair this adapter runs on. Replacing the request (or the writer) here is
@@ -426,12 +438,10 @@ func (c *stdContext) BindURI(dst any) error {
 }
 
 func (c *stdContext) BindHeader(dst any) error {
-	// The live header map goes straight to the decoder, which only reads it.
-	// Going through Headers() built a map and copied a slice per header on
-	// every bind — nine allocations for a three-field DTO, twenty times what
-	// routing the request costs. Both agree on canonical keys: net/http
-	// canonicalizes on parse and in Header.Set, which is the same assumption
-	// Header() already makes when it looks one up.
+	// The live header map goes straight to the decoder, which only reads it,
+	// so binding allocates no copy of the headers. Both agree on canonical
+	// keys: net/http canonicalizes on parse and in Header.Set, which is the
+	// same assumption Header() already makes when it looks one up.
 	return httpx.WrapBindError(headerDecoder.Decode(dst, url.Values(c.req.Header)))
 }
 
@@ -455,12 +465,29 @@ var (
 	textContentType = []string{"text/plain; charset=utf-8"}
 )
 
+// setContentType labels the response with v unless it is already committed,
+// so ResponseHeaderValues never reports a type the client did not receive.
+// With keep, a Content-Type the handler set itself wins.
+func (c *stdContext) setContentType(v []string, keep bool) {
+	if c.rw.written {
+		return
+	}
+	h := c.rw.Header()
+	if keep {
+		if _, ok := h["Content-Type"]; ok {
+			return
+		}
+	}
+	h["Content-Type"] = v
+}
+
 func (c *stdContext) JSON(code int, v any) error {
 	if bodyless(code) {
-		c.rw.Header()["Content-Type"] = jsonContentType
+		c.setContentType(jsonContentType, true)
 		c.rw.WriteHeader(code)
 		return nil
 	}
+	prevStatus := c.rw.status
 	if !c.rw.written {
 		c.rw.status = code
 	}
@@ -468,8 +495,12 @@ func (c *stdContext) JSON(code int, v any) error {
 		c.enc = json.NewEncoder((*jsonBodyWriter)(&c.rw))
 	}
 	// Encode marshals fully before its single Write, so a value that cannot
-	// be encoded leaves the response untouched — exactly as Marshal did.
+	// be encoded leaves the body untouched; restoring the status leaves the
+	// whole response as it was.
 	if err := c.enc.Encode(v); err != nil {
+		if !c.rw.written {
+			c.rw.status = prevStatus
+		}
 		// A failed Write is sticky on the encoder; drop it so the recycled
 		// context is not poisoned for the next request.
 		c.enc = nil
@@ -478,10 +509,26 @@ func (c *stdContext) JSON(code int, v any) error {
 	return nil
 }
 
+// writeJSONBytes writes b, already-encoded JSON, as JSON writes an encoded
+// value: same status handling, same Content-Type rule.
+func (c *stdContext) writeJSONBytes(code int, b []byte) error {
+	if bodyless(code) {
+		c.setContentType(jsonContentType, true)
+		c.rw.WriteHeader(code)
+		return nil
+	}
+	if !c.rw.written {
+		c.rw.status = code
+	}
+	_, err := (*jsonBodyWriter)(&c.rw).Write(b)
+	return err
+}
+
 // jsonBodyWriter is the sink the pooled encoder writes to. It sets the
-// content type on the way through, and drops the '\n' json.Encoder appends
-// after every value: compact JSON never contains a raw newline, so the last
-// byte of a chunk being one means it is the terminator.
+// content type on the way through, unless the handler set one or the response
+// is already committed, and drops the '\n' json.Encoder appends after every
+// value: compact JSON never contains a raw newline, so the last byte of a
+// chunk being one means it is the terminator.
 type jsonBodyWriter responseWriter
 
 func (w *jsonBodyWriter) Write(p []byte) (int, error) {
@@ -490,7 +537,11 @@ func (w *jsonBodyWriter) Write(p []byte) (int, error) {
 		p = p[:n-1]
 	}
 	rw := (*responseWriter)(w)
-	rw.Header()["Content-Type"] = jsonContentType
+	if !rw.written {
+		if h := rw.Header(); h["Content-Type"] == nil {
+			h["Content-Type"] = jsonContentType
+		}
+	}
 	if _, err := rw.Write(p); err != nil {
 		return 0, err
 	}
@@ -498,7 +549,7 @@ func (w *jsonBodyWriter) Write(p []byte) (int, error) {
 }
 
 func (c *stdContext) Text(code int, s string) error {
-	c.rw.Header()["Content-Type"] = textContentType
+	c.setContentType(textContentType, false)
 	c.rw.WriteHeader(code)
 	if bodyless(code) {
 		return nil
@@ -516,7 +567,7 @@ func (c *stdContext) Bytes(code int, b []byte, contentType string) error {
 	if contentType == "" {
 		contentType = http.DetectContentType(b)
 	}
-	c.rw.Header().Set("Content-Type", contentType)
+	c.setContentType([]string{contentType}, false)
 	c.rw.WriteHeader(code)
 	if bodyless(code) {
 		return nil
@@ -530,9 +581,13 @@ func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, s
 		defer func() { _ = rc.Close() }()
 	}
 	if contentType != "" {
-		c.rw.Header().Set("Content-Type", contentType)
+		c.setContentType([]string{contentType}, false)
 	}
-	if size >= 0 {
+	if bodyless(code) {
+		c.rw.WriteHeader(code)
+		return nil
+	}
+	if size >= 0 && !c.rw.written {
 		c.rw.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	c.rw.WriteHeader(code)
@@ -553,6 +608,9 @@ func (c *stdContext) Redirect(code int, location string) error {
 }
 
 func (c *stdContext) SetHeader(key, value string) {
+	if c.rw.written {
+		return
+	}
 	c.rw.Header().Set(key, value)
 }
 
@@ -568,7 +626,7 @@ func (c *stdContext) ResponseHeaderValues(key string) []string {
 }
 
 func (c *stdContext) SetCookie(cookie *http.Cookie) {
-	if cookie != nil {
+	if cookie != nil && !c.rw.written {
 		http.SetCookie(&c.rw, cookie)
 	}
 }
@@ -622,8 +680,7 @@ func (c *stdContext) Flush() error {
 // no way to: the httpx.Flusher contract makes an unsupported flush a no-op, and
 // gin and httputil.ReverseProxy do the same. A writer with no Flush is not
 // exotic — http.TimeoutHandler's is one, as is any wrapper written before
-// Unwrap existed — and on such a writer Stream used to abandon its callback
-// after committing the headers, answering an SSE request with an empty 200.
+// Unwrap existed — and Stream must still run its callback on one.
 //
 // The direct assertion comes first because it is the common case and costs
 // nothing; the controller is what follows an Unwrap chain, at the price of
@@ -643,7 +700,7 @@ func flush(w http.ResponseWriter) error {
 // and every write inside fn reaches the client immediately.
 func (c *stdContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
 	if contentType != "" {
-		c.rw.Header().Set("Content-Type", contentType)
+		c.setContentType([]string{contentType}, false)
 	}
 	c.rw.WriteHeader(code)
 	if err := c.Flush(); err != nil {
@@ -752,5 +809,5 @@ func bodyless(code int) bool {
 
 func isMultipart(req *http.Request) bool {
 	ct := req.Header.Get("Content-Type")
-	return len(ct) >= 9 && (ct[:9] == "multipart" || ct[:9] == "Multipart")
+	return len(ct) >= 9 && strings.EqualFold(ct[:9], "multipart")
 }

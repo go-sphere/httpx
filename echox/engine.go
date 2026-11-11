@@ -143,11 +143,15 @@ func WithAddr(addr string) Option {
 }
 
 // WithErrorHandler installs a framework-neutral error handler. Errors
-// returned by httpx handlers and middleware are rendered through it with a
-// real httpx.Context instead of echo's HTTPErrorHandler.
+// returned by httpx handlers and middleware, and the 404 and 405 echo raises
+// itself, are rendered through it with a real httpx.Context instead of echo's
+// HTTPErrorHandler. A nil handler is ignored and keeps the one already
+// configured.
 func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
-		conf.errHandler = errHandler
+		if errHandler != nil {
+			conf.errHandler = errHandler
+		}
 	}
 }
 
@@ -203,6 +207,9 @@ type Engine struct {
 	engine     *echo.Echo
 	server     *http.Server
 	errHandler httpx.ErrorHandler
+	// routeErrHandler renders an error a route returned, inside the route; see
+	// Router.toEchoHandler. It is never nil.
+	routeErrHandler httpx.ErrorHandler
 	// nativeErrHandler is whatever occupied echo's HTTPErrorHandler slot after
 	// NewConfig applied the precedence rules, kept so installErrorHandler can
 	// wrap rather than replace it.
@@ -253,11 +260,38 @@ func New(opts ...Option) httpx.Engine {
 	// The leaf reports the error echo raised, which is what the configured
 	// httpx.ErrorHandler received before the engine chain covered unmatched
 	// paths: one value per Engine, so the composition around it can be cached.
+	engine.routeErrHandler = engine.routeErrorHandler()
 	engine.notFound = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(echo.ErrNotFound))
 	engine.notAllowed = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(echo.ErrMethodNotAllowed))
 	engine.installErrorHandler()
-	engine.running.Store(false)
 	return engine
+}
+
+// routeErrorHandler returns the handler a route renders its error with, before
+// the error leaves the composed chain, so every UseNative layer sees the
+// rendered response whatever the configuration. It receives the error as the
+// route returned it.
+//
+// WithErrorHandler's handler gets the error normalized, as it does for an
+// unmatched path. Without one, the error goes through echo's HTTPErrorHandler
+// slot as it stands at request time, which keeps the precedence installErrorHandler
+// serves (a native handler set before New, then DefaultErrorHandler) and lets a
+// handler assigned after New win for route errors too. routeErrorKey keeps the
+// slot from mistaking a route's echo.ErrNotFound for an unmatched path.
+func (e *Engine) routeErrorHandler() httpx.ErrorHandler {
+	if h := e.errHandler; h != nil {
+		return func(ctx httpx.Context, err error) {
+			h(ctx, normalizeEchoError(err))
+		}
+	}
+	return func(ctx httpx.Context, err error) {
+		ec, ok := httpx.AsNativeContext[echo.Context](ctx)
+		if !ok || e.engine.HTTPErrorHandler == nil {
+			return
+		}
+		ec.Set(routeErrorKey, true)
+		e.engine.HTTPErrorHandler(err, ec)
+	}
 }
 
 // staticLeaf is the innermost handler of an unmatched-path chain: it reports the
@@ -288,17 +322,24 @@ func (e *Engine) installErrorHandler() {
 		if c.Response().Committed {
 			return
 		}
-		if fb := e.unmatchedFallback(err); fb != nil {
+		if fb := e.unmatchedFallback(c, err); fb != nil {
 			// Marked before the chain runs, because the layers inside it read
 			// FullPath and must not be told a route accepted the request; see
 			// unmatchedRouteKey.
 			c.Set(unmatchedRouteKey, true)
-			if chained := fb.Handler()(newEchoContext(c, e.wildcards)); chained == nil {
+			chained := fb.Handler()(newEchoContext(c, e.wildcards))
+			if chained == nil {
 				// A layer answered the unmatched path itself. It still owes a
 				// status if all it did was set one.
 				commitErrorStatus(c.Response(), err)
 				return
 			}
+			if c.Response().Committed {
+				return
+			}
+			// What the engine's layers returned is what gets rendered: a layer
+			// may have replaced the 404 with an error of its own.
+			err = chained
 		}
 		if e.errHandler != nil {
 			e.errHandler(newEchoContext(c, e.wildcards), normalizeEchoError(err))
@@ -320,8 +361,12 @@ func (e *Engine) installErrorHandler() {
 //
 // Identity, not status: echo's NotFoundHandler and MethodNotAllowedHandler
 // return these exact package values, while a route that chose to return
-// echo.NewHTTPError(404) built its own and is not an unmatched path.
-func (e *Engine) unmatchedFallback(err error) *httpx.MiddlewareFallback {
+// echo.NewHTTPError(404) built its own and is not an unmatched path. A route
+// that returned the package value itself is told apart by routeErrorKey.
+func (e *Engine) unmatchedFallback(c echo.Context, err error) *httpx.MiddlewareFallback {
+	if fromRoute, _ := c.Get(routeErrorKey).(bool); fromRoute {
+		return nil
+	}
 	switch {
 	case errors.Is(err, echo.ErrNotFound):
 		return e.notFound
@@ -356,7 +401,7 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	return &Router{
 		group:       e.engine.Group(echoGroupPrefix("/", base)),
 		basePath:    base,
-		errHandler:  e.errHandler,
+		errHandler:  e.routeErrHandler,
 		chain:       sub,
 		wildcards:   e.wildcards,
 		maxBodySize: e.maxBodySize,

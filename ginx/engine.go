@@ -95,8 +95,10 @@ func WithServer(server *http.Server) Option {
 //
 // The gin context is aborted afterwards unless the handler already did it:
 // the handler owns the response, and letting gin continue into the remaining
-// chain would let a later layer write over the error body. A nil errHandler is
-// ignored.
+// chain would let a later layer write over the error body.
+//
+// A nil errHandler is ignored: the handler configured before it, or
+// [DefaultErrorHandler], stays in place.
 func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
 		if errHandler == nil {
@@ -113,9 +115,13 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 
 // WithNativeErrorHandler installs gin's own error handler shape. Use it when
 // the handler needs the *gin.Context directly; WithErrorHandler is the
-// portable option that every adapter accepts.
+// portable option that every adapter accepts. A nil errHandler is ignored, as
+// with WithErrorHandler.
 func WithNativeErrorHandler(errHandler ErrorHandler) Option {
 	return func(conf *Config) {
+		if errHandler == nil {
+			return
+		}
 		conf.errHandler = errHandler
 	}
 }

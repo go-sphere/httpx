@@ -348,3 +348,38 @@ func TestClientIP(t *testing.T) {
 		New(WithTrustedProxies("not-an-ip-or-cidr"))
 	})
 }
+
+// A nil handler is ignored rather than resetting the one configured before it.
+func TestWithErrorHandlerNilKeepsPrevious(t *testing.T) {
+	var called bool
+	conf := NewConfig(
+		WithErrorHandler(func(httpx.Context, error) { called = true }),
+		WithErrorHandler(nil),
+	)
+	conf.errHandler(nil, nil)
+	if !called {
+		t.Fatal("WithErrorHandler(nil) replaced the configured handler")
+	}
+}
+
+// A server the adapter creates bounds header reads and idle connections; one
+// the caller supplies is left exactly as configured.
+func TestServerTimeoutDefaults(t *testing.T) {
+	for name, conf := range map[string]*Config{
+		"default":  NewConfig(),
+		"WithAddr": NewConfig(WithAddr(":9999")),
+	} {
+		if conf.server.ReadHeaderTimeout != DefaultReadHeaderTimeout || conf.server.IdleTimeout != DefaultIdleTimeout {
+			t.Errorf("%s: ReadHeaderTimeout=%v IdleTimeout=%v, want %v and %v", name,
+				conf.server.ReadHeaderTimeout, conf.server.IdleTimeout, DefaultReadHeaderTimeout, DefaultIdleTimeout)
+		}
+		if conf.server.ReadTimeout != 0 || conf.server.WriteTimeout != 0 {
+			t.Errorf("%s: a whole-request timeout would cut uploads and streams", name)
+		}
+	}
+	own := &http.Server{}
+	conf := NewConfig(WithServer(own), WithAddr(":9999"))
+	if conf.server != own || own.ReadHeaderTimeout != 0 || own.IdleTimeout != 0 {
+		t.Errorf("WithServer's server was changed beyond Addr: %+v", own)
+	}
+}

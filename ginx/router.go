@@ -139,14 +139,15 @@ func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 }
 
 // stdLeaf serves a plain net/http handler through gin's writer and request, so
-// a std handler can sit at the end of a composed middleware chain.
+// a std handler can sit at the end of a composed middleware chain. The writer
+// commits on WriteHeader, as net/http's does; see stdResponseWriter.
 func stdLeaf(h http.Handler) httpx.Handler {
 	return func(ctx httpx.Context) error {
 		gc, ok := httpx.AsNativeContext[*gin.Context](ctx)
 		if !ok {
 			return errors.New("ginx: gin context type error")
 		}
-		h.ServeHTTP(gc.Writer, gc.Request)
+		h.ServeHTTP(stdResponseWriter{gc.Writer}, gc.Request)
 		return nil
 	}
 }
@@ -191,22 +192,32 @@ func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 	h = r.chain.Compose(h)
 	return func(gc *gin.Context) {
 		ctx := newGinContext(gc)
+		orig := gc.Request
+		defer func() { removeReplacedMultipartForm(orig, gc.Request) }()
 		err := httpx.LimitRequestBody(gc.Writer, gc.Request, r.maxBodySize)
 		if err == nil {
 			err = h(ctx)
 		}
 		if err != nil {
 			_ = gc.Error(err)
-			// Skip the error handler when the response is already committed
-			// (or the chain aborted) so a partial response is not corrupted
-			// by a second body.
-			if !gc.IsAborted() && !gc.Writer.Written() {
+			// A committed response is never overwritten by an error body.
+			// Whether the chain was aborted does not matter: a layer that
+			// aborted without writing left the response to the error.
+			if !gc.Writer.Written() {
 				r.errHandler(gc, err)
 				commitErrorStatus(gc, err)
 			}
-			if !gc.IsAborted() {
-				gc.Abort()
-			}
+			gc.Abort()
 		}
+	}
+}
+
+// removeReplacedMultipartForm deletes the temporary files of a multipart form
+// parsed on cur, a request that replaced orig during the chain (SetContext, a
+// net/http middleware). net/http removes them only for the request it served,
+// so without this an upload spilled to disk would stay there.
+func removeReplacedMultipartForm(orig, cur *http.Request) {
+	if cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
+		_ = cur.MultipartForm.RemoveAll()
 	}
 }

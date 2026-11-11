@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-sphere/httpx"
@@ -259,7 +261,7 @@ func casesContract(t *testing.T, r runner) {
 func casesStdMiddleware(t *testing.T, r runner) {
 	if r.suite.StdMiddleware == nil {
 		t.Run("StdMiddleware", func(t *testing.T) {
-			t.Skipf("%s: no StdMiddleware hook declared", r.suite.Name)
+			r.skipf(t, "%s: no StdMiddleware hook declared", r.suite.Name)
 		})
 		return
 	}
@@ -312,6 +314,29 @@ func casesStdMiddleware(t *testing.T, r runner) {
 		}
 		if got.Headers.Get("X-Std") != "wrapped" {
 			t.Fatal("the std middleware's header did not reach the response")
+		}
+	})
+
+	// A middleware may run the rest of the chain more than once — a dry run
+	// into a recorder, then for real. The request must complete with the last
+	// run's response instead of blocking on the first.
+	t.Run("StdMiddlewareCallsNextTwice", func(t *testing.T) {
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				next.ServeHTTP(httptest.NewRecorder(), req)
+				next.ServeHTTP(w, req)
+			})
+		}
+		var calls atomic.Int32
+		got := r.serve(t, func(router httpx.Router) {
+			router.Use(r.suite.StdMiddleware(mw))
+			router.GET("/std/twice", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, strconv.Itoa(int(calls.Add(1))))
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/std/twice", nil))
+
+		if got.Status != http.StatusOK || got.Body != "2" {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "2")
 		}
 	})
 

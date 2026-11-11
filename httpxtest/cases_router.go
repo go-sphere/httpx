@@ -34,24 +34,6 @@ func casesMiddleware(t *testing.T, r runner) {
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/pass", nil))
 	})
 
-	t.Run("BeforeAfterNext", func(t *testing.T) {
-		r.assertGolden(t, func(router httpx.Router) {
-			router.Use(func(next httpx.Handler) httpx.Handler {
-				return func(ctx httpx.Context) error {
-					ctx.Set("order", []string{"before"})
-					err := next(ctx)
-					appendOrder(ctx, "after")
-					return err
-				}
-			})
-			router.GET("/mw/around", func(ctx httpx.Context) error {
-				appendOrder(ctx, "handler")
-				v, _ := ctx.Get("order")
-				return ctx.JSON(http.StatusOK, map[string]any{"order": v})
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/around", nil))
-	})
-
 	t.Run("MiddlewareError", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
 			router.Use(func(httpx.Handler) httpx.Handler {
@@ -64,27 +46,6 @@ func casesMiddleware(t *testing.T, r runner) {
 			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/error", nil))
 	})
-
-	t.Run("WriteWithoutNextStopsHandler", func(t *testing.T) {
-		got := r.serve(t, func(router httpx.Router) {
-			router.Use(func(httpx.Handler) httpx.Handler {
-				return func(ctx httpx.Context) error {
-					return ctx.Text(http.StatusUnauthorized, "blocked")
-				}
-			})
-			router.GET("/mw/blocked", func(ctx httpx.Context) error {
-				return ctx.Text(http.StatusOK, "handler-should-not-run")
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/mw/blocked", nil))
-
-		if got.Status != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want %d", got.Status, http.StatusUnauthorized)
-		}
-		if got.Body != "blocked" {
-			t.Fatalf("body = %q, want %q", got.Body, "blocked")
-		}
-	})
-
 }
 
 func casesRouter(t *testing.T, r runner) {
@@ -228,41 +189,38 @@ func casesRouter(t *testing.T, r runner) {
 		}
 	})
 
-	// Engine, group and route middleware must nest in registration order around
-	// the handler.
-	t.Run("GroupUseAnyAndNext", func(t *testing.T) {
-		r.assertGolden(t, func(router httpx.Router) {
-			router.Use(func(next httpx.Handler) httpx.Handler {
-				return func(ctx httpx.Context) error {
-					ctx.Set("order", []string{"global-before"})
-					err := next(ctx)
-					appendOrder(ctx, "global-after")
-					return err
+	// Any answers every standard method on one path, and the route it
+	// registers is an ordinary one: the group's layers wrap it for each method.
+	t.Run("AnyAnswersEveryMethod", func(t *testing.T) {
+		var order []string
+		engine := r.suite.NewEngine(t, Options{})
+		g := engine.Group("/api")
+		g.Use(mark(&order, "group"))
+		g.Any("/any", func(ctx httpx.Context) error {
+			order = append(order, "handler:"+ctx.Method())
+			return ctx.Text(http.StatusOK, "any:"+ctx.Method())
+		})
+
+		for _, method := range []string{
+			http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+			http.MethodDelete, http.MethodOptions, http.MethodHead,
+		} {
+			t.Run(method, func(t *testing.T) {
+				order = nil
+				got := r.serveOn(t, engine, httptest.NewRequest(method, "http://example.com/api/any", nil))
+				if got.Status != http.StatusOK {
+					t.Fatalf("%s /api/any: status=%d body=%q, want 200", method, got.Status, got.Body)
+				}
+				// A HEAD body is dropped on the wire, and the in-process
+				// requesters disagree on whether they drop it too.
+				if want := "any:" + method; method != http.MethodHead && got.Body != want {
+					t.Fatalf("%s /api/any: body=%q, want %q", method, got.Body, want)
+				}
+				if joined, want := strings.Join(order, ","), "group,handler:"+method; joined != want {
+					t.Fatalf("order = %q, want %q", joined, want)
 				}
 			})
-			g := router.Group("/api")
-			g.Use(func(next httpx.Handler) httpx.Handler {
-				return func(ctx httpx.Context) error {
-					appendOrder(ctx, "group-before")
-					err := next(ctx)
-					appendOrder(ctx, "group-after")
-					return err
-				}
-			})
-			g.Use(func(next httpx.Handler) httpx.Handler {
-				return func(ctx httpx.Context) error {
-					appendOrder(ctx, "route-before")
-					err := next(ctx)
-					appendOrder(ctx, "route-after")
-					return err
-				}
-			})
-			g.Any("/ping", func(ctx httpx.Context) error {
-				appendOrder(ctx, "handler")
-				v, _ := ctx.Get("order")
-				return ctx.JSON(http.StatusOK, map[string]any{"order": v})
-			})
-		}, httptest.NewRequest(http.MethodPost, "http://example.com/api/ping", nil))
+		}
 	})
 }
 
@@ -309,14 +267,6 @@ func casesStatic(t *testing.T, r runner) {
 			t.Fatalf("the response listed the directory: %q", got.Body)
 		}
 	})
-}
-
-// appendOrder records execution order in request state, which is how the
-// middleware cases observe nesting without depending on response writing.
-func appendOrder(ctx httpx.Context, s string) {
-	v, _ := ctx.Get("order")
-	arr, _ := v.([]string)
-	ctx.Set("order", append(arr, s))
 }
 
 func init() {

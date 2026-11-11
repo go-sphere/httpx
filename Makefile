@@ -95,10 +95,12 @@ golden:
 	@set -eu; \
 	for adapter in $(TAG_ADAPTERS); do \
 		echo "==> recording contracts from $$adapter"; \
-		HTTPX_UPDATE_GOLDEN=1 $(GO) test ./conformance -run "TestHTTPXTestSuite/$$adapter" -count=1; \
+		( cd "$$adapter" && HTTPX_UPDATE_GOLDEN=1 $(GO) test -run '^TestConformance$$' -count=1 . ); \
 	done; \
 	echo "==> verifying every adapter against the recorded contracts"; \
-	$(GO) test ./conformance -run TestHTTPXTestSuite -count=1
+	for adapter in $(TAG_ADAPTERS); do \
+		( cd "$$adapter" && $(GO) test -run '^TestConformance$$' -count=1 . ); \
+	done
 
 test-race:
 	@set -eu; \

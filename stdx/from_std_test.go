@@ -109,9 +109,4 @@ func TestFromStdNativeDegradation(t *testing.T) {
 // DefaultErrorHandler on stdx is httpx-shaped because net/http has no error
 // handler of its own: the naming rule "this adapter's default handler in its
 // native shape" lands on httpx.ErrorHandler here.
-func TestDefaultErrorHandlerIsHTTPXShape(t *testing.T) {
-	conf := NewConfig(WithErrorHandler(DefaultErrorHandler))
-	if conf.errHandler == nil {
-		t.Fatal("DefaultErrorHandler is not usable as httpx.ErrorHandler")
-	}
-}
+var _ httpx.ErrorHandler = DefaultErrorHandler

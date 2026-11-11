@@ -91,9 +91,8 @@ func NewError(status, code int32, message string, err error) Error {
 // the status text.
 func WithStatus(status int32, err error, messages ...string) Error {
 	code := int32(0)
-	var se CodeError
-	if errors.As(err, &se) {
-		code = se.GetCode()
+	if ce, ok := errors.AsType[CodeError](err); ok {
+		code = ce.GetCode()
 	}
 	return NewError(status, code, strings.Join(messages, "; "), err)
 }
@@ -166,8 +165,7 @@ func WrapBindError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var he Error
-	if errors.As(err, &he) {
+	if _, ok := errors.AsType[Error](err); ok {
 		return err
 	}
 	if isBodyTooLarge(err) {
@@ -177,8 +175,8 @@ func WrapBindError(err error) error {
 }
 
 func isBodyTooLarge(err error) bool {
-	var mbe *http.MaxBytesError
-	return errors.As(err, &mbe)
+	_, ok := errors.AsType[*http.MaxBytesError](err)
+	return ok
 }
 
 // ErrorBody is the JSON written by adapter default error handlers.
@@ -212,16 +210,13 @@ func ClassifyError(err error) (code int32, status int32, message string) {
 	if err == nil {
 		return 0, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError)
 	}
+	// ParseError already reports code 0 and an empty message when err carries
+	// neither, so only the status range and the empty message need handling.
 	code, status, message = ParseError(err)
 	if status < 100 || status > 599 {
 		status = http.StatusInternalServerError
 	}
-	var ce CodeError
-	if !errors.As(err, &ce) {
-		code = 0
-	}
-	var me MessageError
-	if !errors.As(err, &me) || message == "" {
+	if message == "" {
 		message = http.StatusText(int(status))
 	}
 	return
@@ -251,25 +246,23 @@ func ParseError(err error) (code int32, status int32, message string) {
 	if err == nil {
 		return 0, http.StatusInternalServerError, ""
 	}
-	var he Error
-	if errors.As(err, &he) {
+	// errors.AsType rather than errors.As: the pointer target errors.As needs
+	// escapes to the heap, which cost one allocation per lookup on every
+	// rendered error.
+	if he, ok := errors.AsType[Error](err); ok {
 		return he.GetCode(), he.GetStatus(), he.GetMessage()
 	}
-	var se StatusError
-	switch {
-	case errors.As(err, &se):
+	if se, ok := errors.AsType[StatusError](err); ok {
 		status = se.GetStatus()
-	case isBodyTooLarge(err):
+	} else if isBodyTooLarge(err) {
 		status = http.StatusRequestEntityTooLarge
-	default:
+	} else {
 		status = http.StatusInternalServerError
 	}
-	var ce CodeError
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[CodeError](err); ok {
 		code = ce.GetCode()
 	}
-	var me MessageError
-	if errors.As(err, &me) {
+	if me, ok := errors.AsType[MessageError](err); ok {
 		message = me.GetMessage()
 	}
 	return

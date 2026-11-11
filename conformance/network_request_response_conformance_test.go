@@ -10,21 +10,13 @@ import (
 	"time"
 
 	"github.com/go-sphere/httpx"
-	"github.com/go-sphere/httpx/echox"
-	"github.com/go-sphere/httpx/fiberx"
-	"github.com/go-sphere/httpx/ginx"
-	"github.com/go-sphere/httpx/hertzx"
-	"github.com/go-sphere/httpx/stdx"
 )
 
-// stdMiddlewareAdapters maps each framework of proxyFrameworks to its
-// AdaptStdMiddleware.
-var stdMiddlewareAdapters = map[string]func(func(http.Handler) http.Handler) httpx.Middleware{
-	"ginx":   ginx.AdaptStdMiddleware,
-	"fiberx": fiberx.AdaptStdMiddleware,
-	"echox":  echox.AdaptStdMiddleware,
-	"hertzx": hertzx.AdaptStdMiddleware,
-	"stdx":   stdx.AdaptStdMiddleware,
+// oneShotClient closes each connection after its response. A pooled keep-alive
+// connection left idle would hold the test's engine.Stop until its deadline on
+// hertzx, whose graceful shutdown waits for idle connections too.
+func oneShotClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: &http.Transport{DisableKeepAlives: true}}
 }
 
 func doNetworkRequest(t *testing.T, method, url string, body io.Reader) (*http.Response, string) {
@@ -35,7 +27,7 @@ func doNetworkRequest(t *testing.T, method, url string, body io.Reader) (*http.R
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	resp, err := (&http.Client{}).Do(req)
+	resp, err := oneShotClient(0).Do(req)
 	if err != nil || resp == nil {
 		t.Fatalf("request failed: %v", err)
 		return nil, ""
@@ -52,10 +44,9 @@ func doNetworkRequest(t *testing.T, method, url string, body io.Reader) (*http.R
 // in-process requesters can hand the body over as a stream where a server
 // buffers it, so only a real listener shows what a handler gets in production.
 func TestBodyReaderOverNetworkConformance(t *testing.T) {
-	for _, name := range proxyFrameworks {
-		t.Run(name, func(t *testing.T) {
-			addr := reserveAddrTB(t)
-			engine := newTrustedProxyEngine(t, name, addr, nil)
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine, addr := a.serve(t, serveConfig{})
 			engine.Group("").POST("/echo", func(ctx httpx.Context) error {
 				rc := ctx.BodyReader()
 				defer func() { _ = rc.Close() }()
@@ -65,12 +56,11 @@ func TestBodyReaderOverNetworkConformance(t *testing.T) {
 				}
 				return ctx.Text(http.StatusOK, string(b))
 			})
-			stop := startEngineAndWait(t, engine, addr)
-			defer stop()
+			startServing(t, engine, addr)
 
 			resp, body := doNetworkRequest(t, http.MethodPost, "http://"+addr+"/echo", strings.NewReader("hello body"))
 			if resp.StatusCode != http.StatusOK || body != "hello body" {
-				t.Fatalf("%s: status=%d body=%q, want 200 %q", name, resp.StatusCode, body, "hello body")
+				t.Fatalf("status=%d body=%q, want 200 %q", resp.StatusCode, body, "hello body")
 			}
 		})
 	}
@@ -80,12 +70,14 @@ func TestBodyReaderOverNetworkConformance(t *testing.T) {
 // on a streamed response too, where the header block leaves before the handler
 // returns.
 func TestStdMiddlewareHeadersReachStreamConformance(t *testing.T) {
-	for _, name := range proxyFrameworks {
-		t.Run(name, func(t *testing.T) {
-			addr := reserveAddrTB(t)
-			engine := newTrustedProxyEngine(t, name, addr, nil)
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine, addr := a.serve(t, serveConfig{})
+			if a.StdMiddleware == nil {
+				t.Skipf("%s: no StdMiddleware hook declared", a.Name)
+			}
 			router := engine.Group("")
-			router.Use(stdMiddlewareAdapters[name](func(next http.Handler) http.Handler {
+			router.Use(a.StdMiddleware(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("X-Std", "staged")
 					w.Header().Set("X-Both", "middleware")
@@ -104,24 +96,23 @@ func TestStdMiddlewareHeadersReachStreamConformance(t *testing.T) {
 					return err
 				})
 			})
-			stop := startEngineAndWait(t, engine, addr)
-			defer stop()
+			startServing(t, engine, addr)
 
 			resp, body := doNetworkRequest(t, http.MethodGet, "http://"+addr+"/sse", nil)
 			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("%s: status = %d", name, resp.StatusCode)
+				t.Fatalf("status = %d", resp.StatusCode)
 			}
 			if got := resp.Header.Values("X-Std"); len(got) != 1 || got[0] != "staged" {
-				t.Errorf("%s: X-Std = %q, want exactly [\"staged\"]", name, got)
+				t.Errorf("X-Std = %q, want exactly [\"staged\"]", got)
 			}
 			if got := resp.Header.Values("X-Both"); len(got) != 1 || got[0] != "handler" {
-				t.Errorf("%s: X-Both = %q, want the handler's value only", name, got)
+				t.Errorf("X-Both = %q, want the handler's value only", got)
 			}
 			if got := resp.Header.Values("Content-Type"); len(got) != 1 || got[0] != "text/event-stream" {
-				t.Errorf("%s: Content-Type = %q, want the stream's [\"text/event-stream\"]", name, got)
+				t.Errorf("Content-Type = %q, want the stream's [\"text/event-stream\"]", got)
 			}
 			if body != "data: one\n\n" {
-				t.Errorf("%s: body = %q, want %q", name, body, "data: one\n\n")
+				t.Errorf("body = %q, want %q", body, "data: one\n\n")
 			}
 		})
 	}
@@ -147,12 +138,14 @@ func (w gzipStdWriter) Flush() {
 // the body the client receives: where a streamed body bypasses the
 // middleware's writer, the header must not be sent with it.
 func TestStdMiddlewareContentEncodingMatchesStreamConformance(t *testing.T) {
-	for _, name := range proxyFrameworks {
-		t.Run(name, func(t *testing.T) {
-			addr := reserveAddrTB(t)
-			engine := newTrustedProxyEngine(t, name, addr, nil)
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine, addr := a.serve(t, serveConfig{})
+			if a.StdMiddleware == nil {
+				t.Skipf("%s: no StdMiddleware hook declared", a.Name)
+			}
 			router := engine.Group("")
-			router.Use(stdMiddlewareAdapters[name](func(next http.Handler) http.Handler {
+			router.Use(a.StdMiddleware(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Encoding", "gzip")
 					zw := gzip.NewWriter(w)
@@ -170,8 +163,7 @@ func TestStdMiddlewareContentEncodingMatchesStreamConformance(t *testing.T) {
 					return err
 				})
 			})
-			stop := startEngineAndWait(t, engine, addr)
-			defer stop()
+			startServing(t, engine, addr)
 
 			reqCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -179,7 +171,7 @@ func TestStdMiddlewareContentEncodingMatchesStreamConformance(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp, err := (&http.Client{Transport: &http.Transport{DisableCompression: true}}).Do(req)
+			resp, err := (&http.Client{Transport: &http.Transport{DisableCompression: true, DisableKeepAlives: true}}).Do(req)
 			if err != nil {
 				t.Fatalf("request failed: %v", err)
 			}
@@ -188,16 +180,16 @@ func TestStdMiddlewareContentEncodingMatchesStreamConformance(t *testing.T) {
 			if resp.Header.Get("Content-Encoding") == "gzip" {
 				zr, err := gzip.NewReader(resp.Body)
 				if err != nil {
-					t.Fatalf("%s: Content-Encoding is gzip but the body is not: %v", name, err)
+					t.Fatalf("Content-Encoding is gzip but the body is not: %v", err)
 				}
 				body = zr
 			}
 			b, err := io.ReadAll(body)
 			if err != nil {
-				t.Fatalf("%s: read body (Content-Encoding %q): %v", name, resp.Header.Get("Content-Encoding"), err)
+				t.Fatalf("read body (Content-Encoding %q): %v", resp.Header.Get("Content-Encoding"), err)
 			}
 			if string(b) != "data: one\n\n" {
-				t.Errorf("%s: decoded body = %q (Content-Encoding %q), want %q", name, b, resp.Header.Get("Content-Encoding"), "data: one\n\n")
+				t.Errorf("decoded body = %q (Content-Encoding %q), want %q", b, resp.Header.Get("Content-Encoding"), "data: one\n\n")
 			}
 		})
 	}

@@ -7,8 +7,12 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
+	"weak"
 
 	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
@@ -33,8 +37,8 @@ type Option func(*Config)
 
 // NewConfig applies opts in order and fills the defaults: a fiber.App built
 // with [DefaultErrorHandler], UnescapePath, CaseSensitive and StrictRouting
-// enabled and DisableHeadAutoRegister set, listening on ":8080",
-// and the adapter's httpx error renderer. It panics when [WithTrustedProxies]
+// enabled and DisableHeadAutoRegister and DisableDefaultContentType set,
+// listening on ":8080", and the adapter's httpx error renderer. It panics when [WithTrustedProxies]
 // is combined with [WithEngine]. [New] calls it; most callers pass options to
 // New directly.
 func NewConfig(opts ...Option) *Config {
@@ -59,6 +63,9 @@ func NewConfig(opts ...Option) *Config {
 			CaseSensitive:           true,
 			StrictRouting:           true,
 			DisableHeadAutoRegister: true,
+			// A response nothing labelled carries no Content-Type, as on
+			// net/http, rather than fasthttp's text/plain default.
+			DisableDefaultContentType: true,
 		}
 		if conf.maxBodySize > fiber.DefaultBodyLimit {
 			fiberConf.BodyLimit = int(min(conf.maxBodySize, math.MaxInt))
@@ -175,10 +182,13 @@ func WithAddr(addr string) Option {
 // returned by httpx handlers and middleware are rendered through it with a
 // real httpx.Context instead of reaching fiber's ErrorHandler. This works
 // regardless of how the fiber.App was constructed, since fiber.Config cannot
-// be changed after fiber.New.
+// be changed after fiber.New. A nil errHandler is ignored, keeping the handler
+// configured before it (the adapter's default when there is none).
 func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 	return func(conf *Config) {
-		conf.errHandler = errHandler
+		if errHandler != nil {
+			conf.errHandler = errHandler
+		}
 	}
 }
 
@@ -235,10 +245,67 @@ type Engine struct {
 	order      *routeOrder
 	// maxBodySize is handed to every Router; see WithMaxBodySize.
 	maxBodySize int64
-	// unescapePath caches the app's UnescapePath; see keepLiteralPlus.
+	// settings is read from the app's config once; see registerAppSettings.
+	settings *appSettings
+	running  atomic.Bool
+	// mu orders Start's closed check against Stop: a Stop either finds the
+	// Start it has to end in serving, or makes that Start refuse to serve.
+	mu     sync.Mutex
+	closed atomic.Bool
+	// serving is closed when the listen call of the live Start returns; nil
+	// until Start passes its closed check.
+	serving chan struct{}
+}
+
+// appSettings holds the parts of an app's fiber.Config that a request reads.
+// App().Config() copies a large struct, so New reads them once and registers
+// them for the app; see settingsOf.
+type appSettings struct {
+	// unescapePath: fiber matched the decoded path; see keepLiteralPlus and
+	// fiberContext.paramValue.
 	unescapePath bool
-	running      atomic.Bool
-	closed       atomic.Bool
+	// defaultContentType: fasthttp reports text/plain for a response nothing
+	// labelled; see explicitContentType.
+	defaultContentType bool
+	// jsonDecoder is the app's configured JSON decoder, used by BindJSON.
+	jsonDecoder func(data []byte, v any) error
+}
+
+func newAppSettings(app *fiber.App) *appSettings {
+	conf := app.Config()
+	return &appSettings{
+		unescapePath:       conf.UnescapePath,
+		defaultContentType: !conf.DisableDefaultContentType,
+		jsonDecoder:        conf.JSONDecoder,
+	}
+}
+
+// appSettingsByApp maps a weak pointer to each app an Engine wraps to its
+// appSettings. Looking it up costs no allocation, unlike storing the settings
+// in every request's Locals, and the weak key lets an app that is no longer
+// used be collected; its entry is removed then.
+var appSettingsByApp sync.Map // weak.Pointer[fiber.App] -> *appSettings
+
+// registerAppSettings reads app's settings once and makes settingsOf find
+// them.
+func registerAppSettings(app *fiber.App) *appSettings {
+	s := newAppSettings(app)
+	key := weak.Make(app)
+	appSettingsByApp.Store(key, s)
+	runtime.AddCleanup(app, func(k weak.Pointer[fiber.App]) { appSettingsByApp.Delete(k) }, key)
+	return s
+}
+
+// settingsOf returns the settings of the app serving native. An app no Engine
+// wraps (FromFiber on a plain fiber app) has them read from its config.
+func settingsOf(native fiber.Ctx) *appSettings {
+	app := native.App()
+	if s, ok := appSettingsByApp.Load(weak.Make(app)); ok {
+		if settings, ok := s.(*appSettings); ok {
+			return settings
+		}
+	}
+	return newAppSettings(app)
 }
 
 // routeFallback renders the errors fiber raises for itself — an unmatched path,
@@ -261,7 +328,7 @@ type Engine struct {
 // over a committed response is dropped, never rendered over it.
 func (e *Engine) routeFallback() fiber.Handler {
 	return func(ctx fiber.Ctx) error {
-		if e.unescapePath {
+		if e.settings.unescapePath {
 			keepLiteralPlus(ctx)
 		}
 		err := ctx.Next()
@@ -341,16 +408,13 @@ func New(opts ...Option) httpx.Engine {
 		chain:       httpx.NewMiddlewareChain(),
 		order:       newRouteOrder(conf.engine),
 		maxBodySize: conf.maxBodySize,
-		// Config copies a large struct, so it is read once here.
-		unescapePath: conf.engine.Config().UnescapePath,
+		settings:    registerAppSettings(conf.engine),
 	}
-	// The leaf reports the error fiber raised, which is what the configured
-	// httpx.ErrorHandler received before the engine chain covered unmatched
-	// paths: one value per Engine, so the composition around it can be cached.
+	// The leaf reports the error fiber raised for the unmatched path: one value
+	// per Engine, so the composition around it can be cached.
 	engine.notFound = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(fiber.ErrNotFound))
 	engine.notAllowed = httpx.NewMiddlewareFallback(engine.chain, staticLeaf(fiber.ErrMethodNotAllowed))
 	conf.engine.Use(engine.routeFallback())
-	engine.running.Store(false)
 	return engine
 }
 
@@ -396,15 +460,24 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 // returns nil once Stop ended it, httpx.ErrEngineClosed when Stop was already
 // called, and otherwise whatever fiber's Listen or Listener returns, such as
 // a bind failure. IsRunning becomes true just before fiber binds, so it may
-// briefly report true before the listener exists.
+// briefly report true before the listener exists, and false once Start has
+// returned.
 func (e *Engine) Start() error {
+	e.mu.Lock()
 	if e.closed.Load() {
+		e.mu.Unlock()
 		// fiber would happily restart after Shutdown; refuse for the uniform
 		// single-use Engine contract.
 		return httpx.ErrEngineClosed
 	}
+	serving := make(chan struct{})
+	e.serving = serving
 	e.running.Store(true)
-	defer e.running.Store(false)
+	e.mu.Unlock()
+	defer func() {
+		e.running.Store(false)
+		close(serving)
+	}()
 	err := e.listen(e.engine)
 	if err != nil && e.closed.Load() {
 		// Stop closed the listener under fasthttp, which returns nil only for
@@ -417,6 +490,10 @@ func (e *Engine) Start() error {
 	}
 	return err
 }
+
+// stopRetryInterval paces Stop's repeated shutdowns while Start has not yet
+// handed fasthttp its listener.
+const stopRetryInterval = 5 * time.Millisecond
 
 // Stop aims at the same semantic as httpx.Close, which the net/http-backed
 // adapters share: a drain the caller's context cut short still leaves the
@@ -431,19 +508,44 @@ func (e *Engine) Start() error {
 // than pretending the connections were cut, which httpxtest.Caps declares with
 // ForcedStopCutsConnections = false.
 //
+// fasthttp keeps no shut-down state either: a shutdown that lands before Start
+// has registered its listener is a no-op, and the Serve that follows runs
+// normally. So while Start is live, Stop repeats the shutdown on a short
+// interval until Start has returned or ctx is done; fiber's shutdown hooks run
+// once, on the first attempt. When Stop returns nil with ctx not done, Start
+// has returned and IsRunning reports false.
+//
 // A shutdown that genuinely failed is a different answer and keeps its error;
 // see classifyShutdownError. Stop on an engine that never started returns nil
 // and marks it closed, so Start returns httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
+	e.mu.Lock()
 	e.closed.Store(true)
+	serving := e.serving
+	e.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// The listener is closed whatever this returns, so the running flag has to
-	// fall with it. Storing it only on a nil error left IsRunning reporting true
-	// for the rest of the process after a stop that timed out.
-	defer e.running.Store(false)
-	return classifyShutdownError(ctx, e.engine.ShutdownWithContext(ctx))
+	err := e.engine.ShutdownWithContext(ctx)
+	if serving == nil {
+		return classifyShutdownError(ctx, err)
+	}
+	ticker := time.NewTicker(stopRetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-serving:
+			return classifyShutdownError(ctx, err)
+		case <-ctx.Done():
+			return classifyShutdownError(ctx, err)
+		case <-ticker.C:
+			// The fasthttp server directly, so fiber's hooks do not run again.
+			// The first failure is the one reported.
+			if retryErr := e.engine.Server().ShutdownWithContext(ctx); err == nil {
+				err = retryErr
+			}
+		}
+	}
 }
 
 // classifyShutdownError decides which of fasthttp's two failure modes the caller
@@ -482,5 +584,6 @@ func (e *Engine) IsRunning() bool {
 // Do serves req in-process through the fiber engine and returns the buffered
 // response. It implements httpx.TestRequester.
 func (e *Engine) Do(req *http.Request) (*http.Response, error) {
-	return e.engine.Test(req)
+	// fiber's default is a 1s timeout; the net/http adapters have none.
+	return e.engine.Test(req, fiber.TestConfig{Timeout: 0})
 }

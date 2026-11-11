@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-sphere/httpx"
@@ -111,7 +112,9 @@ func (c fiberContext[T]) FullPath() string {
 }
 
 func (c fiberContext[T]) ClientIP() string {
-	return c.ctx.IP()
+	// With trusted proxies fiber returns a view of the pooled request header,
+	// which the next request on the connection overwrites.
+	return strings.Clone(c.ctx.IP())
 }
 
 func (c fiberContext[T]) Param(key string) string {
@@ -146,12 +149,11 @@ func (c fiberContext[T]) wildcardParamName() string {
 // back "a b". An engine built by this adapter sets UnescapePath, but one passed
 // through WithEngine keeps its own config and cannot be changed afterwards.
 //
-// Both checks are ordered so an ordinary request pays nothing beyond the byte
-// scan: a value with no '%' cannot need decoding, and only then is the app's
-// config (a large struct copy) consulted.
+// A value with no '%' cannot need decoding, so an ordinary request pays
+// nothing beyond the byte scan.
 func (c fiberContext[T]) paramValue(v string) string {
 	v = strings.Clone(v)
-	if !strings.ContainsRune(v, '%') || c.ctx.App().Config().UnescapePath {
+	if !strings.ContainsRune(v, '%') || settingsOf(c.ctx).unescapePath {
 		return v
 	}
 	decoded, err := url.PathUnescape(v)
@@ -168,7 +170,7 @@ func (c fiberContext[T]) decodesParams() bool {
 	if !bytes.ContainsRune(c.ctx.Request().URI().PathOriginal(), '%') {
 		return false
 	}
-	return !c.ctx.App().Config().UnescapePath
+	return !settingsOf(c.ctx).unescapePath
 }
 
 func (c fiberContext[T]) Params() map[string]string {
@@ -235,28 +237,19 @@ func (c fiberContext[T]) Header(key string) string {
 }
 
 func (c fiberContext[T]) Headers() map[string][]string {
-	src := c.ctx.GetReqHeaders()
-	if len(src) == 0 {
-		return nil
-	}
-	out := make(map[string][]string, len(src))
-	for k, v := range src {
-		// GetReqHeaders builds keys and values with unsafe strings aliased to
-		// pooled fasthttp buffers (default Immutable=false); clone the key
-		// before canonicalizing (CanonicalMIMEHeaderKey returns already
-		// canonical input as-is) and clone every value.
-		ck := textproto.CanonicalMIMEHeaderKey(strings.Clone(k))
-		if ck == "Host" {
+	header := &c.ctx.Request().Header
+	var out map[string][]string
+	for k, v := range header.All() {
+		// The bytes alias pooled fasthttp buffers; string() copies them.
+		// CanonicalMIMEHeaderKey returns already canonical input as is.
+		key := textproto.CanonicalMIMEHeaderKey(string(k))
+		if key == "Host" {
 			continue
 		}
-		values := make([]string, len(v))
-		for i, value := range v {
-			values[i] = strings.Clone(value)
+		if out == nil {
+			out = make(map[string][]string, header.Len())
 		}
-		out[ck] = values
-	}
-	if len(out) == 0 {
-		return nil
+		out[key] = append(out[key], string(v))
 	}
 	return out
 }
@@ -298,11 +291,14 @@ func (c fiberContext[T]) BodyRaw() ([]byte, error) {
 	return bytes.Clone(c.ctx.BodyRaw()), nil
 }
 
+// BodyReader, BodyRaw and BindJSON read the body as received. fiber's Body
+// would decode it by Content-Encoding (no other adapter decompresses) and, for
+// an encoding it does not know, write a 415 into the response.
 func (c fiberContext[T]) BodyReader() io.ReadCloser {
 	if stream := c.ctx.Request().BodyStream(); stream != nil {
 		return httpx.NewReadCloser(stream, c.ctx.Request().CloseBodyStream)
 	}
-	body := c.ctx.Body()
+	body := c.ctx.BodyRaw()
 	if len(body) == 0 {
 		return http.NoBody
 	}
@@ -311,16 +307,24 @@ func (c fiberContext[T]) BodyReader() io.ReadCloser {
 
 // Binder (httpx.Binder)
 
+// BindJSON decodes the raw body (see BodyReader) with the app's JSONDecoder.
 func (c fiberContext[T]) BindJSON(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().JSON(dst))
+	return httpx.WrapBindError(settingsOf(c.ctx).jsonDecoder(c.ctx.BodyRaw(), dst))
+}
+
+// bind returns fiber's binder with validation off: Bind* decodes only, and an
+// app passed through WithEngine may have a StructValidator configured. None of
+// the binders used through it reads the body with fiber's decoding Body.
+func (c fiberContext[T]) bind() *fiber.Bind {
+	return c.ctx.Bind().SkipValidation(true)
 }
 
 func (c fiberContext[T]) BindQuery(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().Query(dst))
+	return httpx.WrapBindError(c.bind().Query(dst))
 }
 
 func (c fiberContext[T]) BindForm(dst any) error {
-	return httpx.WrapBindError(c.ctx.Bind().Form(dst))
+	return httpx.WrapBindError(c.bind().Form(dst))
 }
 
 func (c fiberContext[T]) BindURI(dst any) error {
@@ -346,7 +350,7 @@ func (c fiberContext[T]) bindURI(dst any) error {
 	}
 	wildcard := c.wildcardParamName()
 	if wildcard == "" && !c.decodesParams() {
-		return c.ctx.Bind().URI(dst)
+		return c.bind().URI(dst)
 	}
 	names := route.Params
 	if wildcard != "" {
@@ -400,19 +404,27 @@ func (c fiberContext[T]) bindHeader(dst any) error {
 	header := &c.ctx.Request().Header
 	host := header.Host()
 	if len(host) == 0 {
-		return c.ctx.Bind().Header(dst)
+		return c.bind().Header(dst)
 	}
 	// The returned slice aliases the buffer that emptying the host reuses.
 	saved := bytes.Clone(host)
 	header.SetHostBytes(nil)
 	defer header.SetHostBytes(saved)
-	return c.ctx.Bind().Header(dst)
+	return c.bind().Header(dst)
 }
 
 // Responder (httpx.Responder)
 
 // writeBody runs one response-writing call under the post-commit rules
-// httpx.Responder documents, and is the single place this adapter applies them.
+// httpx.Responder documents; see writeResponse.
+func (c fiberContext[T]) writeBody(write func() error) error {
+	return writeResponse(c.ctx, write)
+}
+
+// writeResponse runs one response-writing call under the post-commit rules
+// httpx.Responder documents, and is the single place this adapter applies them:
+// the Responder methods and a mounted net/http handler (stdLeaf) both write
+// through it.
 //
 // gin, echo and stdx inherit those rules from the http.ResponseWriter they
 // write through: once the header is out, WriteHeader is ignored, Header()
@@ -431,15 +443,15 @@ func (c fiberContext[T]) bindHeader(dst any) error {
 // installed, so DataFromReader appends like any other write, and fasthttp
 // recomputes Content-Length from the body as it serializes, so the restored
 // one cannot go stale.
-func (c fiberContext[T]) writeBody(write func() error) error {
-	if !c.Committed() {
+func writeResponse(native fiber.Ctx, write func() error) error {
+	if !responseDecided(native) {
 		err := write()
 		if err == nil {
-			markResponseCommitted(c.ctx)
+			markResponseCommitted(native)
 		}
 		return err
 	}
-	resp := c.ctx.Response()
+	resp := native.Response()
 	if resp.IsBodyStream() {
 		// The body has been handed to fasthttp as a stream: there is no buffer
 		// left to append to, and nothing still mutable to freeze.
@@ -464,12 +476,25 @@ func (c fiberContext[T]) Status(code int) {
 
 func (c fiberContext[T]) JSON(code int, v any) error {
 	return c.writeBody(func() error {
-		return c.ctx.Status(code).JSON(v)
+		// fiber's JSON replaces the Content-Type unless handed one; a preset
+		// one is copied out because it aliases the buffer JSON writes into.
+		var ctype []string
+		if preset := explicitContentType(c.ctx); len(preset) > 0 {
+			ctype = []string{string(preset)}
+		}
+		// An encode error must leave the response as it was, status included.
+		prev := c.ctx.Response().StatusCode()
+		if err := c.ctx.Status(code).JSON(v, ctype...); err != nil {
+			c.ctx.Status(prev)
+			return err
+		}
+		return nil
 	})
 }
 
 func (c fiberContext[T]) Text(code int, s string) error {
 	return c.writeBody(func() error {
+		c.ctx.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
 		return c.ctx.Status(code).SendString(s)
 	})
 }
@@ -521,9 +546,25 @@ func (c fiberContext[T]) File(path string) error {
 	if err := httpx.CheckServeFile(path); err != nil {
 		return err
 	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return httpx.InternalServerError(err)
+	}
 	return c.writeBody(func() error {
-		return c.ctx.SendFile(path)
+		// fiber serves the file through a request URI set to its path, so the
+		// path is escaped for a name holding '#', '?' or '%' to survive.
+		return c.ctx.SendFile(escapeFilePath(abs))
 	})
+}
+
+// escapeFilePath percent-escapes each segment of an absolute file path for use
+// as a request URI.
+func escapeFilePath(path string) string {
+	segments := strings.Split(filepath.ToSlash(path), "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return strings.Join(segments, "/")
 }
 
 func (c fiberContext[T]) Redirect(code int, location string) error {
@@ -550,7 +591,14 @@ func (c fiberContext[T]) AddHeader(key, value string) {
 }
 
 func (c fiberContext[T]) ResponseHeaderValues(key string) []string {
-	raw := c.ctx.Response().Header.PeekAll(key)
+	var raw [][]byte
+	if strings.EqualFold(key, fiber.HeaderContentType) {
+		if ct := explicitContentType(c.ctx); len(ct) > 0 {
+			raw = [][]byte{ct}
+		}
+	} else {
+		raw = c.ctx.Response().Header.PeekAll(key)
+	}
 	if len(raw) == 0 {
 		return nil
 	}
@@ -559,6 +607,23 @@ func (c fiberContext[T]) ResponseHeaderValues(key string) []string {
 		values[i] = string(v)
 	}
 	return values
+}
+
+// explicitContentType returns the response's Content-Type, or nil when nothing
+// set one. fasthttp reports text/plain for an unlabelled response unless the
+// server disables that default (NewConfig does), and only an app passed
+// through WithEngine keeps it; the server resets the response's flag from its
+// config on every request, so it is known to be off and is restored as such.
+// The slice aliases the response header.
+func explicitContentType(native fiber.Ctx) []byte {
+	header := &native.Response().Header
+	if !settingsOf(native).defaultContentType {
+		return header.ContentType()
+	}
+	header.SetNoDefaultContentType(true)
+	ct := header.ContentType()
+	header.SetNoDefaultContentType(false)
+	return ct
 }
 
 func (c fiberContext[T]) SetCookie(cookie *http.Cookie) {
@@ -615,8 +680,9 @@ func (c fiberContext[T]) NativeContext() any {
 
 // Stream implements httpx.Streamer. Fiber's response model is buffered, so
 // fn runs after the handler returns: Stream returns nil immediately and fn's
-// error only terminates the stream. Each write inside fn is flushed to the
-// client immediately.
+// error only terminates the stream. The status line and headers are flushed
+// to the client before fn runs, and each write inside fn is flushed
+// immediately.
 //
 // fn runs on a fasthttp goroutine outside the handler's recovery layers, so
 // a panic in fn is recovered here and ends the stream instead of the process.
@@ -644,6 +710,8 @@ func (c fiberContext[T]) Stream(code int, contentType string, fn func(w io.Write
 		}
 		c.ctx.Status(code)
 	}
+	// Without it fasthttp holds the header back until the first chunk.
+	c.ctx.Response().ImmediateHeaderFlush = true
 	return c.ctx.SendStreamWriter(func(w *bufio.Writer) {
 		defer func() { _ = recover() }()
 		fw := bufioFlushWriter{w: w}

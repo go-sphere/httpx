@@ -22,7 +22,7 @@ def main():
     parser.add_argument('--rate', type=int, default=5000)
     parser.add_argument('--duration', default='3s')
     parser.add_argument('--repeat', type=int, default=3)
-    parser.add_argument('--output', type=Path, default=ROOT / 'benchmarks/results/network.json')
+    parser.add_argument('--output', type=Path, default=ROOT / 'benchmarks/results/latest/network.json')
     args = parser.parse_args()
     if args.rate <= 0 or args.repeat <= 0:
         parser.error('rate and repeat must be positive')

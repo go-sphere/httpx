@@ -6,12 +6,15 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/route"
 	"github.com/go-sphere/httpx"
 )
@@ -186,7 +189,9 @@ func (r *Router) toHertzHandler(h httpx.Handler) app.HandlerFunc {
 			// (or the chain aborted) so a partial response is not corrupted
 			// by a second body.
 			if !rc.IsAborted() && !hertzResponseCommitted(rc) {
-				r.errHandler(ctx, rc, err)
+				// hc.Context, so a value a layer added with SetContext reaches
+				// the error handler.
+				r.errHandler(hc.Context(), rc, err)
 				commitErrorStatus(rc, err)
 			}
 			if !rc.IsAborted() {
@@ -239,7 +244,7 @@ func commitErrorStatus(rc *app.RequestContext, err error) {
 // reached the client; checking only the buffer would let the error handler
 // append a second body to a streaming response.
 func hertzResponseCommitted(rc *app.RequestContext) bool {
-	if rc.Response.GetHijackWriter() != nil || rc.Response.IsBodyStream() || len(rc.Response.Body()) > 0 {
+	if bodyCommitsResponse(rc) {
 		return true
 	}
 	committed, ok := rc.Get(responseCommittedKey)
@@ -250,9 +255,58 @@ func hertzResponseCommitted(rc *app.RequestContext) bool {
 	return flag
 }
 
+// bodyCommitsResponse reports whether the response body alone shows the
+// response committed: it is streaming or not empty.
+func bodyCommitsResponse(rc *app.RequestContext) bool {
+	return rc.Response.GetHijackWriter() != nil || rc.Response.IsBodyStream() || len(rc.Response.Body()) > 0
+}
+
+// markCommitted records a write that committed the response. The flag is only
+// stored when the body cannot show it, since storing it allocates hertz's key
+// map and takes its lock.
+func markCommitted(rc *app.RequestContext) {
+	if !bodyCommitsResponse(rc) {
+		rc.Set(responseCommittedKey, true)
+	}
+}
+
 // responseCommittedKey records explicit empty or streaming responses, which
 // cannot reliably be distinguished from a bare Status by inspecting the body.
 const responseCommittedKey = "httpx.hertzx.responseCommitted"
+
+// explicitContentType returns the Content-Type set on h, or an empty slice
+// when nothing set one: hertz's ContentType reports a default then, which it
+// only sends with a non-empty body. The slice aliases h.
+func explicitContentType(h *protocol.ResponseHeader) []byte {
+	if h.NoDefaultContentType() {
+		return h.ContentType()
+	}
+	h.SetNoDefaultContentType(true)
+	ct := h.ContentType()
+	h.SetNoDefaultContentType(false)
+	return ct
+}
+
+// visitResponseHeader calls f with the canonical key and value of each header
+// set on resp, as hertz would send it: the default Content-Type only with a
+// non-empty body. Content-Length is left out; hertz derives it from the body
+// when it writes the response.
+func visitResponseHeader(resp *protocol.Response, f func(key, value string)) {
+	resp.Header.VisitAll(func(k, v []byte) {
+		key := textproto.CanonicalMIMEHeaderKey(string(k))
+		if key == "Content-Type" || key == "Content-Length" {
+			return
+		}
+		f(key, string(v))
+	})
+	ct := explicitContentType(&resp.Header)
+	if len(ct) == 0 && (resp.IsBodyStream() || len(resp.Body()) > 0) {
+		ct = resp.Header.ContentType()
+	}
+	if len(ct) > 0 {
+		f("Content-Type", string(ct))
+	}
+}
 
 // toStdHandler bridges a net/http handler into hertz's buffered response,
 // so it works both over the network and with in-process test dispatch.
@@ -263,7 +317,7 @@ func toStdHandler(h http.Handler) app.HandlerFunc {
 			rc.AbortWithStatus(http.StatusInternalServerError)
 			return
 		}
-		w := &stdResponseWriter{rc: rc}
+		w := newStdResponseWriter(rc)
 		h.ServeHTTP(w, req)
 		if !w.wroteHeader {
 			w.WriteHeader(http.StatusOK)
@@ -293,19 +347,61 @@ func compatRequest(ctx context.Context, rc *app.RequestContext) (*http.Request, 
 	return req, nil
 }
 
+// stdResponseWriter is the http.ResponseWriter HandleStd and
+// AdaptStdMiddleware hand to net/http code. It writes into hertz's buffered
+// response under net/http's rules: Header starts as the headers the response
+// carries, and the first write commits the changes made to it, replacing
+// hertz's values for the keys it changed. On a response committed before the
+// writer existed, status and headers are dropped and bytes append. It
+// implements http.Flusher through the adapter's Flush.
 type stdResponseWriter struct {
-	rc          *app.RequestContext
-	header      http.Header
+	rc     *app.RequestContext
+	header http.Header
+	// base is header as last read from hertz's response; what differs from it
+	// is what net/http code changed.
+	base        http.Header
 	wroteHeader bool
+	// late is set when the response was committed before the writer existed.
+	late bool
 	// streaming is set once the response streams past this writer; later
 	// writes are dropped rather than appended to the stream.
 	streaming bool
 }
 
-func (w *stdResponseWriter) Header() http.Header {
-	if w.header == nil {
-		w.header = make(http.Header)
+func newStdResponseWriter(rc *app.RequestContext) *stdResponseWriter {
+	w := &stdResponseWriter{
+		rc:        rc,
+		header:    make(http.Header),
+		base:      make(http.Header),
+		late:      hertzResponseCommitted(rc),
+		streaming: rc.Response.GetHijackWriter() != nil || rc.Response.IsBodyStream(),
 	}
+	w.mergeHertzHeader()
+	return w
+}
+
+// mergeHertzHeader brings the headers hertz's response gained, changed or lost
+// since base into both header and base, so the net/http side sees them and
+// they do not count as its own changes. A key hertz left as it was keeps the
+// value net/http code gave it.
+func (w *stdResponseWriter) mergeHertzHeader() {
+	current := make(http.Header)
+	visitResponseHeader(&w.rc.Response, current.Add)
+	for key, values := range current {
+		if !slices.Equal(values, w.base[key]) {
+			w.header[key] = values
+			w.base[key] = slices.Clone(values)
+		}
+	}
+	for key := range w.base {
+		if _, ok := current[key]; !ok {
+			delete(w.header, key)
+			delete(w.base, key)
+		}
+	}
+}
+
+func (w *stdResponseWriter) Header() http.Header {
 	return w.header
 }
 
@@ -314,25 +410,43 @@ func (w *stdResponseWriter) WriteHeader(code int) {
 		return
 	}
 	w.wroteHeader = true
-	w.rc.Set(responseCommittedKey, true)
+	if w.late || w.streaming {
+		return
+	}
 	w.applyHeader()
 	w.rc.Response.SetStatusCode(code)
+	w.rc.Set(responseCommittedKey, true)
 }
 
-// applyHeader copies the staged headers into hertz's response without
-// committing it.
+// applyHeader applies the changes made to header since base to hertz's
+// response without committing it: a changed key replaces hertz's values and a
+// deleted one is removed. On a response committed before the writer existed
+// it does nothing.
 func (w *stdResponseWriter) applyHeader() {
+	if w.late {
+		return
+	}
+	resp := &w.rc.Response
+	for key := range w.base {
+		if _, ok := w.header[key]; !ok {
+			resp.Header.Del(key)
+		}
+	}
 	for key, values := range w.header {
+		if slices.Equal(values, w.base[key]) {
+			continue
+		}
 		if strings.EqualFold(key, "Content-Length") {
 			if len(values) > 0 {
 				if n, err := strconv.Atoi(values[0]); err == nil {
-					w.rc.Response.Header.SetContentLength(n)
+					resp.Header.SetContentLength(n)
 				}
 			}
 			continue
 		}
+		resp.Header.Del(key)
 		for _, value := range values {
-			w.rc.Response.Header.Add(key, value)
+			resp.Header.Add(key, value)
 		}
 	}
 }
@@ -346,4 +460,16 @@ func (w *stdResponseWriter) Write(b []byte) (int, error) {
 	}
 	w.rc.Response.AppendBody(b)
 	return len(b), nil
+}
+
+// Flush implements http.Flusher: it commits the response and flushes it as
+// the adapter's Flush does, a no-op without a live connection.
+func (w *stdResponseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	// The stream this flush starts goes through w, so w keeps writing.
+	streaming := w.streaming
+	_ = flushResponse(w.rc)
+	w.streaming = streaming
 }

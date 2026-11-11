@@ -15,11 +15,11 @@ type ResponseHeaderEditor interface {
 	// rather than repeated on the fasthttp-based adapters.
 	AddHeader(key, value string)
 
-	// ResponseHeaderValues returns the values currently set for the response
-	// header key, in the order they were added, or nil when there are none.
-	// The key is matched case-insensitively and the slice is the caller's.
-	// Before a Content-Type is set, the fasthttp-based adapters report their
-	// framework's default for it.
+	// ResponseHeaderValues returns the values the response carries for header
+	// key, in the order they were added, or nil when there are none. The key
+	// is matched case-insensitively and the slice is the caller's. A header
+	// nothing set is not reported, whatever default the framework keeps, and
+	// neither is one dropped because the response was already committed.
 	ResponseHeaderValues(key string) []string
 }
 

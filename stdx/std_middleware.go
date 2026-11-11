@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"sync"
 
 	"github.com/go-sphere/httpx"
 )
@@ -48,23 +49,33 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 				ResponseWriter: parent.rw.ResponseWriter, status: parent.rw.status, written: parent.rw.written,
 			}}
 			parentStatus, parentWritten := parent.rw.status, parent.rw.written
-			done := make(chan error, 1)
+			// The continuation's result, guarded because a middleware such as
+			// http.TimeoutHandler may run it on another goroutine. A middleware
+			// may also run it more than once; the last result wins.
+			var (
+				mu        sync.Mutex
+				completed bool
+				result    error
+			)
 			inner := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				child.req = req
 				child.rw = responseWriter{ResponseWriter: w, status: parentStatus, written: parentWritten}
-				done <- next(child)
+				err := next(child)
+				mu.Lock()
+				completed, result = true, err
+				mu.Unlock()
 			})
 			middleware(inner).ServeHTTP(recorder, parent.req)
 			// Only a completed continuation can be merged. A timed-out continuation
 			// stays isolated and becomes garbage once its handler eventually exits.
-			var nextErr error
-			select {
-			case nextErr = <-done:
+			mu.Lock()
+			merge, nextErr := completed, result
+			mu.Unlock()
+			if merge {
 				parent.req, parent.keys = child.req, child.keys
 				if !recorder.written {
 					parent.rw.status = child.rw.status
 				}
-			default:
 			}
 			if recorder.written {
 				parent.rw.markWritten(recorder.status)

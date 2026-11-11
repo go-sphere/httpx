@@ -5,7 +5,7 @@ import "io"
 // Flusher is an optional Context capability that sends buffered response
 // data to the client immediately, enabling progressive responses.
 //
-// Adapters over net/http (gin, echo) and hertz (via a chunked body writer
+// Adapters over net/http (gin, echo, stdx) and hertz (via a chunked body writer
 // hijack on first flush) implement it. Fiber's response model buffers until
 // the handler returns, so the fiber adapter does not implement Flusher —
 // probe with AsFlusher and fall back, or use Streamer, which every adapter
@@ -29,7 +29,10 @@ func AsFlusher(ctx Context) (Flusher, bool) {
 type Streamer interface {
 	// Stream commits the response with the given status code and content
 	// type, then invokes fn with a writer whose writes are delivered to the
-	// client incrementally (each write is flushed).
+	// client incrementally (each write is flushed). Over a live connection the
+	// status line and headers are sent before fn runs, so a client waiting for
+	// them (an EventSource opening its connection) does not wait for the first
+	// write.
 	//
 	// On adapters with a buffered response model (fiber), fn runs after the
 	// handler returns; in that case Stream returns nil immediately and an

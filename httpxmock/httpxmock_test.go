@@ -189,9 +189,18 @@ func TestCallCountsSupportShortCircuitAssertions(t *testing.T) {
 	// Reading the response back must not look like handler activity.
 	ctx.StatusCode()
 	_ = ctx.Body()
-	_ = ctx.Committed()
 	if got := ctx.CallCount("StatusCode"); got != 1 {
 		t.Errorf("CallCount(StatusCode) = %d, want 1", got)
+	}
+	// Committed and ResponseHeaderValues are interface methods a layer calls,
+	// so they count: a test can assert that a recovery layer checked Committed.
+	_ = ctx.Committed()
+	_ = ctx.ResponseHeaderValues("Vary")
+	if got := ctx.CallCount("Committed"); got != 1 {
+		t.Errorf("CallCount(Committed) = %d, want 1", got)
+	}
+	if got := ctx.CallCount("ResponseHeaderValues"); got != 1 {
+		t.Errorf("CallCount(ResponseHeaderValues) = %d, want 1", got)
 	}
 }
 

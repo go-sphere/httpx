@@ -9,18 +9,30 @@ import (
 
 // CheckServeFile reports whether Responder.File may serve path, so every
 // adapter refuses the same paths without writing anything. It returns nil for
-// a regular file (symlinks followed); a 404 Error when path does not exist or
-// names anything else, a directory included (a directory is never listed,
-// redirected or served through an index file); a 403 Error when it cannot be
-// stat'ed for lack of permission; and a 500 Error for any other stat failure.
-// The returned Error carries no user message, so a rendered error body never
-// reveals path.
+// a readable regular file (symlinks followed); a 404 Error when path does not
+// exist or names anything else, a directory included (a directory is never
+// listed, redirected or served through an index file); a 403 Error when it
+// cannot be stat'ed or opened for lack of permission; and a 500 Error for any
+// other failure. The returned Error carries no user message, so a rendered
+// error body never reveals path.
+//
+// The file is opened and closed again once it is known to be regular, so an
+// adapter whose framework opens it a second time to serve it reports an
+// unreadable file the way ServeFile does rather than as the framework's 404.
 func CheckServeFile(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return statError(err)
 	}
-	return regularFileError(info)
+	if err := regularFileError(info); err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return statError(err)
+	}
+	_ = f.Close()
+	return nil
 }
 
 // ServeFile implements Responder.File for adapters that write through a

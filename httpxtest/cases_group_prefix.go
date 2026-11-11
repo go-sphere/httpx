@@ -25,8 +25,8 @@ func init() {
 // slash and FullPath() joins BasePath() with the route path, so the two agree,
 // and Handle mounts (Static, StaticFS, HandleStd) join the same way.
 func casesGroupPrefix(t *testing.T, r runner) {
-	// "/" and "/api/" are the shapes an adapter gets wrong; "" and "/api" keep a
-	// fix from trading one shape for another.
+	// "/" and "/api/" are the shapes an adapter gets wrong; "" and "/api" keep
+	// an adapter from handling those at the cost of the plain ones.
 	shapes := []string{"", "/", "/api", "/api/"}
 
 	t.Run("EngineGroup", func(t *testing.T) {
@@ -49,9 +49,9 @@ func casesGroupPrefix(t *testing.T, r runner) {
 		}
 	})
 
-	// Nesting is where the defect compounded: a trailing slash anywhere in the
-	// chain of prefixes moved every route below it, so "/" + "/api" broke a group
-	// whose own prefix was written the safe way.
+	// Nesting compounds the join: a trailing slash anywhere in the chain of
+	// prefixes must not move the routes below it, so "/" + "/api" reaches the
+	// same scope as "/api" alone.
 	t.Run("Nested", func(t *testing.T) {
 		for _, tc := range []struct{ outer, inner string }{
 			{"/", "/"},
@@ -75,8 +75,8 @@ func casesGroupPrefix(t *testing.T, r runner) {
 	// root handler is registered, and where a prefix that already ends in a slash
 	// meets it. The request goes to the *joined* path, not the base path: whether
 	// the base path reaches it is a trailing-slash policy the adapters answer
-	// differently on purpose — gin and hertz redirect 301, echox and stdx 404,
-	// fiber matches — so asserting one would assert an ununified policy.
+	// differently on purpose — gin and hertz redirect 301, echox, fiberx and
+	// stdx answer 404 — so asserting one would assert an ununified policy.
 	t.Run("RootRoutePath", func(t *testing.T) {
 		for _, prefix := range shapes {
 			for _, routePath := range []string{"/", ""} {
@@ -132,7 +132,7 @@ func casesGroupPrefix(t *testing.T, r runner) {
 							if !httpx.MountStd(g, http.MethodGet, "/mounted", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 								_, _ = w.Write([]byte("from-std"))
 							})) {
-								t.Skip("adapter does not implement httpx.StdHandlerMounter")
+								r.skipf(t, "adapter does not implement httpx.StdHandlerMounter")
 							}
 						},
 						relative: "/mounted",

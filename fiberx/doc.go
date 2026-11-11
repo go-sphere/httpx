@@ -1,10 +1,15 @@
 // Package fiberx implements the httpx interfaces over Fiber v3
 // (github.com/gofiber/fiber/v3).
 //
+// Support level: reference only. fiberx is an incomplete implementation kept
+// as an example of adapting a buffering, fasthttp-based framework to httpx;
+// several behaviours are approximated (see the adapter specifics below). Do
+// not use it in production; use stdx or ginx.
+//
 // Use it to run httpx handlers and middleware on a Fiber app, either one the
 // adapter creates or an existing *fiber.App passed with [WithEngine]. [New]
 // builds the engine; [WithAddr] (or [WithListen], [WithListener]),
-// [WithErrorHandler] and [WithTrustedProxies] configure it. Fiber's own
+// [WithErrorHandler], [WithTrustedProxies] and [WithMaxBodySize] configure it. Fiber's own
 // middleware is mounted with [Engine.UseNative] or [Router.UseNative], plain
 // net/http middleware with [AdaptStdMiddleware], and [FromFiber] wraps a
 // fiber.Ctx as an httpx.Context.
@@ -45,17 +50,25 @@
 //   - Fiber has no named wildcards; the adapter rewrites /files/*name to
 //     fiber's anonymous form and keeps Param("name"), BindURI and FullPath
 //     reporting the registered name and pattern.
-//   - Implements httpx.Streamer, httpx.StdHandlerMounter and
-//     httpx.TestRequester, but not httpx.Flusher: fiber buffers the response
-//     until the handler returns, and a Stream callback runs after that.
+//   - Implements httpx.Streamer, httpx.ResponseHeaderEditor,
+//     httpx.StdHandlerMounter and httpx.TestRequester, but not httpx.Flusher: fiber buffers the response
+//     until the handler returns, and a Stream callback runs after that. Stream
+//     sends the status line and headers before the callback runs.
 //   - An app built by the adapter routes like the other adapters: case
 //     sensitive, strict about trailing slashes, no HEAD answered by a GET
-//     route, and a literal '+' in the path kept as '+'.
+//     route, and a literal '+' in the path kept as '+'. It also sets
+//     DisableDefaultContentType, so a response nothing labelled carries no
+//     Content-Type.
 //   - fiber.Config is immutable after fiber.New, so an app supplied with
 //     WithEngine keeps its own ErrorHandler, UnescapePath, CaseSensitive,
-//     StrictRouting and DisableHeadAutoRegister settings and cannot be
-//     combined with WithTrustedProxies. httpx handler errors are still
-//     rendered by the adapter.
+//     StrictRouting, DisableHeadAutoRegister and DisableDefaultContentType
+//     settings and cannot be combined with WithTrustedProxies. httpx handler
+//     errors are still rendered by the adapter, and fasthttp's default
+//     Content-Type is never reported by ResponseHeaderValues nor copied by
+//     HandleStd or AdaptStdMiddleware. WithErrorHandler(nil) is ignored.
+//   - BodyReader, BodyRaw and BindJSON read the request body as received:
+//     unlike fiber's Body, they do not decode a Content-Encoding. BindJSON
+//     uses the app's JSONDecoder.
 //   - Route precedence does not depend on registration order: the adapter
 //     reorders fiber's stack so a static segment beats a parameter and a
 //     parameter beats a wildcard.
@@ -66,8 +79,12 @@
 //   - Behind AdaptStdMiddleware a streamed response (Stream, SSE, a
 //     DataFromReader body stream) keeps streaming; the middleware sees its
 //     headers but cannot transform its body.
+//   - A handler mounted with HandleStd, Static or StaticFS writes under the
+//     same post-commit rules as the Responder methods, and its writer starts
+//     with the headers the httpx chain set.
 //   - Stop closes the listeners but cannot cut connections still in flight.
-//     Start returns nil once Stop ended it, even when a WithListener listener
-//     reports its own error for having been closed; Stop before Start
-//     returns nil.
+//     A Stop that lands while Start is still on its way into fasthttp keeps
+//     shutting down until Start returns or its context is done. Start returns
+//     nil once Stop ended it, even when a WithListener listener reports its
+//     own error for having been closed; Stop before Start returns nil.
 package fiberx

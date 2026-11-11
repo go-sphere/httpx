@@ -1,6 +1,7 @@
 package httpxtest
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +43,7 @@ func casesRequestEdges(t *testing.T, r runner) {
 	// (net/http reader, fasthttp buffer), so a length assumption shows up here.
 	t.Run("BodyWithoutContentLength", func(t *testing.T) {
 		if !r.suite.Caps.InProcessUnknownLengthBody {
-			t.Skipf("%s: Caps.InProcessUnknownLengthBody is not declared; the in-process requester cannot express an unknown body length", r.suite.Name)
+			r.skipf(t, "%s: Caps.InProcessUnknownLengthBody is not declared; the in-process requester cannot express an unknown body length", r.suite.Name)
 		}
 		// An io.Reader body makes httptest declare no length, which is how an
 		// unknown-length (chunked on the wire) request is expressed; setting
@@ -143,56 +144,37 @@ func casesRequestEdges(t *testing.T, r runner) {
 		}, req)
 	})
 
-	// A body larger than the frameworks' internal read buffers, read both ways.
-	t.Run("LargeBody", func(t *testing.T) {
-		payload := strings.Repeat("abcdefgh", 128*1024) // 1 MiB
-		req := httptest.NewRequest(http.MethodPost, "http://example.com/edges/large", strings.NewReader(payload))
+	// A body larger than the frameworks' internal read buffers arrives byte for
+	// byte through both readers. Scenarios/LargeBody pins the length; this pins
+	// the content, which a buffer reused or stitched at the wrong offset changes
+	// without changing the length.
+	t.Run("LargeBodyArrivesIntact", func(t *testing.T) {
+		payload := strings.Repeat("0123456789abcdef", 64*1024) + "tail" // 1 MiB and a partial chunk
+		for _, tc := range []struct {
+			name string
+			read func(httpx.Context) ([]byte, error)
+		}{
+			{"BodyRaw", func(ctx httpx.Context) ([]byte, error) { return ctx.BodyRaw() }},
+			{"BodyReader", func(ctx httpx.Context) ([]byte, error) { return io.ReadAll(ctx.BodyReader()) }},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := r.serve(t, func(router httpx.Router) {
+					router.POST("/edges/large", func(ctx httpx.Context) error {
+						body, err := tc.read(ctx)
+						if err != nil {
+							return err
+						}
+						if string(body) != payload {
+							return ctx.Text(http.StatusOK, fmt.Sprintf("corrupted: %d bytes, want %d", len(body), len(payload)))
+						}
+						return ctx.Text(http.StatusOK, "intact")
+					})
+				}, httptest.NewRequest(http.MethodPost, "http://example.com/edges/large", strings.NewReader(payload)))
 
-		got := r.serve(t, func(router httpx.Router) {
-			router.POST("/edges/large", func(ctx httpx.Context) error {
-				raw, err := ctx.BodyRaw()
-				if err != nil {
-					return err
+				if got.Status != http.StatusOK || got.Body != "intact" {
+					t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "intact")
 				}
-				return ctx.JSON(http.StatusOK, map[string]any{
-					"length": len(raw),
-					"head":   string(raw[:8]),
-					"tail":   string(raw[len(raw)-8:]),
-				})
 			})
-		}, req)
-
-		// Asserted inline rather than recorded: a golden file holding a megabyte
-		// tells nobody anything.
-		if got.Status != http.StatusOK {
-			t.Fatalf("status = %d, want %d", got.Status, http.StatusOK)
-		}
-		for _, want := range []string{`"length":1048576`, `"head":"abcdefgh"`, `"tail":"abcdefgh"`} {
-			if !strings.Contains(strings.ReplaceAll(got.Body, " ", ""), want) {
-				t.Fatalf("body %q does not contain %s", got.Body, want)
-			}
-		}
-	})
-
-	t.Run("LargeBodyThroughReader", func(t *testing.T) {
-		payload := strings.Repeat("0123456789", 100*1024) // ~1 MiB
-		req := httptest.NewRequest(http.MethodPost, "http://example.com/edges/large-reader", strings.NewReader(payload))
-
-		got := r.serve(t, func(router httpx.Router) {
-			router.POST("/edges/large-reader", func(ctx httpx.Context) error {
-				body, err := io.ReadAll(ctx.BodyReader())
-				if err != nil {
-					return err
-				}
-				return ctx.JSON(http.StatusOK, map[string]any{"length": len(body)})
-			})
-		}, req)
-
-		if got.Status != http.StatusOK {
-			t.Fatalf("status = %d, want %d", got.Status, http.StatusOK)
-		}
-		if want := `"length":1024000`; !strings.Contains(strings.ReplaceAll(got.Body, " ", ""), want) {
-			t.Fatalf("body %q does not contain %s", got.Body, want)
 		}
 	})
 }

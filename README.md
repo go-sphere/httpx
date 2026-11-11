@@ -4,16 +4,35 @@ A unified HTTP framework abstraction layer for Go that provides a consistent int
 
 ## Overview
 
-`httpx` is designed to provide a framework-agnostic HTTP handling layer that allows you to write application logic once and run it on any supported HTTP framework. It currently supports:
+`httpx` is designed to provide a framework-agnostic HTTP handling layer that allows you to write application logic once and run it on any supported HTTP framework.
 
-- **Gin** (`ginx`) - Fast HTTP web framework
-- **Fiber** (`fiberx`) - Express inspired web framework  
-- **Echo** (`echox`) - High performance, minimalist framework
-- **Hertz** (`hertzx`) - High-performance HTTP framework by CloudWego
-- **net/http** (`stdx`) - No web framework at all: the standard library plus a
-  small route tree written for this contract. Pulls in no framework and serves
-  `Static`/`HandleStd`/std middleware with nothing to bridge; a 10-layer chain
-  costs ~35 ns with zero allocations
+## Adapters and support levels
+
+The adapters are not equals. Pick one by its support level, not by the
+framework you would otherwise reach for:
+
+| Adapter | Framework | Level | Use in production |
+| --- | --- | --- | --- |
+| `stdx` | net/http | **Reference.** The complete implementation of the httpx contract and the default engine of sphere. | Yes, recommended. |
+| `ginx` | Gin | **Production.** Implements every httpx interface and optional capability, with no exceptions. | Yes. |
+| `echox` | Echo v4 | **Experimental.** Fairly complete, but not held to production standards. | Not recommended. |
+| `fiberx` | Fiber v3 | **Reference only.** Incomplete; shows how to adapt a buffering, fasthttp-based framework to httpx. | No. |
+| `hertzx` | Hertz | **Reference only.** Incomplete; shows how to adapt a buffering framework to httpx. | No. |
+
+- **`stdx`** is the standard httpx is measured against: what its route tree
+  accepts is the route grammar, and what it does is the contract. It is the
+  standard library plus a small route tree written for this contract, pulls in
+  no framework, and serves `Static`/`HandleStd`/std middleware with nothing to
+  bridge; a 10-layer chain costs ~35 ns with zero allocations.
+- **`ginx`** must match `stdx` on every interface and capability. A
+  difference between the two is a ginx bug.
+- **`echox`** runs the full shared suite, but its fixes and edge cases get less
+  scrutiny than the production adapters'.
+- **`fiberx`** and **`hertzx`** run the shared suite too, but their frameworks
+  buffer the whole response and route on fasthttp-style request objects, and
+  some behaviour is only approximated (see each package's documentation for the
+  known differences). Use them to learn how an adapter is built, not to serve
+  traffic.
 
 ## Adapter options
 
@@ -62,16 +81,13 @@ func TestConformance(t *testing.T) {
 ```
 
 A third-party adapter can import `httpxtest` and certify itself against the
-same contract as the official four: registration and routing, chain control
+same contract as the official five: registration and routing, chain control
 flow (including how httpx layers nest inside the framework's own middleware),
 request bodies and binders, forms and uploads, and the edges —
 repeated query/header keys, unknown-length bodies, encoded paths, large
 bodies. Every capability an adapter declares in `Caps` is also checked against
-what it actually does. The four official suites are wired in
-`conformance/httpxtest_suite_test.go` for now and move into each adapter's own
-module once the root module is released with `httpxtest` in it (an adapter
-cannot import a package that its declared `httpx` version does not contain, and
-adapter `go.mod` files must stay free of `replace`). Response shape is pinned by the golden
+what it actually does. Each official adapter runs the suite from its own
+module, in its `conformance_test.go`. Response shape is pinned by the golden
 contracts in `httpxtest/golden/`, which every adapter compares against; see
 that directory's README for the format. Rewrite them with `make golden`, which
 records from each adapter and then verifies that all of them still agree.
@@ -79,15 +95,15 @@ records from each adapter and then verifies that all of them still agree.
 ```bash
 make test          # every module, including each adapter's conformance run
 make golden        # rewrite and verify the shared response contracts
-go test ./conformance -run TestHTTPXTestSuite/ginx -v
+(cd ginx && go test -run TestConformance -v .)
 
 # The same scenario table, measured per adapter through its own dispatcher.
 go test ./conformance -run '^$' -bench '^BenchmarkHTTPXTestSuite$/ginx' -benchmem
 ```
 
-`conformance/` remains for what genuinely needs all four frameworks in one
-process: the cross-framework benchmark tables and the cases that reach for
-each framework's native middleware. Adapter-specific behavior is tested in the
+`conformance/` remains for what genuinely needs all five adapters in one
+process: the cross-framework benchmark tables and the tests that need a real
+listener. Adapter-specific behavior is tested in the
 adapter's own module (for example `ginx/middleware_test.go` for how ginx
 composes chains into gin routes, and `ginx/middleware_alloc_test.go` for the
 allocation guards).
@@ -131,9 +147,12 @@ router.GET("/chunks", func(ctx httpx.Context) error {
 })
 ```
 
-Each write made by the stream callback is flushed to the client. Once streaming
-starts, the response status and headers are committed, so callback errors are
-for termination and cleanup; they cannot become a different HTTP response.
+Each write made by the stream callback is flushed to the client. The status line
+and headers are sent before the callback runs, so a client such as an
+`EventSource` sees the connection open while the handler still waits for its
+first event. Once streaming starts, the response is committed, so callback
+errors are for termination and cleanup; they cannot become a different HTTP
+response.
 
 `ServerSentEvents` is the framework-neutral SSE layer over `Streamer`:
 
@@ -156,10 +175,10 @@ context is canceled.
 
 Streaming capability matrix:
 
-| Capability | Gin | Echo | Hertz | Fiber |
-| --- | --- | --- | --- | --- |
-| `Streamer` / `ServerSentEvents` | Yes | Yes | Yes | Yes |
-| `Flusher` / `AsFlusher` | Yes | Yes | Yes | No |
+| Capability | Gin | Echo | Hertz | Fiber | net/http |
+| --- | --- | --- | --- | --- | --- |
+| `Streamer` / `ServerSentEvents` | Yes | Yes | Yes | Yes | Yes |
+| `Flusher` / `AsFlusher` | Yes | Yes | Yes | No | Yes |
 
 Fiber uses its deferred stream-writer API, so the stream callback runs after
 the handler returns and `Stream` returns `nil` immediately. In-process requests
@@ -193,7 +212,7 @@ Until v0.0.5 there were two forms: this one, then called `Interceptor`, and a
 Next-driven form is gone, `Context.Next()` with it, and the composed form took
 the `Middleware` name. See the CHANGELOG for the migration.
 
-Four things to know about:
+Five things to know about:
 
 - **Stopping the chain** is returning without calling `next` — after writing a
   response, or by returning an error for the adapter's error handler to render.
@@ -272,4 +291,3 @@ Feature values are adapter declarations and can be extended in future versions.
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-(https://github.com/go-sphere/httpx/discussions)

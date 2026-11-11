@@ -1,15 +1,16 @@
 package conformance
 
 import (
+	"maps"
 	"math/rand"
 	"net/http"
-	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/go-sphere/httpx"
-	"github.com/go-sphere/httpx/stdx"
+	"github.com/go-sphere/httpx/httpxtest"
 )
 
 // stdx is the only router written in this repository, so its matching is
@@ -24,26 +25,37 @@ func TestRouterMatchesFrameworkConsensus(t *testing.T) {
 	)
 	rng := rand.New(rand.NewSource(20260918))
 
+	var subject adapter
+	var voters []adapter
+	for _, a := range adapters() {
+		if a.Name == "stdx" {
+			subject = a
+		} else {
+			voters = append(voters, a)
+		}
+	}
+	if subject.NewEngine == nil {
+		t.Fatal("no stdx adapter to compare")
+	}
+
 	var compared, skipped, disputed int
 	for table := range tables {
 		patterns := randomRouteTable(rng, routesPerSet)
 
-		reference := make(map[string]httpx.Engine, len(conformanceFrameworks))
-		usable := true
-		for _, framework := range conformanceFrameworks {
-			engine, ok := buildProbeEngine(t, framework, patterns)
+		reference := make([]httpx.Engine, 0, len(voters))
+		for _, voter := range voters {
+			engine, ok := buildProbeEngine(t, voter, patterns)
 			if !ok {
 				// A framework that refuses the table cannot vote on it.
-				usable = false
 				break
 			}
-			reference[framework] = engine
+			reference = append(reference, engine)
 		}
-		if !usable {
+		if len(reference) < len(voters) {
 			skipped++
 			continue
 		}
-		subject, ok := buildProbeEngine(t, "stdx", patterns)
+		stdxEngine, ok := buildProbeEngine(t, subject, patterns)
 		if !ok {
 			t.Fatalf("table %d: stdx refused a table every framework accepted: %v", table, patterns)
 		}
@@ -51,8 +63,8 @@ func TestRouterMatchesFrameworkConsensus(t *testing.T) {
 		for range probesPerSet {
 			path := randomPath(rng, patterns)
 			consensus, agreed := "", true
-			for i, framework := range conformanceFrameworks {
-				answer := probeRoute(t, reference[framework], path)
+			for i, engine := range reference {
+				answer := probeRoute(t, engine, path)
 				if i == 0 {
 					consensus = answer
 					continue
@@ -67,7 +79,7 @@ func TestRouterMatchesFrameworkConsensus(t *testing.T) {
 				continue
 			}
 			compared++
-			if got := probeRoute(t, subject, path); got != consensus {
+			if got := probeRoute(t, stdxEngine, path); got != consensus {
 				t.Fatalf("table %d: GET %s\n  frameworks (unanimous): %s\n  stdx: %s\n  routes: %v",
 					table, path, consensus, got, patterns)
 			}
@@ -144,18 +156,14 @@ func randomPath(rng *rand.Rand, patterns []string) string {
 }
 
 // Registration panics are a legitimate answer ("this router refuses the table"), not a failure.
-func buildProbeEngine(t *testing.T, framework string, patterns []string) (engine httpx.Engine, ok bool) {
+func buildProbeEngine(t *testing.T, a adapter, patterns []string) (engine httpx.Engine, ok bool) {
 	t.Helper()
 	defer func() {
 		if recover() != nil {
 			engine, ok = nil, false
 		}
 	}()
-	if framework == "stdx" {
-		engine = stdx.New()
-	} else {
-		engine = newHarnessTB(t, framework).Engine
-	}
+	engine = a.NewEngine(t, httpxtest.Options{})
 	router := engine.Group("")
 	for i, pattern := range patterns {
 		router.GET(pattern, routeProbe(i))
@@ -169,7 +177,7 @@ func routeProbe(index int) httpx.Handler {
 	return func(ctx httpx.Context) error {
 		parts := []string{"route=" + strconv.Itoa(index)}
 		params := ctx.Params()
-		for _, key := range sortedKeys(params) {
+		for _, key := range slices.Sorted(maps.Keys(params)) {
 			parts = append(parts, key+"="+params[key])
 		}
 		return ctx.Text(http.StatusOK, strings.Join(parts, " "))
@@ -178,34 +186,11 @@ func routeProbe(index int) httpx.Handler {
 
 func probeRoute(t *testing.T, engine httpx.Engine, path string) string {
 	t.Helper()
-	requester, ok := httpx.AsTestRequester(engine)
-	if !ok {
-		t.Fatal("engine does not support httpx.TestRequester")
-	}
-	resp, err := requester.Do(httptest.NewRequest(http.MethodGet, "http://example.com"+path, nil))
-	if err != nil {
-		t.Fatalf("serve %s: %v", path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	resp := mustServe(t, engine, http.MethodGet, "http://example.com"+path)
+	if resp.Status != http.StatusOK {
 		// A miss must be a miss everywhere, but its rendering is each adapter's
 		// business: only the status is comparable.
-		return "status=" + strconv.Itoa(resp.StatusCode)
+		return "status=" + strconv.Itoa(resp.Status)
 	}
-	buf := make([]byte, 512)
-	n, _ := resp.Body.Read(buf)
-	return string(buf[:n])
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out
+	return resp.Body
 }

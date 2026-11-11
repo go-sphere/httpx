@@ -7,34 +7,20 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/go-sphere/httpx"
-	"github.com/go-sphere/httpx/fiberx"
-	"github.com/go-sphere/httpx/hertzx"
-	"github.com/gofiber/fiber/v3"
 )
 
-// fiber and hertz enforce their own 4 MiB body limit in the server, before any
-// handler, so WithMaxBodySize above it must raise that limit. The in-process
-// requester of hertzx bypasses its server, hence a real listener.
+// WithMaxBodySize is the limit a client sees, whatever the server underneath
+// enforces on its own: fiber and hertz refuse bodies over 4 MiB before any
+// handler runs, so a larger WithMaxBodySize must raise that limit. The
+// in-process requester of hertzx bypasses its server, hence a real listener.
 func TestMaxBodySizeRaisesFrameworkLimit(t *testing.T) {
 	const limit = 5 << 20
-	for _, framework := range []string{"fiberx", "hertzx"} {
-		t.Run(framework, func(t *testing.T) {
-			addr := reserveAddrTB(t)
-			var engine httpx.Engine
-			switch framework {
-			case "fiberx":
-				engine = fiberx.New(
-					fiberx.WithListen(addr, fiber.ListenConfig{DisableStartupMessage: true}),
-					fiberx.WithMaxBodySize(limit),
-				)
-			case "hertzx":
-				hlog.SetSilentMode(true)
-				hlog.SetOutput(io.Discard)
-				engine = hertzx.New(hertzx.WithAddr(addr), hertzx.WithMaxBodySize(limit))
-			}
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine, addr := a.serve(t, serveConfig{maxBodySize: limit})
 			engine.Group("").POST("/upload", func(ctx httpx.Context) error {
 				raw, err := ctx.BodyRaw()
 				if err != nil {
@@ -42,12 +28,11 @@ func TestMaxBodySizeRaisesFrameworkLimit(t *testing.T) {
 				}
 				return ctx.Text(http.StatusOK, fmt.Sprint(len(raw)))
 			})
-			stop := startEngineAndWait(t, engine, addr)
-			defer stop()
+			startServing(t, engine, addr)
 
 			post := func(size int) (int, string, error) {
 				t.Helper()
-				resp, err := http.Post("http://"+addr+"/upload", "application/octet-stream", bytes.NewReader(bytes.Repeat([]byte("a"), size)))
+				resp, err := oneShotClient(10*time.Second).Post("http://"+addr+"/upload", "application/octet-stream", bytes.NewReader(bytes.Repeat([]byte("a"), size)))
 				if err != nil {
 					return 0, "", err
 				}

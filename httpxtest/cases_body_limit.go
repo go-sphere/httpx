@@ -73,7 +73,7 @@ func casesBodyLimit(t *testing.T, r runner) {
 	// and both a bind error and a raw read error returned as is are 413.
 	t.Run("UnknownLengthOverLimitIs413", func(t *testing.T) {
 		if !r.suite.Caps.InProcessUnknownLengthBody {
-			t.Skipf("%s: Caps.InProcessUnknownLengthBody is not declared; the in-process requester cannot express an unknown body length", r.suite.Name)
+			r.skipf(t, "%s: Caps.InProcessUnknownLengthBody is not declared; the in-process requester cannot express an unknown body length", r.suite.Name)
 		}
 		for _, tc := range []struct {
 			name    string

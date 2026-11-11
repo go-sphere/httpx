@@ -8,6 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -59,7 +61,7 @@ func (c *hertzContext) ClientIP() string {
 }
 
 func (c *hertzContext) Param(key string) string {
-	return c.normalizeParam(key, c.ctx.Param(key))
+	return c.ctx.Param(key)
 }
 
 func (c *hertzContext) Params() map[string]string {
@@ -68,18 +70,9 @@ func (c *hertzContext) Params() map[string]string {
 	}
 	out := make(map[string]string, len(c.ctx.Params))
 	for _, p := range c.ctx.Params {
-		out[p.Key] = c.normalizeParam(p.Key, p.Value)
+		out[p.Key] = p.Value
 	}
 	return out
-}
-
-// normalizeParam strips the leading "/" that hertz includes in wildcard
-// values, so /files/*filepath yields "a/b" for /files/a/b on every adapter.
-func (c *hertzContext) normalizeParam(key, value string) string {
-	if strings.HasPrefix(value, "/") && strings.Contains(c.ctx.FullPath(), "*"+key) {
-		return strings.TrimPrefix(value, "/")
-	}
-	return value
 }
 
 func (c *hertzContext) Query(key string) string {
@@ -205,7 +198,7 @@ func (c *hertzContext) BindQuery(dst any) error {
 }
 
 func (c *hertzContext) BindForm(dst any) error {
-	return httpx.WrapBindError(c.ctx.BindForm(dst))
+	return httpx.WrapBindError(c.bindFormBody(dst))
 }
 
 func (c *hertzContext) BindURI(dst any) error {
@@ -242,7 +235,7 @@ func (c *hertzContext) writeBody(write func() error) error {
 	if !c.Committed() {
 		err := write()
 		if err == nil {
-			c.ctx.Set(responseCommittedKey, true)
+			markCommitted(c.ctx)
 		}
 		return err
 	}
@@ -274,15 +267,24 @@ func (c *hertzContext) JSON(code int, v any) error {
 	return c.writeBody(func() error {
 		// Use Hertz's configured marshaler (including ResetJSONMarshal), while
 		// returning encoding failures instead of letting RequestContext.JSON
-		// panic.
+		// panic. The render always sets its own Content-Type, so a preset one
+		// (or none, after an encode error) is put back.
+		header := &c.ctx.Response.Header
+		preset := bytes.Clone(explicitContentType(header))
 		r := render.JSONRender{Data: v}
-		if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+		if bodylessStatus(code) {
 			c.ctx.Status(code)
-			r.WriteContentType(&c.ctx.Response)
+			if len(preset) == 0 {
+				r.WriteContentType(&c.ctx.Response)
+			}
 			return nil
 		}
 		if err := r.Render(&c.ctx.Response); err != nil {
+			header.SetContentTypeBytes(preset)
 			return err
+		}
+		if len(preset) > 0 {
+			header.SetContentTypeBytes(preset)
 		}
 		c.ctx.Status(code)
 		return nil
@@ -320,9 +322,21 @@ func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader,
 			c.ctx.SetContentType(contentType)
 		}
 		c.ctx.Status(code)
+		if bodylessStatus(code) {
+			if closer, ok := r.(io.Closer); ok {
+				return closer.Close()
+			}
+			return nil
+		}
 		c.ctx.SetBodyStream(r, streamSize(size))
 		return nil
 	})
+}
+
+// bodylessStatus reports whether code is a status whose response has no body
+// (1xx, 204, 304).
+func bodylessStatus(code int) bool {
+	return code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified
 }
 
 // streamSize narrows the contract's int64 size to the int that hertz's
@@ -342,10 +356,30 @@ func (c *hertzContext) File(path string) error {
 	if err := httpx.CheckServeFile(path); err != nil {
 		return err
 	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return httpx.InternalServerError(err)
+	}
 	return c.writeBody(func() error {
-		c.ctx.File(path)
+		// hertz serves a file by rewriting the request URI to its path, which
+		// would leave Path and Query reporting the file for every layer that
+		// reads them after the handler. The path is escaped so a name holding
+		// '#', '?' or '%' survives being parsed as a URI.
+		uri := string(c.ctx.Request.Header.RequestURI())
+		c.ctx.File(escapeFilePath(abs))
+		c.ctx.Request.SetRequestURI(uri)
 		return nil
 	})
+}
+
+// escapeFilePath percent-escapes each segment of an absolute file path for use
+// as a request URI.
+func escapeFilePath(path string) string {
+	segments := strings.Split(filepath.ToSlash(path), "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return strings.Join(segments, "/")
 }
 
 func (c *hertzContext) Redirect(code int, location string) error {
@@ -353,7 +387,9 @@ func (c *hertzContext) Redirect(code int, location string) error {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
 	}
 	return c.writeBody(func() error {
-		c.ctx.Redirect(code, []byte(location))
+		// hertz's Redirect does the same but rewrites 300 to 302.
+		c.ctx.Response.Header.Set("Location", location)
+		c.ctx.Status(code)
 		return nil
 	})
 }
@@ -362,7 +398,8 @@ func (c *hertzContext) SetHeader(key, value string) {
 	if c.Committed() {
 		return
 	}
-	c.ctx.Header(key, value)
+	// Not hertz's c.Header, which deletes the header for an empty value.
+	c.ctx.Response.Header.Set(key, value)
 }
 
 func (c *hertzContext) AddHeader(key, value string) {
@@ -373,6 +410,13 @@ func (c *hertzContext) AddHeader(key, value string) {
 }
 
 func (c *hertzContext) ResponseHeaderValues(key string) []string {
+	if strings.EqualFold(key, "Content-Type") {
+		// GetAll would report hertz's default for a response nothing labelled.
+		if ct := explicitContentType(&c.ctx.Response.Header); len(ct) > 0 {
+			return []string{string(ct)}
+		}
+		return nil
+	}
 	values := c.ctx.Response.Header.GetAll(key)
 	// hertz answers Set-Cookie with one empty string when no cookie is set.
 	if len(values) == 0 || len(values) == 1 && values[0] == "" {
@@ -441,22 +485,35 @@ func (c *hertzContext) NativeContext() any {
 // and headers. Without a live connection (in-process test dispatch) it is a
 // no-op and the response stays buffered.
 func (c *hertzContext) Flush() error {
-	if c.ctx.Response.GetHijackWriter() == nil {
-		w := c.ctx.GetWriter()
+	return flushResponse(c.ctx)
+}
+
+// flushResponse is Flush on rc, shared with the net/http writer HandleStd and
+// AdaptStdMiddleware hand out.
+func flushResponse(rc *app.RequestContext) error {
+	if rc.Response.GetHijackWriter() == nil {
+		w := rc.GetWriter()
 		if w == nil {
 			return nil
 		}
-		commitPendingStdWriters(c.ctx)
-		body := bytes.Clone(c.ctx.Response.Body())
-		c.ctx.Response.ResetBody()
-		c.ctx.Response.HijackWriter(resp.NewChunkedBodyWriter(&c.ctx.Response, w))
+		commitPendingStdWriters(rc)
+		body := bytes.Clone(rc.Response.Body())
+		rc.Response.ResetBody()
+		rc.Response.HijackWriter(resp.NewChunkedBodyWriter(&rc.Response, w))
 		if len(body) > 0 {
-			if _, err := c.ctx.Response.GetHijackWriter().Write(body); err != nil {
+			if _, err := rc.Response.GetHijackWriter().Write(body); err != nil {
 				return err
 			}
 		}
 	}
-	return c.ctx.Flush()
+	// hertz's chunked writer sends the header only with the first chunk; a
+	// flush must send it even when no body has been written yet.
+	if hw, ok := rc.Response.GetHijackWriter().(interface{ WriteHeader() error }); ok {
+		if err := hw.WriteHeader(); err != nil {
+			return err
+		}
+	}
+	return rc.Flush()
 }
 
 // Stream implements httpx.Streamer: each write inside fn is flushed to the

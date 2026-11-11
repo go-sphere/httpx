@@ -65,7 +65,7 @@ func casesChain(t *testing.T, r runner) {
 	// same scope, including a layer registered *after* the native one.
 	t.Run("NativeMiddlewareWrapsLayers", func(t *testing.T) {
 		if r.suite.NativeMiddleware == nil {
-			t.Skipf("%s: no NativeMiddleware hook declared", r.suite.Name)
+			r.skipf(t, "%s: no NativeMiddleware hook declared", r.suite.Name)
 		}
 		rec := &orderRecorder{}
 		want := "native-pre,a-pre,b-pre,handler,b-post,a-post,native-post"

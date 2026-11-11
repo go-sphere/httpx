@@ -1,6 +1,8 @@
 package echox
 
 import (
+	"errors"
+	"net/http"
 	"net/url"
 
 	"github.com/go-playground/form/v4"
@@ -19,11 +21,15 @@ func newDecoder(tag string) *form.Decoder {
 }
 
 func bindForm(dst any, ctx echo.Context) error {
-	values, err := ctx.FormParams()
-	if err != nil {
+	// net/http rather than echo's FormParams, which recognizes a multipart body
+	// only by a case-sensitive Content-Type prefix; media types are
+	// case-insensitive. The memory limit is echo's. PostForm holds the body's
+	// fields only, multipart ones included, never the URL query.
+	req := ctx.Request()
+	if err := req.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		return err
 	}
-	return formDecoder.Decode(dst, values)
+	return formDecoder.Decode(dst, req.PostForm)
 }
 
 // bindURIWithForm decodes the matched route's parameters into dst. It is a

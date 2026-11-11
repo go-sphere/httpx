@@ -6,9 +6,7 @@ import "io"
 //
 // It always reports nil. There is no connection behind a mock context, so
 // there is nothing to push, and the httpx.Flusher contract makes a writer
-// that cannot flush a no-op rather than an error — a rule this repository
-// arrived at the hard way, after stdx answered an SSE request with an empty
-// 200 by treating an unflushable writer as a failure. What the flush leaves
+// that cannot flush a no-op rather than an error. What the flush leaves
 // behind is the boundary, readable with FlushOffsets.
 func (c *Context) Flush() error {
 	c.mu.Lock()

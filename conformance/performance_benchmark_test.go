@@ -2,23 +2,23 @@ package conformance
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"time"
-
 	"testing"
+	"time"
 
 	"github.com/go-sphere/httpx"
 )
 
+// benchmarkHarness is an engine serving on a real listener, measured through
+// an HTTP client.
 type benchmarkHarness struct {
 	router  httpx.Router
 	engine  httpx.Engine
+	addr    string
 	baseURL string
 	client  *http.Client
 }
@@ -26,10 +26,9 @@ type benchmarkHarness struct {
 const benchmarkNoiseRoutes = 1200
 
 func BenchmarkFrameworkRouting(b *testing.B) {
-	frameworks := conformanceFrameworks
-	for _, name := range frameworks {
-		b.Run(name, func(b *testing.B) {
-			h := newBenchmarkHarness(b, name)
+	for _, a := range adapters() {
+		b.Run(a.Name, func(b *testing.B) {
+			h := newBenchmarkHarness(b, a)
 			registerNoiseRoutes(h.router, benchmarkNoiseRoutes)
 			registerBenchmarkRoute(h.router)
 			startBenchmarkHarness(b, h)
@@ -102,10 +101,9 @@ func BenchmarkFrameworkComplexRequest(b *testing.B) {
 		b.Fatalf("marshal benchmark body failed: %v", err)
 	}
 
-	frameworks := conformanceFrameworks
-	for _, name := range frameworks {
-		b.Run(name, func(b *testing.B) {
-			h := newBenchmarkHarness(b, name)
+	for _, a := range adapters() {
+		b.Run(a.Name, func(b *testing.B) {
+			h := newBenchmarkHarness(b, a)
 			registerNoiseRoutes(h.router, benchmarkNoiseRoutes)
 
 			h.router.Use(func(next httpx.Handler) httpx.Handler {
@@ -240,58 +238,33 @@ func registerNoiseRoutes(r httpx.Router, count int) {
 	}
 }
 
-func newBenchmarkHarness(b *testing.B, name string) benchmarkHarness {
+func newBenchmarkHarness(b *testing.B, a adapter) benchmarkHarness {
 	b.Helper()
-	bundle := newFrameworkHarnessTB(b, name, harnessOptions{mode: harnessModeNetwork, errorMode: harnessErrorDefault, silenceHertzLog: true})
-	router := bundle.harness.Router
-	router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(204) })
-	return benchmarkHarness{router: router, engine: bundle.harness.Engine, baseURL: bundle.baseURL, client: bundle.client}
+	engine, addr := a.serve(b, serveConfig{})
+	router := engine.Group("")
+	router.GET("/__ready", func(ctx httpx.Context) error { return ctx.NoContent(http.StatusNoContent) })
+	return benchmarkHarness{
+		router:  router,
+		engine:  engine,
+		addr:    addr,
+		baseURL: "http://" + addr,
+		client:  &http.Client{Timeout: 2 * time.Second},
+	}
 }
 
+// startBenchmarkHarness serves once every route is registered. fiberx and
+// hertzx accept connections on their pre-bound listener before Start serves,
+// so readiness is one answered request rather than a dial.
 func startBenchmarkHarness(b *testing.B, h benchmarkHarness) {
 	b.Helper()
-
-	startErrCh := make(chan error, 1)
-	go func() {
-		startErrCh <- h.engine.Start()
-	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-startErrCh:
-			if !isExpectedStartExit(err) {
-				b.Fatalf("start exited early: %v", err)
-			}
-			b.Fatalf("engine exited before ready")
-		default:
-		}
-
-		req, err := http.NewRequest(http.MethodGet, h.baseURL+"/__ready", nil)
-		if err != nil {
-			b.Fatalf("build ready request failed: %v", err)
-		}
-		status, err := doRequest(h.client, req)
-		if err == nil && status == http.StatusNoContent {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	startServing(b, h.engine, h.addr)
+	req, err := http.NewRequest(http.MethodGet, h.baseURL+"/__ready", nil)
+	if err != nil {
+		b.Fatalf("build ready request: %v", err)
 	}
-
-	b.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = h.engine.Stop(ctx)
-
-		select {
-		case err := <-startErrCh:
-			if !isExpectedStartExit(err) {
-				b.Fatalf("start returned unexpected error: %v", err)
-			}
-		case <-time.After(3 * time.Second):
-			b.Fatalf("engine did not exit after stop")
-		}
-	})
+	if status, err := doRequest(h.client, req); err != nil || status != http.StatusNoContent {
+		b.Fatalf("ready request: status=%d err=%v, want 204", status, err)
+	}
 }
 
 func doRequest(client *http.Client, req *http.Request) (int, error) {
@@ -307,15 +280,4 @@ func doRequest(client *http.Client, req *http.Request) (int, error) {
 	}()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, nil
-}
-
-func reserveAddrTB(tb testing.TB) string {
-	tb.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		tb.Fatalf("reserve addr failed: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
 }

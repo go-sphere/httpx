@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -81,9 +82,9 @@ func TestStartReturnsNilAfterStopWithOpaqueListener(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() { served <- engine.Start() }()
+	// BeforeServeFunc runs just before Serve; Stop keeps shutting down until
+	// the listener has reached fasthttp and Start has returned.
 	<-serving
-	// BeforeServeFunc runs just before Serve; give the accept loop a moment.
-	time.Sleep(50 * time.Millisecond)
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -97,5 +98,45 @@ func TestStartReturnsNilAfterStopWithOpaqueListener(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start did not return after Stop")
+	}
+}
+
+// fasthttp keeps no shut-down state: a shutdown that lands before Start has
+// handed its listener to fasthttp is a no-op, and the Serve that follows runs
+// normally. Stop must still end that Start, so every quick Start/Stop pair has
+// to return.
+func TestStopRightAfterStartEndsStart(t *testing.T) {
+	for i := range 50 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		engine := New(WithListener(ln, fiber.ListenConfig{DisableStartupMessage: true}))
+		served := make(chan error, 1)
+		go func() { served <- engine.Start() }()
+		// Stop lands once Start is past its closed check and on its way into
+		// fiber's Listener, the window in which a single shutdown is a no-op.
+		for !engine.IsRunning() {
+			runtime.Gosched()
+		}
+
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		stopErr := engine.Stop(stopCtx)
+		cancel()
+		if stopErr != nil {
+			t.Fatalf("iteration %d: Stop = %v, want nil", i, stopErr)
+		}
+		select {
+		case err := <-served:
+			if err != nil {
+				t.Fatalf("iteration %d: Start = %v, want nil once Stop ended it", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			_ = ln.Close()
+			t.Fatalf("iteration %d: Start did not return after Stop", i)
+		}
+		if engine.IsRunning() {
+			t.Fatalf("iteration %d: IsRunning after Stop returned", i)
+		}
 	}
 }

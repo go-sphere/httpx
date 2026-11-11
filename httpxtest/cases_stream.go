@@ -19,7 +19,7 @@ func init() {
 
 // Streaming and SSE under in-process dispatch: the final response must match on
 // every adapter. Incremental *delivery* needs a real connection and stays in the
-// four-framework module.
+// conformance module.
 func casesStream(t *testing.T, r runner) {
 	t.Run("StreamBuffered", func(t *testing.T) {
 		got := r.serve(t, func(router httpx.Router) {
@@ -97,14 +97,13 @@ func casesStream(t *testing.T, r runner) {
 	})
 
 	// A writer that cannot flush is not an error: the Flusher contract makes
-	// the flush a no-op and the stream continues, buffered. Such a writer is
-	// what http.TimeoutHandler hands a handler, and what any wrapper written
-	// before Unwrap existed hands it. stdx used to give up on the callback
-	// after committing the headers, answering an SSE request with an empty
-	// 200 — invisible to the cases above, whose in-process writer can flush.
+	// the flush a no-op and the stream continues, buffered, through to the
+	// last event. Such a writer is what http.TimeoutHandler hands a handler,
+	// and what any wrapper without Unwrap hands it; the cases above cannot
+	// reach it, because their in-process writer can flush.
 	t.Run("StreamThroughNonFlushingWriter", func(t *testing.T) {
 		if r.suite.StdMiddleware == nil {
-			t.Skipf("%s: no StdMiddleware hook declared", r.suite.Name)
+			r.skipf(t, "%s: no StdMiddleware hook declared", r.suite.Name)
 		}
 		mw := func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -142,28 +141,31 @@ func casesStream(t *testing.T, r runner) {
 		}
 	})
 
-	// Flush is optional; where it is supported it must not disturb the
-	// response that follows. See Caps.Flusher.
-	t.Run("FlushDoesNotDisturbResponse", func(t *testing.T) {
+	// A flush does not disturb the response that follows it: the bytes written
+	// afterwards arrive under the status set before it. Whether the flush
+	// commits is not asserted here, because hertzx's flush is a no-op without
+	// a live connection; conformance checks delivery over one.
+	t.Run("WriteAfterFlush", func(t *testing.T) {
+		if !r.suite.Caps.Flusher {
+			r.skipf(t, "%s: Caps.Flusher is not declared", r.suite.Name)
+		}
 		got := r.serve(t, func(router httpx.Router) {
-			router.GET("/flush/cap", func(ctx httpx.Context) error {
+			router.GET("/flush/write", func(ctx httpx.Context) error {
 				fl, ok := httpx.AsFlusher(ctx)
-				if ok != r.suite.Caps.Flusher {
-					return httpx.NewInternalServerError("Flusher support does not match Caps.Flusher")
+				if !ok {
+					return httpx.NewInternalServerError("Flusher not supported")
 				}
-				if ok {
-					ctx.SetHeader("Content-Type", "text/plain; charset=utf-8")
-					ctx.Status(http.StatusOK)
-					if err := fl.Flush(); err != nil {
-						return err
-					}
+				ctx.SetHeader("Content-Type", "text/plain; charset=utf-8")
+				ctx.Status(http.StatusOK)
+				if err := fl.Flush(); err != nil {
+					return err
 				}
 				return ctx.Text(http.StatusOK, "after-flush")
 			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/flush/cap", nil))
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/flush/write", nil))
 
 		if got.Status != http.StatusOK {
-			t.Fatalf("status = %d; body=%q", got.Status, got.Body)
+			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
 		}
 		if got.Body != "after-flush" {
 			t.Fatalf("body = %q, want %q", got.Body, "after-flush")
@@ -216,9 +218,9 @@ func casesErrorHandling(t *testing.T, r runner) {
 		}
 	})
 
-	// A configured handler that renders without aborting must still stop the
-	// chain: stopping is the adapter's job, not the handler's.
-	t.Run("CustomHandlerWithoutAbortStillStopsChain", func(t *testing.T) {
+	// A layer that returns an error stops the chain below it, and the
+	// configured handler — not the adapter's default — renders that error.
+	t.Run("CustomHandlerRendersLayerError", func(t *testing.T) {
 		got := r.serveWith(t, Options{ErrorHandler: teapotErrorHandler}, func(router httpx.Router) {
 			router.Use(func(httpx.Handler) httpx.Handler {
 				return func(httpx.Context) error {

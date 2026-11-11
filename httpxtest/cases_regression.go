@@ -21,39 +21,9 @@ func init() {
 	register("Regression", casesRegression)
 }
 
-// Each case pins a behavior that differed between frameworks and had to be
-// normalized.
+// Each case pins a behavior the frameworks disagree on natively, which the
+// adapters normalize.
 func casesRegression(t *testing.T, r runner) {
-	// A generated route like /files/*filepath must register and resolve
-	// everywhere, and the value must not carry a leading slash.
-	t.Run("NamedWildcardValue", func(t *testing.T) {
-		got := r.serve(t, func(router httpx.Router) {
-			router.Handle("GET", "/files/*filepath", func(ctx httpx.Context) error {
-				return ctx.JSON(http.StatusOK, map[string]any{
-					"param":  ctx.Param("filepath"),
-					"params": ctx.Params(),
-				})
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/files/a/b.txt", nil))
-
-		if got.Status != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body=%q", got.Status, got.Body)
-		}
-		var payload struct {
-			Param  string            `json:"param"`
-			Params map[string]string `json:"params"`
-		}
-		if err := json.Unmarshal([]byte(got.Body), &payload); err != nil {
-			t.Fatalf("parse body: %v; body=%q", err, got.Body)
-		}
-		if payload.Param != "a/b.txt" {
-			t.Fatalf("Param(filepath) = %q, want %q", payload.Param, "a/b.txt")
-		}
-		if payload.Params["filepath"] != "a/b.txt" {
-			t.Fatalf("Params()[filepath] = %q, want %q (params=%v)", payload.Params["filepath"], "a/b.txt", payload.Params)
-		}
-	})
-
 	// FullPath is the pattern the caller registered. echo and fiber have no named
 	// wildcards, so FixWildcardPathIfNeed rewrites the pattern before handing it
 	// to them; that normalization must not leak through this method, because
@@ -86,6 +56,107 @@ func casesRegression(t *testing.T, r runner) {
 		// must not cost the lookup that made it work.
 		if payload.Param != "a/b.txt" {
 			t.Fatalf("Param(filepath) = %q, want %q", payload.Param, "a/b.txt")
+		}
+	})
+
+	// The rewrite is lossy — "/files/*filename" and "/files/*path" become the
+	// same pattern — so echox and fiberx remember each wildcard's name, and
+	// they must remember it per engine: a process-wide table lets one engine's
+	// registration answer FullPath and Param for another's route. A group
+	// shares its engine's table rather than being a scope of its own.
+	t.Run("WildcardNamesAreScopedToOneEngine", func(t *testing.T) {
+		const (
+			patternA = "/files/*filename"
+			patternB = "/files/*path"
+		)
+		type reading struct {
+			FullPath string `json:"fullPath"`
+			Param    string `json:"param"`
+			Params   string `json:"params"`
+			Bound    string `json:"bound"`
+		}
+		newEngine := func(prefix, pattern, name string) httpx.Engine {
+			engine := r.suite.NewEngine(t, Options{})
+			engine.Group(prefix).GET(pattern, func(ctx httpx.Context) error {
+				// A tagged struct per name, not a map: gin's binder writes
+				// straight into a map it is handed, so a map is not portable.
+				var bound string
+				var err error
+				switch name {
+				case "filename":
+					var dst struct {
+						Value string `uri:"filename"`
+					}
+					err = ctx.BindURI(&dst)
+					bound = dst.Value
+				case "path":
+					var dst struct {
+						Value string `uri:"path"`
+					}
+					err = ctx.BindURI(&dst)
+					bound = dst.Value
+				}
+				if err != nil {
+					return err
+				}
+				return ctx.JSON(http.StatusOK, reading{
+					FullPath: ctx.FullPath(),
+					Param:    ctx.Param(name),
+					Params:   ctx.Params()[name],
+					Bound:    bound,
+				})
+			})
+			return engine
+		}
+		read := func(engine httpx.Engine, target string) reading {
+			t.Helper()
+			got := r.serveOn(t, engine, httptest.NewRequest(http.MethodGet, "http://example.com"+target, nil))
+			if got.Status != http.StatusOK {
+				t.Fatalf("GET %s: status = %d, want 200; body=%q", target, got.Status, got.Body)
+			}
+			var out reading
+			if err := json.Unmarshal([]byte(got.Body), &out); err != nil {
+				t.Fatalf("GET %s: parse body: %v; body=%q", target, err, got.Body)
+			}
+			return out
+		}
+
+		// B is registered last, so it is the one a process-wide table would let
+		// win.
+		engineA := newEngine("", patternA, "filename")
+		engineB := newEngine("", patternB, "path")
+		engineC := newEngine("/api", patternB, "path")
+
+		for _, tc := range []struct {
+			name         string
+			engine       httpx.Engine
+			target       string
+			wantPattern  string
+			wantWildcard string
+		}{
+			{"engine A", engineA, "/files/a/b.txt", patternA, "a/b.txt"},
+			{"engine B", engineB, "/files/c.txt", patternB, "c.txt"},
+			{"engine C group", engineC, "/api/files/d.txt", "/api" + patternB, "d.txt"},
+		} {
+			got := read(tc.engine, tc.target)
+			if got.FullPath != tc.wantPattern {
+				t.Errorf("%s: FullPath() = %q, want %q: another engine's registration answered for this one",
+					tc.name, got.FullPath, tc.wantPattern)
+			}
+			if got.Param != tc.wantWildcard || got.Params != tc.wantWildcard || got.Bound != tc.wantWildcard {
+				t.Errorf("%s: Param = %q, Params()[name] = %q, BindURI = %q, want %q for all three",
+					tc.name, got.Param, got.Params, got.Bound, tc.wantWildcard)
+			}
+		}
+
+		// Registering A's pattern again after B must not disturb B: the tables
+		// are separate in both directions, not merely ordered.
+		engineA2 := newEngine("", patternA, "filename")
+		if got := read(engineB, "/files/c.txt"); got.FullPath != patternB {
+			t.Errorf("engine B after a later registration elsewhere: FullPath() = %q, want %q", got.FullPath, patternB)
+		}
+		if got := read(engineA2, "/files/e.txt"); got.FullPath != patternA {
+			t.Errorf("engine A2: FullPath() = %q, want %q", got.FullPath, patternA)
 		}
 	})
 
@@ -175,7 +246,7 @@ func casesRegression(t *testing.T, r runner) {
 			{"WildcardSingleSegment", "/bind/files/*path", "/bind/files/c.txt", "c.txt"},
 			{"WildcardEncodedSlash", "/bind/files/*path", "/bind/files/a/b%2Fc.txt", "a/b/c.txt"},
 			{"WildcardEncodedChar", "/bind/files/*path", "/bind/files/a%2Cb/c.txt", "a,b/c.txt"},
-			// Kept so a wildcard fix cannot regress the non-wildcard form.
+			// The non-wildcard form, which the wildcard handling must leave intact.
 			{"NamedSegment", "/bind/items/:path", "/bind/items/42", "42"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -239,26 +310,9 @@ func casesRegression(t *testing.T, r runner) {
 		}
 	})
 
-	// Headers() is the request's header map; Host travels separately and must not
-	// appear in it.
-	t.Run("HeadersExcludeHost", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/headers/nohost", nil)
-		req.Header.Set("X-Trace-In", "t1")
-		r.assertGolden(t, func(router httpx.Router) {
-			router.GET("/headers/nohost", func(ctx httpx.Context) error {
-				_, hasHost := ctx.Headers()["Host"]
-				return ctx.JSON(http.StatusOK, map[string]any{
-					"hasHost": hasHost,
-					"trace":   ctx.Header("X-Trace-In"),
-				})
-			})
-		}, req)
-	})
-
 	// Host travels outside the header map on net/http, so it is not a header the
 	// request carries: Header("Host") is unset and Headers() has no "Host" entry.
-	// fasthttp keeps it in the header set, where the two fasthttp-backed adapters
-	// used to diverge.
+	// fasthttp keeps it in the header set, so fiberx and hertzx remove it.
 	//
 	// All three readings are asserted together because a binder reads the same
 	// header set: hiding Host from Header and Headers while BindHeader still
@@ -346,20 +400,6 @@ func casesRegression(t *testing.T, r runner) {
 				return ctx.JSON(http.StatusOK, map[string]any{"ok": true})
 			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/cookie/full", nil))
-	})
-
-	// An unregistered route is 404, not a 500 from an unclassified framework
-	// error.
-	t.Run("NotFoundStatus", func(t *testing.T) {
-		got := r.serve(t, func(router httpx.Router) {
-			router.GET("/known", func(ctx httpx.Context) error {
-				return ctx.Text(http.StatusOK, "ok")
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/nope", nil))
-
-		if got.Status != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404; body=%q", got.Status, got.Body)
-		}
 	})
 
 	// A handler that writes a response and then fails must not have it corrupted
@@ -478,6 +518,24 @@ func casesRegression(t *testing.T, r runner) {
 		}
 	})
 
+	// An encode error commits nothing, the status included: the code JSON was
+	// asked to send must not become what a later write sends.
+	t.Run("JSONMarshalErrorKeepsStatus", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/json/badstatus", func(ctx httpx.Context) error {
+				ctx.Status(http.StatusAccepted)
+				if err := ctx.JSON(http.StatusCreated, map[string]any{"ch": make(chan int)}); err == nil {
+					return errors.New("JSON of an unmarshalable value returned nil")
+				}
+				return ctx.Text(ctx.StatusCode(), strconv.FormatBool(ctx.Committed()))
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/json/badstatus", nil))
+
+		if got.Status != http.StatusAccepted || got.Body != "false" {
+			t.Fatalf("status=%d body=%q, want 202 %q", got.Status, got.Body, "false")
+		}
+	})
+
 	// A URL that merely shares a string prefix with the static mount must not
 	// serve files from it.
 	t.Run("StaticPrefixBoundary", func(t *testing.T) {
@@ -562,8 +620,9 @@ func casesRegression(t *testing.T, r runner) {
 	})
 }
 
-// teapotErrorHandler renders without aborting, which is how the cases check that
-// the adapter — not the handler — stops the chain.
+// teapotErrorHandler renders every error as a 418 JSON body carrying
+// err.Error(), so a case can tell the configured handler's output from the
+// adapter's default one.
 func teapotErrorHandler(ctx httpx.Context, err error) {
 	_ = ctx.JSON(http.StatusTeapot, map[string]any{"error": err.Error()})
 }
@@ -577,22 +636,30 @@ func init() {
 // response *without* writing bytes, where an adapter that detects commitment by
 // "has a body" gets it wrong.
 func casesCommittedResponse(t *testing.T, r runner) {
-	t.Run("NoContentThenError", func(t *testing.T) {
-		got := r.serve(t, func(router httpx.Router) {
-			router.GET("/committed/nocontent", func(ctx httpx.Context) error {
-				if err := ctx.NoContent(http.StatusNoContent); err != nil {
-					return err
-				}
-				return errors.New("late failure")
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/committed/nocontent", nil))
+	// The success codes a bodyless answer uses, 200 included: whether a
+	// response is committed must not depend on which code it carries.
+	bodylessCodes := []int{http.StatusOK, http.StatusAccepted, http.StatusNoContent, http.StatusResetContent}
 
-		if got.Status != http.StatusNoContent {
-			t.Fatalf("status = %d, want %d: the error was rendered over a committed bodyless response; body=%q",
-				got.Status, http.StatusNoContent, got.Body)
-		}
-		if got.Body != "" {
-			t.Fatalf("body = %q, want it empty", got.Body)
+	t.Run("NoContentThenError", func(t *testing.T) {
+		for _, code := range bodylessCodes {
+			t.Run(strconv.Itoa(code), func(t *testing.T) {
+				got := r.serve(t, func(router httpx.Router) {
+					router.GET("/committed/nocontent", func(ctx httpx.Context) error {
+						if err := ctx.NoContent(code); err != nil {
+							return err
+						}
+						return errors.New("late failure")
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com/committed/nocontent", nil))
+
+				if got.Status != code {
+					t.Fatalf("status = %d, want %d: the error was rendered over a committed bodyless response; body=%q",
+						got.Status, code, got.Body)
+				}
+				if got.Body != "" {
+					t.Fatalf("body = %q, want it empty", got.Body)
+				}
+			})
 		}
 	})
 
@@ -600,16 +667,20 @@ func casesCommittedResponse(t *testing.T, r runner) {
 	// response, so a later error must still be rendered; treating it as committed
 	// would turn a failure into a silent 2xx with no body.
 	t.Run("StatusAloneDoesNotSwallowError", func(t *testing.T) {
-		got := r.serve(t, func(router httpx.Router) {
-			router.GET("/committed/status", func(ctx httpx.Context) error {
-				ctx.Status(http.StatusAccepted)
-				return errors.New("late failure")
-			})
-		}, httptest.NewRequest(http.MethodGet, "http://example.com/committed/status", nil))
+		for _, code := range bodylessCodes {
+			t.Run(strconv.Itoa(code), func(t *testing.T) {
+				got := r.serve(t, func(router httpx.Router) {
+					router.GET("/committed/status", func(ctx httpx.Context) error {
+						ctx.Status(code)
+						return errors.New("late failure")
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com/committed/status", nil))
 
-		if got.Status != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want %d: a bare Status must not hide the error; body=%q",
-				got.Status, http.StatusInternalServerError, got.Body)
+				if got.Status != http.StatusInternalServerError {
+					t.Fatalf("status = %d, want %d: a bare Status must not hide the error; body=%q",
+						got.Status, http.StatusInternalServerError, got.Body)
+				}
+			})
 		}
 	})
 

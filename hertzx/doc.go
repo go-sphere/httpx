@@ -1,10 +1,15 @@
 // Package hertzx implements the httpx interfaces over CloudWeGo Hertz
 // (github.com/cloudwego/hertz).
 //
+// Support level: reference only. hertzx is an incomplete implementation kept
+// as an example of adapting a buffering framework to httpx; several behaviours
+// are approximated (see the adapter specifics below). Do not use it in
+// production; use stdx or ginx.
+//
 // Use it to run httpx handlers and middleware on a Hertz server, either one
 // the adapter creates or an existing *server.Hertz passed with [WithEngine].
-// [New] builds the engine; [WithAddr], [WithErrorHandler] and
-// [WithTrustedProxies] configure it. Hertz's own middleware is mounted with
+// [New] builds the engine; [WithAddr], [WithErrorHandler],
+// [WithTrustedProxies] and [WithMaxBodySize] configure it. Hertz's own middleware is mounted with
 // [Engine.UseNative] or [Router.UseNative], plain net/http middleware with
 // [AdaptStdMiddleware], and [FromHertz] wraps a hertz request context as an
 // httpx.Context.
@@ -45,13 +50,21 @@
 //     httpx.AsNativeContext[*app.RequestContext](ctx).
 //   - Named wildcards are supported directly (httpx.RouterFeatureNamedWildcard).
 //   - Implements httpx.Flusher (switching to a chunked body on the first
-//     flush), httpx.Streamer, httpx.StdHandlerMounter and httpx.TestRequester.
+//     flush), httpx.Streamer, httpx.ResponseHeaderEditor,
+//     httpx.StdHandlerMounter and httpx.TestRequester.
 //   - httpx middleware runs inside every UseNative layer on the same scope,
 //     whatever the registration order.
 //   - Without WithAddr the server listens on hertz's default address (":8888").
 //   - A 405 answer carries no Allow header: hertz does not report which
 //     methods matched.
+//   - BindForm decodes the urlencoded or multipart body values with
+//     go-playground/form rather than hertz's binder, which would also bind
+//     query values; file parts are read with FormFile. Form media types are
+//     matched case-sensitively, as hertz does.
 //   - Stop closes the listener but cannot cut connections still in flight.
+//     Its drain is bounded by the caller's context, except that hertz's
+//     standard transport gives up on open connections after 30 seconds.
+//     Stop returns once Start has, also when it lands before hertz has bound.
 //     Stop before Start returns nil rather than hertz's "engine is not
 //     running", and Start returns nil once Stop ended it.
 package hertzx

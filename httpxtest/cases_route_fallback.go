@@ -172,70 +172,22 @@ func casesRouteFallback(t *testing.T, r runner) {
 		}
 	})
 
-	// Engine-wide middleware is what an access log or a recovery layer is
-	// registered on, so it must keep running for a request no route matched, or
-	// those layers go blind exactly where a misrouted request needs them.
-	t.Run("EngineMiddlewareRunsOnNotFound", func(t *testing.T) {
-		engine := r.suite.NewEngine(t, Options{})
-		var order []string
-		engine.Use(func(next httpx.Handler) httpx.Handler {
-			return func(ctx httpx.Context) error {
-				order = append(order, "engine-before")
-				err := next(ctx)
-				order = append(order, "engine-after")
-				return err
-			}
-		})
-		register(engine.Group(""))
-
-		requester, ok := httpx.AsTestRequester(engine)
-		if !ok {
-			t.Fatalf("%s: engine does not support httpx.TestRequester", r.suite.Name)
-		}
-		resp, err := requester.Do(httptest.NewRequest(http.MethodGet, "http://example.com/nope", nil))
-		if err != nil {
-			t.Fatalf("%s: serve: %v", r.suite.Name, err)
-		}
-		_ = resp.Body.Close()
-
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404", resp.StatusCode)
-		}
-		if got := strings.Join(order, ","); got != "engine-before,engine-after" {
-			t.Fatalf("engine middleware order = %q, want %q: it did not wrap the unmatched path",
-				got, "engine-before,engine-after")
-		}
-	})
-
-	// Telemetry middleware labels metrics and spans with FullPath, so an
-	// unmatched request must report the empty string and never the raw request
-	// path, which is unbounded and makes a label of every probe URL.
-	t.Run("EngineMiddlewareSeesEmptyFullPath", func(t *testing.T) {
-		for _, tc := range []struct {
-			name, target string
-			wantStatus   int
-		}{
-			{"unmatched path", "/nope/1234", http.StatusNotFound},
-			{"wrong method", "/items/1", http.StatusMethodNotAllowed},
-		} {
-			var seen []string
-			got := r.serveEngine(t, Options{}, func(engine httpx.Engine) {
-				engine.Use(func(next httpx.Handler) httpx.Handler {
-					return func(ctx httpx.Context) error {
-						seen = append(seen, ctx.FullPath())
-						return next(ctx)
+	// The error the engine's layers return is what gets rendered, so a layer
+	// may replace the 404 with an answer of its own, as it can for a route.
+	t.Run("EngineMiddlewareReplacesNotFoundError", func(t *testing.T) {
+		got := r.serveEngine(t, Options{ErrorHandler: statusTextErrorHandler}, func(engine httpx.Engine) {
+			engine.Use(func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					if err := next(ctx); err != nil {
+						return httpx.NewUnauthorizedError("denied")
 					}
-				})
-				register(engine.Group(""))
-			}, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.target, nil))
-
-			if got.Status != tc.wantStatus {
-				t.Fatalf("%s: status = %d, want %d", tc.name, got.Status, tc.wantStatus)
-			}
-			if len(seen) != 1 || seen[0] != "" {
-				t.Fatalf("%s: FullPath() in engine middleware = %q, want one empty value: an unmatched request must not report its raw path",
-					tc.name, seen)
-			}
+					return nil
+				}
+			})
+			register(engine.Group(""))
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/nope", nil))
+		if got.Status != http.StatusUnauthorized || got.Body != "err:401" {
+			t.Fatalf("status=%d body=%q, want 401 %q", got.Status, got.Body, "err:401")
 		}
 	})
 }

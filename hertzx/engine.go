@@ -7,8 +7,10 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/textproto"
+	"strconv"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/middlewares/server/recovery"
@@ -181,6 +183,12 @@ type Engine struct {
 	maxBodySize int64
 	running     atomic.Bool
 	closed      atomic.Bool
+	started     atomic.Bool
+	// done is closed when Start returns after having called hertz's Run.
+	done chan struct{}
+	// stopMu serializes the ExitWaitTimeout a Stop sets with the Shutdown
+	// that reads it.
+	stopMu sync.Mutex
 }
 
 // New constructs a hertz-backed Engine configured by opts. The dynamic type is
@@ -205,9 +213,9 @@ func New(opts ...Option) httpx.Engine {
 		clientIP:    conf.clientIP,
 		chain:       httpx.NewMiddlewareChain(),
 		maxBodySize: conf.maxBodySize,
+		done:        make(chan struct{}),
 	}
 	engine.installRouteFallback()
-	engine.running.Store(false)
 	return engine
 }
 
@@ -264,11 +272,12 @@ func staticLeaf(err error) httpx.Handler {
 // that inspects hertz's errors report a failure for every unmatched path.
 func (e *Engine) fallbackHandler(fb *httpx.MiddlewareFallback) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
-		err := fb.Handler()(newHertzContext(ctx, rc))
+		hc := newHertzContext(ctx, rc)
+		err := fb.Handler()(hc)
 		if err == nil || hertzResponseCommitted(rc) {
 			return
 		}
-		e.errHandler(ctx, rc, err)
+		e.errHandler(hc.Context(), rc, err)
 		commitErrorStatus(rc, err)
 	}
 }
@@ -303,11 +312,20 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 
 // Start runs the hertz server until [Engine.Stop]. It returns nil once Stop
 // ended it (hertz's transports end their accept loop with nil on shutdown),
-// httpx.ErrEngineClosed when Stop was already called, and otherwise whatever
-// hertz's Run returns, such as a bind failure. IsRunning becomes true just
-// before hertz binds, so it may briefly report true before the listener
-// exists.
+// httpx.ErrEngineClosed when Stop was already called, an error when Start was
+// already called, and otherwise whatever hertz's Run returns, such as a bind
+// failure. IsRunning is true from just before hertz binds until Start returns,
+// so it may briefly report true before the listener exists.
 func (e *Engine) Start() error {
+	if e.closed.Load() {
+		return httpx.ErrEngineClosed
+	}
+	if !e.started.CompareAndSwap(false, true) {
+		return errAlreadyStarted
+	}
+	defer close(e.done)
+	// Checked again after started is set: a Stop in between either is seen
+	// here or sees started and waits for done.
 	if e.closed.Load() {
 		return httpx.ErrEngineClosed
 	}
@@ -316,11 +334,21 @@ func (e *Engine) Start() error {
 	return e.engine.Run()
 }
 
+var errAlreadyStarted = errors.New("hertzx: engine already started")
+
+// stopRetryInterval is how often Stop closes the transport again while Start
+// has not returned.
+const stopRetryInterval = 5 * time.Millisecond
+
 // Stop follows the same semantic as httpx.Close, which the net/http-backed
 // adapters share: drain gracefully, and when that fails force the transport
 // closed so nothing is left accepting. A drain the caller's context cut short
 // reports success — the server is down, the drain degraded — while any other
 // failure is force-closed too but reported.
+//
+// The drain waits until ctx is done; a nil ctx or one without a deadline sets
+// no limit of Stop's own. hertz's standard transport still gives up on open
+// connections after 30 seconds and reports it, a cap that cannot be raised.
 //
 // What hertz cannot do is cut live connections: Engine.Close is Shutdown with
 // an already-expired context, so it closes the listener immediately but still
@@ -328,38 +356,76 @@ func (e *Engine) Start() error {
 // part a caller asking for a forced stop actually needs, and claiming more than
 // that would be wrong.
 //
+// Stop returns once Start has: a Stop that lands while Start is still on its
+// way to the listener keeps closing the transport until the listener exists
+// and Start returns. When ctx is done before that, Stop returns ctx's error and
+// goes on closing in the background, so Start still returns.
+//
 // Stop on an engine that never started returns nil, as on every adapter, and
-// marks the engine closed so Start returns httpx.ErrEngineClosed. A nil ctx
-// waits indefinitely.
+// marks the engine closed so Start returns httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.closed.Store(true)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	running := e.running.Load()
-	// The engine is down whatever Shutdown reports, so the running flag has to
-	// fall with it. Storing it only on a nil error left IsRunning reporting true
-	// for the rest of the process after a stop that timed out.
-	defer e.running.Store(false)
-	err := e.engine.Shutdown(ctx)
-	if !running {
-		// Nothing this engine started is serving: there is no transport to
-		// force closed, and hertz's "engine is not running" is the expected
-		// answer rather than a failure. Stop before Start is nil on every
-		// adapter.
+	if !e.started.Load() {
 		return nil
 	}
-	if err == nil {
-		return nil
+	// Only a server that has bound is shut down gracefully; one still on its
+	// way there has nothing to drain, and hertz would refuse the Shutdown.
+	var err error
+	wait := ctx
+	if e.engine.IsRunning() {
+		// The shutdown closes the listener, so Start is about to return and
+		// waiting for it needs no deadline of the caller's.
+		wait = context.Background()
+		if err = e.shutdown(ctx); err != nil {
+			closeErr := e.engine.Close()
+			if ctx.Err() != nil {
+				err = closeErr
+			} else if closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}
 	}
-	closeErr := e.engine.Close()
-	if ctx.Err() != nil {
-		return closeErr
+	return errors.Join(err, e.awaitStart(wait))
+}
+
+// shutdown runs hertz's graceful Shutdown bounded by ctx alone: hertz caps it
+// at its ExitWaitTimeout option, which is set from ctx's deadline first.
+func (e *Engine) shutdown(ctx context.Context) error {
+	e.stopMu.Lock()
+	defer e.stopMu.Unlock()
+	wait := time.Duration(math.MaxInt64)
+	if deadline, ok := ctx.Deadline(); ok {
+		wait = max(time.Until(deadline), 0)
 	}
-	if closeErr != nil {
-		return errors.Join(err, closeErr)
+	e.engine.GetOptions().ExitWaitTimeout = wait
+	return e.engine.Shutdown(ctx)
+}
+
+// awaitStart closes the transport until Start returns or ctx is done. A close
+// before hertz has bound finds no listener and does nothing, which is why it
+// is repeated. When ctx ends first the closing goes on in the background.
+func (e *Engine) awaitStart(ctx context.Context) error {
+	ticker := time.NewTicker(stopRetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.done:
+			return nil
+		case <-ctx.Done():
+			select {
+			case <-e.done:
+				return nil
+			default:
+			}
+			go func() { _ = e.awaitStart(context.Background()) }()
+			return ctx.Err()
+		case <-ticker.C:
+			_ = e.engine.Close()
+		}
 	}
-	return err
 }
 
 // IsRunning returns true if the server is currently running.
@@ -405,27 +471,17 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 
 	e.engine.ServeHTTP(req.Context(), hctx)
 
-	header := make(http.Header)
-	hctx.Response.Header.VisitAll(func(k, v []byte) {
-		key := textproto.CanonicalMIMEHeaderKey(string(k))
-		if key == "Set-Cookie" {
-			return
-		}
-		header.Add(key, string(v))
-	})
-	for _, setCookie := range hctx.Response.Header.GetAll("Set-Cookie") {
-		// Hertz returns a single empty string when the response sets no
-		// cookie, which would otherwise surface as a malformed "Set-Cookie:"
-		// header that no client ever receives over the wire.
-		if setCookie == "" {
-			continue
-		}
-		header.Add("Set-Cookie", setCookie)
-	}
-
 	body := bytes.Clone(hctx.Response.Body())
+	header := make(http.Header)
+	if cl := hctx.Response.Header.Peek("Content-Length"); len(cl) > 0 {
+		header.Set("Content-Length", string(cl))
+	}
+	// Only the headers hertz sends: its default Content-Type goes out with a
+	// non-empty body only.
+	visitResponseHeader(&hctx.Response, header.Add)
+
 	return &http.Response{
-		Status:        http.StatusText(hctx.Response.StatusCode()),
+		Status:        strconv.Itoa(hctx.Response.StatusCode()) + " " + http.StatusText(hctx.Response.StatusCode()),
 		StatusCode:    hctx.Response.StatusCode(),
 		Proto:         "HTTP/1.1",
 		ProtoMajor:    1,

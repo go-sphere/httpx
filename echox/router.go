@@ -3,11 +3,13 @@ package echox
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
@@ -25,8 +27,13 @@ type wildcardRoute struct {
 	pattern string
 }
 
-// wildcardTable maps a normalized route pattern (with the anonymous "*"
-// wildcard) to what it was written as.
+// wildcardTable maps a method and a normalized route pattern (with the
+// anonymous "*" wildcard) to what the route was written as.
+//
+// The method is part of the key because echo stores one anonymous wildcard
+// node per pattern and every method's handler under it: GET /files/*a and
+// POST /files/*b both match as "/files/*", and each must keep its own name, as
+// it does on the adapters with native named wildcards.
 //
 // One table per engine, never one per process. Normalization is lossy — both
 // /files/*filepath and /files/*path become /files/* — so a process-wide table
@@ -35,27 +42,56 @@ type wildcardRoute struct {
 // engine's pattern, which is what downstream auth and rate limiting match on.
 // New creates the table and hands it to every Router made from it, so a Group
 // shares its engine's table and two engines share nothing.
+//
+// Registration copies the map and publishes the copy, so a lookup on the
+// request path takes no lock and allocates nothing.
 type wildcardTable struct {
-	routes sync.Map // normalized pattern -> wildcardRoute
+	mu     sync.Mutex
+	routes atomic.Pointer[map[wildcardKey]wildcardRoute]
 }
 
-func (t *wildcardTable) store(pattern string, route wildcardRoute) {
-	t.routes.Store(pattern, route)
+type wildcardKey struct {
+	method  string
+	pattern string
 }
 
-// lookup resolves a matched route pattern back to its registered form. The
-// caller checks the pattern ends in "*" first, so a route without a wildcard
-// never pays the map lookup. A nil table (a context built by FromEcho, which
-// has no engine behind it) resolves nothing.
-func (t *wildcardTable) lookup(pattern string) (wildcardRoute, bool) {
+// set records route for method and the normalized pattern, or removes the
+// entry when route has no name: re-registering the pattern with an anonymous
+// wildcard replaces the named route in echo too.
+func (t *wildcardTable) set(method, pattern string, route wildcardRoute) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := wildcardKey{method: method, pattern: pattern}
+	var cur map[wildcardKey]wildcardRoute
+	if p := t.routes.Load(); p != nil {
+		cur = *p
+	}
+	if _, ok := cur[key]; !ok && route.param == "" {
+		return
+	}
+	next := make(map[wildcardKey]wildcardRoute, len(cur)+1)
+	maps.Copy(next, cur)
+	if route.param == "" {
+		delete(next, key)
+	} else {
+		next[key] = route
+	}
+	t.routes.Store(&next)
+}
+
+// lookup resolves a matched route pattern back to its registered form for the
+// request's method. The caller checks the pattern ends in "*" first, so a
+// route without a wildcard never pays the map lookup. A nil table (a context
+// built by FromEcho, which has no engine behind it) resolves nothing.
+func (t *wildcardTable) lookup(method, pattern string) (wildcardRoute, bool) {
 	if t == nil {
 		return wildcardRoute{}, false
 	}
-	v, ok := t.routes.Load(pattern)
-	if !ok {
+	routes := t.routes.Load()
+	if routes == nil {
 		return wildcardRoute{}, false
 	}
-	route, ok := v.(wildcardRoute)
+	route, ok := (*routes)[wildcardKey{method: method, pattern: pattern}]
 	return route, ok
 }
 
@@ -63,8 +99,10 @@ func (t *wildcardTable) lookup(pattern string) (wildcardRoute, bool) {
 // [Router.Group], wrapping an *echo.Group. Its zero value is not usable.
 // Register routes before the engine starts serving.
 type Router struct {
-	group      *echo.Group
-	basePath   string
+	group    *echo.Group
+	basePath string
+	// errHandler is the engine's routeErrHandler: never nil, and it takes the
+	// error as the route returned it.
 	errHandler httpx.ErrorHandler
 	// chain references the engine's chain rather than copying it; see
 	// httpx.MiddlewareChain.
@@ -100,13 +138,8 @@ func (r *Router) BasePath() string {
 // SupportsRouterFeature reports every feature as unsupported natively. Named
 // wildcards still work: Handle rewrites them to echo's anonymous form and
 // keeps the name for Param, BindURI and FullPath.
-func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
-	switch feature {
-	case httpx.RouterFeatureNamedWildcard:
-		return false
-	default:
-		return false
-	}
+func (r *Router) SupportsRouterFeature(httpx.RouterFeature) bool {
+	return false
 }
 
 // Group returns a nested scope under prefix with m registered on it as if by
@@ -125,39 +158,44 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
-// normalizeWildcardPath rewrites named wildcards (/*filepath) to echo's
-// anonymous form (/*) and records the original name so Param("filepath")
-// still resolves. Unsupported wildcard shapes panic at registration,
-// matching gin/hertz native behavior.
-func (r *Router) normalizeWildcardPath(path string) string {
+// normalizeWildcardPath rewrites a named wildcard (/*filepath) to echo's
+// anonymous form (/*) and returns the rewritten path with what the route was
+// written as; route.param is empty when the path has no named wildcard.
+// Unsupported wildcard shapes panic at registration, matching gin/hertz native
+// behavior.
+func (r *Router) normalizeWildcardPath(path string) (string, wildcardRoute) {
 	if err := httpx.ValidateWildcardPath(path); err != nil {
 		panic(err)
 	}
 	orig := httpx.WildcardParamName(path)
 	if orig == "" || orig == "*" {
-		return path
+		return path, wildcardRoute{}
 	}
 	fixed, _ := httpx.FixWildcardPathIfNeed(r, path)
-	r.wildcards.store(joinPaths(r.basePath, fixed), wildcardRoute{
+	return fixed, wildcardRoute{
 		param:   orig,
 		pattern: joinPaths(r.basePath, path),
-	})
-	return fixed
+	}
 }
 
 // Handle registers h for method (upper-cased) and path joined onto BasePath,
 // wrapped in the httpx middleware registered so far on this scope and its
-// parents. A named wildcard is rewritten for echo and its name kept. It panics
-// on an invalid wildcard (httpx.ValidateWildcardPath).
+// parents. A named wildcard is rewritten for echo and its name kept for this
+// method. It panics on an invalid wildcard (httpx.ValidateWildcardPath).
 func (r *Router) Handle(method, path string, h httpx.Handler) {
-	r.group.Add(strings.ToUpper(method), r.echoPath(path), r.toEchoHandler(h))
+	fixed, wildcard := r.normalizeWildcardPath(path)
+	route := r.group.Add(strings.ToUpper(method), echoRoutePath(r.basePath, fixed), r.toEchoHandler(h))
+	r.recordWildcard(route, wildcard)
 }
 
-// echoPath is the registration path for this scope: the caller's path with any
-// named wildcard normalized to echo's anonymous form, then rebased so
-// concatenation onto the group prefix reproduces joinPaths(basePath, path).
-func (r *Router) echoPath(path string) string {
-	return echoRoutePath(r.basePath, r.normalizeWildcardPath(path))
+// recordWildcard keeps the name a route's wildcard was registered with, under
+// the method and pattern echo matches it by. A pattern without a trailing
+// wildcard is never looked up, so it is not recorded either.
+func (r *Router) recordWildcard(route *echo.Route, wildcard wildcardRoute) {
+	if route == nil || !lastCharIs('*', route.Path) {
+		return
+	}
+	r.wildcards.set(route.Method, route.Path, wildcard)
 }
 
 // HandleStd mounts a plain net/http handler, implementing httpx.StdHandlerMounter.
@@ -169,7 +207,10 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 // Any registers h for path with echo's Any, so the method set beyond the
 // standard ones is echo's.
 func (r *Router) Any(path string, h httpx.Handler) {
-	r.group.Any(r.echoPath(path), r.toEchoHandler(h))
+	fixed, wildcard := r.normalizeWildcardPath(path)
+	for _, route := range r.group.Any(echoRoutePath(r.basePath, fixed), r.toEchoHandler(h)) {
+		r.recordWildcard(route, wildcard)
+	}
 }
 
 // Static serves the directory root at prefix; it is StaticFS with
@@ -243,17 +284,24 @@ func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 	h = r.chain.Compose(h)
 	return func(ec echo.Context) error {
 		ctx := newEchoContext(ec, r.wildcards)
+		orig := ec.Request()
+		defer func() { removeReplacedMultipartForm(orig, ec.Request()) }()
 		err := httpx.LimitRequestBody(ec.Response(), ec.Request(), r.maxBodySize)
 		if err == nil {
 			err = h(ctx)
 		}
 		if err != nil {
-			// Without a framework-neutral handler the error goes to echo's own
-			// path. So does an error after a committed response: nothing may
-			// write over it, but logging middleware must still see it.
-			if r.errHandler == nil || ec.Response().Committed {
+			// An error after a committed response goes to echo's own path:
+			// nothing may write over it, but logging middleware must still see
+			// it.
+			if ec.Response().Committed {
+				// Marked so the engine's error handler does not mistake an
+				// echo.ErrNotFound a route returned for an unmatched path.
+				ec.Set(routeErrorKey, true)
 				return err
 			}
+			// Rendered here rather than returned, so a UseNative layer sees the
+			// response the error produced, as it does on ginx.
 			r.errHandler(ctx, err)
 			commitErrorStatus(ec.Response(), err)
 			return nil
@@ -344,4 +392,14 @@ func lastCharIs(char uint8, str string) bool {
 		return false
 	}
 	return str[len(str)-1] == char
+}
+
+// removeReplacedMultipartForm deletes the temporary files of a multipart form
+// parsed on cur, a request that replaced orig during the chain (SetContext, a
+// net/http middleware). net/http removes them only for the request it served,
+// so without this an upload spilled to disk would stay there.
+func removeReplacedMultipartForm(orig, cur *http.Request) {
+	if cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
+		_ = cur.MultipartForm.RemoveAll()
+	}
 }

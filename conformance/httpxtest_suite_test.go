@@ -1,9 +1,11 @@
 // Package conformance holds the cross-adapter tests that cannot live in
-// httpxtest: the httpxtest.Suite definitions for all five adapters, tests that
-// need a real listener (engine lifecycle, trusted proxies, streaming, shutdown),
-// framework-specific native-context cases, the concurrency stress test and the
-// cross-framework benchmark tables. It contains only tests and is not meant to
-// be imported.
+// httpxtest or in one adapter's module, where each adapter runs the shared
+// cases itself (its conformance_test.go): tests that need a real listener
+// (engine lifecycle, trusted proxies, streaming, shutdown, body limits),
+// native-context reuse, the concurrency and FD-leak stress tests and the
+// cross-framework benchmark tables. httpxtestSuites, extended by adapters with
+// real-listener construction, is its one list of adapters. It contains only
+// tests and is not meant to be imported.
 package conformance
 
 import (
@@ -180,46 +182,6 @@ func useNative[T any](scope any, middleware T) {
 	user.UseNative(middleware)
 }
 
-func TestHTTPXTestSuite(t *testing.T) {
-	for _, suite := range append(httpxtestSuites(), fiberxOwnEngineSuite()) {
-		t.Run(suite.Name, func(t *testing.T) {
-			httpxtest.Run(t, suite)
-		})
-	}
-}
-
-// fiberxOwnEngineSuite runs the whole suite against a caller-built fiber.App:
-// fiber.Config is immutable after fiber.New, so it is the one configuration the
-// adapter cannot fix up at construction time (UnescapePath in particular).
-func fiberxOwnEngineSuite() httpxtest.Suite {
-	suite := httpxtestSuites()[1]
-	if suite.Name != "fiberx" {
-		panic("fiberxOwnEngineSuite: suite order changed")
-	}
-	suite.Name = "fiberx-own-engine"
-	suite.Caps.RawPathRouting = true
-	suite.NewEngine = func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
-		// Routing is the caller's configuration on such an app; these three
-		// are what the route grammar needs (see fiberx.WithEngine). The rest,
-		// UnescapePath included, stays at fiber's defaults.
-		engineOpts := []fiberx.Option{fiberx.WithEngine(fiber.New(fiber.Config{
-			CaseSensitive:           true,
-			StrictRouting:           true,
-			DisableHeadAutoRegister: true,
-		}))}
-		if opts.ErrorHandler != nil {
-			engineOpts = append(engineOpts, fiberx.WithErrorHandler(opts.ErrorHandler))
-		}
-		if opts.MaxBodySize > 0 {
-			engineOpts = append(engineOpts, fiberx.WithMaxBodySize(opts.MaxBodySize))
-		}
-		return fiberx.New(engineOpts...)
-	}
-	// Dispatch drives the adapter-built engine, which this suite does not construct.
-	suite.Dispatch = nil
-	return suite
-}
-
 func BenchmarkHTTPXTestSuite(b *testing.B) {
 	for _, suite := range httpxtestSuites() {
 		b.Run("adapter="+suite.Name, func(b *testing.B) {
@@ -236,7 +198,7 @@ func ginDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) 
 	gin.SetMode(gin.ReleaseMode)
 	ge := gin.New()
 	register(ginx.New(ginx.WithEngine(ge)).Group(""))
-	return ginRunner(tb, "ginx", ge, req)
+	return netHTTPRunner(tb, "ginx", ge, req)
 }
 
 func stdDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
@@ -255,8 +217,18 @@ func echoDispatch(tb testing.TB, register func(httpx.Router), req *http.Request)
 	return netHTTPRunner(tb, "echox", e, req)
 }
 
+// fiberDispatch needs the fiber.App to drive, which an adapter-built engine
+// does not expose, so it builds the app with the configuration
+// fiberx.NewConfig documents for one and passes it in.
 func fiberDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
-	f := fiber.New()
+	f := fiber.New(fiber.Config{
+		ErrorHandler:              fiberx.DefaultErrorHandler,
+		UnescapePath:              true,
+		CaseSensitive:             true,
+		StrictRouting:             true,
+		DisableHeadAutoRegister:   true,
+		DisableDefaultContentType: true,
+	})
 	register(fiberx.New(fiberx.WithEngine(f)).Group(""))
 	return fiberRunner(tb, "fiberx", f, req)
 }
@@ -265,10 +237,6 @@ func hertzDispatch(tb testing.TB, register func(httpx.Router), req *http.Request
 	h := newBenchHertz()
 	register(hertzx.New(hertzx.WithEngine(h)).Group(""))
 	return hertzRunner(tb, "hertzx", h, req)
-}
-
-func ginRunner(tb testing.TB, name string, ge *gin.Engine, req *http.Request) func() {
-	return netHTTPRunner(tb, name, ge, req)
 }
 
 func netHTTPRunner(tb testing.TB, name string, h http.Handler, req *http.Request) func() {

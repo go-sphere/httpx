@@ -1,10 +1,12 @@
 package httpxtest
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-sphere/httpx"
@@ -21,9 +23,9 @@ func init() {
 // WriteHeader is ignored, a Header change after the header is out is dropped,
 // and a further Write appends and returns no error. gin, echo and stdx get all
 // of that from the ResponseWriter they write through; fiber and hertz buffer
-// the whole response and used to let a second write replace the status, the
-// headers and — on fiber — the body, so a handler that wrote and then failed
-// answered with the failure's status over the success it had already sent.
+// the whole response, so their adapters freeze the status and headers at the
+// first body write themselves, or a handler that wrote and then failed would
+// answer with the failure's status over the success it had already sent.
 //
 // Committed is the reason the group exists. Nothing in a post-commit write's
 // return value says the response was already committed, so a convention layer
@@ -186,7 +188,6 @@ func casesCommit(t *testing.T, r runner) {
 	// the status nor relabels the content, and its bytes follow the ones
 	// already written.
 	t.Run("StreamAfterCommitAppends", func(t *testing.T) {
-		var streamed bool
 		got := r.serve(t, func(router httpx.Router) {
 			router.GET("/commit/stream", func(ctx httpx.Context) error {
 				if err := ctx.Text(http.StatusOK, "first"); err != nil {
@@ -194,9 +195,8 @@ func casesCommit(t *testing.T, r runner) {
 				}
 				s, ok := httpx.AsStreamer(ctx)
 				if !ok {
-					return nil
+					return httpx.NewInternalServerError("Streamer not supported")
 				}
-				streamed = true
 				return s.Stream(http.StatusInternalServerError, "text/event-stream", func(w io.Writer) error {
 					_, err := io.WriteString(w, "|second")
 					return err
@@ -204,9 +204,6 @@ func casesCommit(t *testing.T, r runner) {
 			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/commit/stream", nil))
 
-		if !streamed {
-			t.Skipf("%s: Context does not implement httpx.Streamer", r.suite.Name)
-		}
 		if got.Status != http.StatusOK {
 			t.Errorf("status = %d, want %d", got.Status, http.StatusOK)
 		}
@@ -215,6 +212,62 @@ func casesCommit(t *testing.T, r runner) {
 		}
 		if got.Body != "first|second" {
 			t.Errorf("body = %q, want %q", got.Body, "first|second")
+		}
+	})
+
+	// Every body-writing method commits even when it writes no bytes, so an
+	// error returned afterwards cannot replace the response the handler decided.
+	t.Run("EmptyWriteCommits", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			status int
+			write  func(ctx httpx.Context) error
+			// anyBody skips the body check where the framework writes its own
+			// (a redirect's HTML link).
+			anyBody bool
+		}{
+			{"TextEmpty", http.StatusAccepted, func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusAccepted, "")
+			}, false},
+			{"BytesNil", http.StatusAccepted, func(ctx httpx.Context) error {
+				return ctx.Bytes(http.StatusAccepted, nil, "application/octet-stream")
+			}, false},
+			{"DataFromReaderUnknownSize", http.StatusAccepted, func(ctx httpx.Context) error {
+				return ctx.DataFromReader(http.StatusAccepted, "application/octet-stream", strings.NewReader(""), -1)
+			}, false},
+			{"DataFromReaderZeroSize", http.StatusAccepted, func(ctx httpx.Context) error {
+				return ctx.DataFromReader(http.StatusAccepted, "application/octet-stream", strings.NewReader(""), 0)
+			}, false},
+			{"JSONNoContent", http.StatusNoContent, func(ctx httpx.Context) error {
+				return ctx.JSON(http.StatusNoContent, map[string]any{"ignored": true})
+			}, false},
+			{"NoContent", http.StatusNoContent, func(ctx httpx.Context) error {
+				return ctx.NoContent(http.StatusNoContent)
+			}, false},
+			{"Redirect", http.StatusFound, func(ctx httpx.Context) error {
+				return ctx.Redirect(http.StatusFound, "/elsewhere")
+			}, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var committed bool
+				got := r.serve(t, func(router httpx.Router) {
+					router.GET("/commit/empty", func(ctx httpx.Context) error {
+						if err := tc.write(ctx); err != nil {
+							return err
+						}
+						committed = ctx.Committed()
+						return errors.New("late failure")
+					})
+				}, httptest.NewRequest(http.MethodGet, "http://example.com/commit/empty", nil))
+
+				if !committed {
+					t.Errorf("Committed = false after %s", tc.name)
+				}
+				if got.Status != tc.status || !tc.anyBody && got.Body != "" {
+					t.Fatalf("%s then error: status=%d body=%q; want %d with an empty body",
+						tc.name, got.Status, got.Body, tc.status)
+				}
+			})
 		}
 	})
 

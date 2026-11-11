@@ -84,13 +84,10 @@ type benchmarkJSON struct {
 	Data string `json:"data"`
 }
 
+// adapterBenchmarkFactory builds framework's scenario natively or through its
+// adapter and returns a factory of per-goroutine runners. With addr it serves
+// the scenario on that address instead and does not return.
 func adapterBenchmarkFactory(tb testing.TB, framework, scenario string, adapted bool, addr ...string) func() func() {
-	return adapterBenchmarkFactoryWithRegistration(tb, framework, scenario, adapted, nil, addr...)
-}
-
-// registration overrides route setup so experiments share the dispatcher,
-// request reset, and validation.
-func adapterBenchmarkFactoryWithRegistration(tb testing.TB, framework, scenario string, adapted bool, registration func(httpx.Engine), addr ...string) func() func() {
 	tb.Helper()
 	payload := &benchmarkJSON{ID: 42, Name: "benchmark", Data: strings.Repeat("x", 1024)}
 	layers := 0
@@ -125,9 +122,6 @@ func adapterBenchmarkFactoryWithRegistration(tb testing.TB, framework, scenario 
 			}
 			return c.NoContent(204)
 		})
-	}
-	if registration != nil {
-		register = registration
 	}
 	// Validate one real response outside the measurement loop.
 	check := func(status int, body []byte) {
@@ -330,21 +324,17 @@ func (w *benchmarkResponseWriter) WriteHeader(status int)      { w.status = stat
 func (w *benchmarkResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 // Flush makes the writer look like a live net/http connection, which always
-// flushes. Without it the SSE scenario measured http.ResponseController
-// building an ErrNotSupported per write — an allocation no real server pays —
-// and on stdx it measured nothing at all, since Stream stopped at the first
-// flush.
+// flushes. Without it a streamed scenario would measure
+// http.ResponseController building an ErrNotSupported per flush, an
+// allocation no real server pays.
 func (w *benchmarkResponseWriter) Flush() {}
-func netHTTPBenchmarkFactory(h http.Handler, check func(int, []byte)) func() func() {
-	return netHTTPBenchmarkFactoryForPath(h, "/bench", check)
-}
 
-func netHTTPBenchmarkFactoryForPath(h http.Handler, path string, check func(int, []byte)) func() func() {
+func netHTTPBenchmarkFactory(h http.Handler, check func(int, []byte)) func() func() {
 	probe := httptest.NewRecorder()
-	h.ServeHTTP(probe, httptest.NewRequest(http.MethodGet, path, nil))
+	h.ServeHTTP(probe, httptest.NewRequest(http.MethodGet, "/bench", nil))
 	check(probe.Code, probe.Body.Bytes())
 	return func() func() {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req := httptest.NewRequest(http.MethodGet, "/bench", nil)
 		w := &benchmarkResponseWriter{header: make(http.Header)}
 		return func() { clear(w.header); h.ServeHTTP(w, req) }
 	}

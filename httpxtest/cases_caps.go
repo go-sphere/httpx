@@ -93,4 +93,60 @@ func casesCaps(t *testing.T, r runner) {
 			t.Fatalf("%s: Context does not expose a native context", r.suite.Name)
 		}
 	})
+
+	// The optional capabilities belong to the request, not to where a layer
+	// sits: an engine layer, a group layer behind a net/http middleware and the
+	// handler probe the same answers, or middleware written against the outer
+	// answer breaks when moved inward.
+	t.Run("CapabilitiesAreTheSameAtEveryDepth", func(t *testing.T) {
+		type probe struct{ native, streamer, flusher bool }
+		want := probe{native: true, streamer: true, flusher: r.suite.Caps.Flusher}
+		seen := map[string]probe{}
+		record := func(where string, ctx httpx.Context) {
+			_, native := ctx.(httpx.NativeContextProvider)
+			_, streamer := httpx.AsStreamer(ctx)
+			_, flusher := httpx.AsFlusher(ctx)
+			seen[where] = probe{native: native, streamer: streamer, flusher: flusher}
+		}
+		layer := func(where string) httpx.Middleware {
+			return func(next httpx.Handler) httpx.Handler {
+				return func(ctx httpx.Context) error {
+					record(where, ctx)
+					return next(ctx)
+				}
+			}
+		}
+
+		got := r.serveEngine(t, Options{}, func(engine httpx.Engine) {
+			engine.Use(layer("engine"))
+			g := engine.Group("/caps")
+			if r.suite.StdMiddleware != nil {
+				g.Use(r.suite.StdMiddleware(func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+						next.ServeHTTP(w, req)
+					})
+				}))
+			}
+			g.Use(layer("group"))
+			g.GET("/depth", func(ctx httpx.Context) error {
+				record("handler", ctx)
+				return httpx.ServerSentEvents(ctx, func(w *httpx.SSEWriter) error {
+					return w.SendData("ok")
+				})
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/caps/depth", nil))
+
+		for _, where := range []string{"engine", "group", "handler"} {
+			p, ok := seen[where]
+			if !ok {
+				t.Fatalf("the %s probe did not run", where)
+			}
+			if p != want {
+				t.Errorf("%s: capabilities %+v, want %+v", where, p, want)
+			}
+		}
+		if got.Status != http.StatusOK || got.Body != "data: ok\n\n" {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "data: ok\n\n")
+		}
+	})
 }

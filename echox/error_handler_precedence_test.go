@@ -97,3 +97,101 @@ func TestErrorHandlerCanBeOverriddenAfterNew(t *testing.T) {
 			resp.StatusCode, http.StatusTeapot)
 	}
 }
+
+// A route's error is rendered inside the route in every configuration, so a
+// native layer reading the response after next sees the error's status, as on
+// ginx, rather than the 200 echo's HTTPErrorHandler would overwrite later.
+func TestRouteErrorIsRenderedInsideUseNative(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []Option
+	}{
+		{"Default", nil},
+		{"EnginesOwn", []Option{WithEngine(func() *echo.Echo {
+			e := echo.New()
+			e.HTTPErrorHandler = func(err error, c echo.Context) {
+				DefaultErrorHandler(err, c)
+			}
+			return e
+		}())}},
+		{"WithErrorHandler", []Option{WithErrorHandler(func(ctx httpx.Context, err error) {
+			status, body := httpx.RenderError(err)
+			_ = ctx.JSON(status, body)
+		})}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := New(tc.opts...)
+			engine, ok := app.(*Engine)
+			if !ok {
+				t.Fatalf("New returned %T, want *Engine", app)
+			}
+			var seen int
+			var seenErr error
+			engine.UseNative(func(next echo.HandlerFunc) echo.HandlerFunc {
+				return func(c echo.Context) error {
+					seenErr = next(c)
+					seen = c.Response().Status
+					return seenErr
+				}
+			})
+			app.Group("").GET("/forbidden", func(httpx.Context) error {
+				return httpx.NewForbiddenError("no")
+			})
+			requester, ok := httpx.AsTestRequester(app)
+			if !ok {
+				t.Fatal("echox engine is not a TestRequester")
+			}
+			resp, err := requester.Do(httptest.NewRequest(http.MethodGet, "/forbidden", nil))
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", resp.StatusCode)
+			}
+			if seen != http.StatusForbidden || seenErr != nil {
+				t.Fatalf("UseNative saw status %d, err %v after next; want 403 and nil", seen, seenErr)
+			}
+		})
+	}
+}
+
+// WithErrorHandler(nil) keeps the handler already configured, as on ginx and
+// hertzx.
+func TestWithErrorHandlerNilIsIgnored(t *testing.T) {
+	engine := New(WithErrorHandler(func(ctx httpx.Context, _ error) {
+		_ = ctx.Text(http.StatusPaymentRequired, "httpx")
+	}), WithErrorHandler(nil))
+	if resp := unmatchedResponse(t, engine); resp.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want %d: WithErrorHandler(nil) dropped the configured handler",
+			resp.StatusCode, http.StatusPaymentRequired)
+	}
+}
+
+// A route returning echo's own ErrNotFound is a route error, not an unmatched
+// path: engine-scope middleware must not run a second time for it.
+func TestRouteEchoNotFoundIsNotUnmatched(t *testing.T) {
+	app := New()
+	var runs int
+	app.Use(func(next httpx.Handler) httpx.Handler {
+		return func(ctx httpx.Context) error {
+			runs++
+			return next(ctx)
+		}
+	})
+	app.Group("").GET("/gone", func(httpx.Context) error {
+		return echo.ErrNotFound
+	})
+	requester, ok := httpx.AsTestRequester(app)
+	if !ok {
+		t.Fatal("echox engine is not a TestRequester")
+	}
+	resp, err := requester.Do(httptest.NewRequest(http.MethodGet, "/gone", nil))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || runs != 1 {
+		t.Fatalf("status = %d, middleware runs = %d; want 404 and 1", resp.StatusCode, runs)
+	}
+}

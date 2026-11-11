@@ -5,8 +5,10 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -149,20 +152,22 @@ func (c responseContract) render() string {
 
 var goldenNameUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
-// goldenName is the case path below the suite root, so the same file is used
-// whichever adapter runs the case.
-func (r runner) goldenName(t *testing.T) string {
+// goldenStem is the case path below the suite root, so the same file is used
+// whichever adapter runs the case. A case's golden file is its stem plus
+// ".txt", and the cases nested under it have stems beginning stem+"__".
+func (r runner) goldenStem(t *testing.T) string {
 	t.Helper()
 	name := strings.TrimPrefix(t.Name(), r.root+"/")
 	if name == t.Name() {
 		t.Fatalf("case %q is not below the suite root %q", t.Name(), r.root)
 	}
-	return goldenNameUnsafe.ReplaceAllString(strings.ReplaceAll(name, "/", "__"), "_") + ".txt"
+	return goldenNameUnsafe.ReplaceAllString(strings.ReplaceAll(name, "/", "__"), "_")
 }
 
 func (r runner) compareGolden(t *testing.T, resp response) {
 	t.Helper()
-	name := r.goldenName(t)
+	name := r.goldenStem(t) + ".txt"
+	r.ledger.use(name)
 	got := contractOf(t, resp).render()
 
 	if os.Getenv(updateGoldenEnv) == "1" {
@@ -237,4 +242,87 @@ func diffContracts(wantName, want, gotName, got string) string {
 		}
 	}
 	return b.String()
+}
+
+// goldenLedger records, for one Run, the golden files the cases compared and
+// the stems of the cases that skipped. It is guarded so a case may call
+// t.Parallel.
+type goldenLedger struct {
+	mu      sync.Mutex
+	used    map[string]bool
+	skipped []string
+}
+
+func (l *goldenLedger) use(name string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.used[name] = true
+}
+
+func (l *goldenLedger) skip(stem string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.skipped = append(l.skipped, stem)
+}
+
+// orphans returns the golden files in names that no case compared and no
+// skipped case covers, sorted.
+func (l *goldenLedger) orphans(names []string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, name := range names {
+		if l.used[name] || l.coveredBySkip(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (l *goldenLedger) coveredBySkip(name string) bool {
+	stem := strings.TrimSuffix(name, ".txt")
+	for _, skipped := range l.skipped {
+		if stem == skipped || strings.HasPrefix(stem, skipped+"__") {
+			return true
+		}
+	}
+	return false
+}
+
+// checkOrphans fails t for every golden file in fsys that this run neither
+// compared nor skipped past. README.md documents the directory and is no
+// contract.
+func (l *goldenLedger) checkOrphans(t *testing.T, fsys fs.FS) {
+	t.Helper()
+	entries, err := fs.ReadDir(fsys, "golden")
+	if err != nil {
+		t.Fatalf("read embedded golden directory: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == "README.md" {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	if orphans := l.orphans(names); len(orphans) > 0 {
+		t.Fatalf("golden files no case produces; delete them from httpxtest/golden:\n  %s",
+			strings.Join(orphans, "\n  "))
+	}
+}
+
+// partialRun reports whether -run or -skip may have filtered out cases, in
+// which case a golden file the run did not reach proves nothing. A -run
+// pattern without a slash selects top-level tests only, so every case below
+// the one calling Run still runs.
+func partialRun() (string, bool) {
+	if f := flag.Lookup("test.run"); f != nil && strings.Contains(f.Value.String(), "/") {
+		return "-run selects individual cases; the orphan check needs them all", true
+	}
+	if f := flag.Lookup("test.skip"); f != nil && f.Value.String() != "" {
+		return "-skip may exclude cases; the orphan check needs them all", true
+	}
+	return "", false
 }

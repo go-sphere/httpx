@@ -1,106 +1,19 @@
 package conformance
 
 import (
-	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"testing"
 	"time"
 
-	"github.com/cloudwego/hertz/pkg/common/hlog"
-	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
-	"github.com/go-sphere/httpx/echox"
-	"github.com/go-sphere/httpx/fiberx"
-	"github.com/go-sphere/httpx/ginx"
-	"github.com/go-sphere/httpx/hertzx"
-	"github.com/go-sphere/httpx/stdx"
-	"github.com/gofiber/fiber/v3"
 )
-
-func newTrustedProxyEngine(tb testing.TB, name, addr string, proxies []string) httpx.Engine {
-	tb.Helper()
-	return newProxyEngine(tb, name, addr, proxies, true)
-}
-
-// newProxyEngine builds one engine per adapter. configure selects whether
-// WithTrustedProxies is installed at all, so a test can observe the
-// framework's own default policy.
-func newProxyEngine(tb testing.TB, name, addr string, proxies []string, configure bool) httpx.Engine {
-	tb.Helper()
-	switch name {
-	case "ginx":
-		gin.SetMode(gin.ReleaseMode)
-		opts := []ginx.Option{ginx.WithAddr(addr)}
-		if configure {
-			opts = append(opts, ginx.WithTrustedProxies(proxies...))
-		}
-		return ginx.New(opts...)
-	case "echox":
-		opts := []echox.Option{echox.WithAddr(addr)}
-		if configure {
-			opts = append(opts, echox.WithTrustedProxies(proxies...))
-		}
-		return echox.New(opts...)
-	case "fiberx":
-		opts := []fiberx.Option{fiberx.WithListen(addr, fiber.ListenConfig{DisableStartupMessage: true})}
-		if configure {
-			opts = append(opts, fiberx.WithTrustedProxies(proxies...))
-		}
-		return fiberx.New(opts...)
-	case "hertzx":
-		hlog.SetSilentMode(true)
-		hlog.SetOutput(io.Discard)
-		opts := []hertzx.Option{hertzx.WithAddr(addr)}
-		if configure {
-			opts = append(opts, hertzx.WithTrustedProxies(proxies...))
-		}
-		return hertzx.New(opts...)
-	case "stdx":
-		opts := []stdx.Option{stdx.WithAddr(addr)}
-		if configure {
-			opts = append(opts, stdx.WithTrustedProxies(proxies...))
-		}
-		return stdx.New(opts...)
-	default:
-		tb.Fatalf("unknown framework %q", name)
-		return nil
-	}
-}
-
-func startEngineAndWait(t *testing.T, engine httpx.Engine, addr string) func() {
-	t.Helper()
-	go func() {
-		_ = engine.Start()
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				defer cancel()
-				_ = engine.Stop(ctx)
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("engine on %s did not become reachable", addr)
-	return nil
-}
-
-// proxyFrameworks is the framework list of TestTrustedProxiesConformance. It
-// names stdx, which the shared conformanceFrameworks list does not carry.
-var proxyFrameworks = []string{"ginx", "fiberx", "echox", "hertzx", "stdx"}
 
 // The trusted-proxy policy depends on the connection's peer address, and the
 // in-process requesters of fiberx/hertzx report 0.0.0.0, so this needs a real
 // listener. WithTrustedProxies: X-Forwarded-For is honored only when the direct
-// peer is trusted, on every adapter — stdx included, which is why this test
-// names its frameworks itself.
+// peer is trusted, on every adapter.
 func TestTrustedProxiesConformance(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -114,9 +27,9 @@ func TestTrustedProxiesConformance(t *testing.T) {
 		// never leak (fiber requires EnableIPValidation for this).
 		{name: "MultiHopTrustedTailSkipped", proxies: []string{"127.0.0.1"}, xff: "203.0.113.9, 127.0.0.1", wantIP: "203.0.113.9"},
 		// A client that is itself inside a trusted range, behind a same-host
-		// proxy: every hop is trusted, so the leftmost entry is the client.
-		// gin, hertz, echo and fiber all resolve it that way; stdx used to fall
-		// back to the peer here, reporting 127.0.0.1 for every LAN session.
+		// proxy: every hop is trusted, so the leftmost entry is the client, as
+		// gin, hertz, echo and fiber resolve it. Answering with the peer would
+		// report the proxy for every LAN client.
 		{name: "AllHopsTrustedReturnsLeftmost", proxies: []string{"127.0.0.0/8", "192.168.0.0/16"}, xff: "192.168.1.50", wantIP: "192.168.1.50"},
 		{name: "AllHopsTrustedMultiHopReturnsLeftmost", proxies: []string{"127.0.0.0/8", "192.168.0.0/16"}, xff: "192.168.1.50, 192.168.1.60", wantIP: "192.168.1.50"},
 		// An entry nothing can parse fails closed to the peer on every adapter,
@@ -124,23 +37,21 @@ func TestTrustedProxiesConformance(t *testing.T) {
 		{name: "MalformedChainFallsBackToPeer", proxies: []string{"127.0.0.1"}, xff: "garbage", wantIP: "127.0.0.1"},
 		{name: "EntryWithPortFallsBackToPeer", proxies: []string{"127.0.0.1"}, xff: "1.2.3.4:5678", wantIP: "127.0.0.1"},
 	}
-	for _, framework := range proxyFrameworks {
+	for _, a := range adapters() {
 		for _, tc := range cases {
-			t.Run(framework+"/"+tc.name, func(t *testing.T) {
-				addr := reserveAddrTB(t)
-				engine := newTrustedProxyEngine(t, framework, addr, tc.proxies)
+			t.Run(a.Name+"/"+tc.name, func(t *testing.T) {
+				engine, addr := a.serve(t, serveConfig{trustProxies: true, proxies: tc.proxies})
 				engine.Group("").GET("/ip", func(ctx httpx.Context) error {
 					return ctx.JSON(http.StatusOK, map[string]string{"ip": ctx.ClientIP()})
 				})
-				stop := startEngineAndWait(t, engine, addr)
-				defer stop()
+				startServing(t, engine, addr)
 
 				req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/ip", nil)
 				if err != nil {
 					t.Fatalf("build request: %v", err)
 				}
 				req.Header.Set("X-Forwarded-For", tc.xff)
-				client := &http.Client{Timeout: 2 * time.Second}
+				client := oneShotClient(2 * time.Second)
 				resp, err := client.Do(req)
 				if err != nil {
 					t.Fatalf("request failed: %v", err)
@@ -152,7 +63,7 @@ func TestTrustedProxiesConformance(t *testing.T) {
 					t.Fatalf("parse body: %v; body=%q", err, body)
 				}
 				if payload["ip"] != tc.wantIP {
-					t.Fatalf("%s ClientIP = %q, want %q", framework, payload["ip"], tc.wantIP)
+					t.Fatalf("ClientIP = %q, want %q", payload["ip"], tc.wantIP)
 				}
 			})
 		}
@@ -219,20 +130,18 @@ func TestClientIPFrameworkDifferences(t *testing.T) {
 			},
 		},
 	}
-	for _, framework := range proxyFrameworks {
+	for _, a := range adapters() {
 		for _, tc := range cases {
-			t.Run(framework+"/"+tc.name, func(t *testing.T) {
-				want, ok := tc.want[framework]
+			t.Run(a.Name+"/"+tc.name, func(t *testing.T) {
+				want, ok := tc.want[a.Name]
 				if !ok {
-					t.Fatalf("%s/%s has no expectation", framework, tc.name)
+					t.Fatalf("%s/%s has no expectation", a.Name, tc.name)
 				}
-				addr := reserveAddrTB(t)
-				engine := newProxyEngine(t, framework, addr, proxies, tc.configure)
+				engine, addr := a.serve(t, serveConfig{trustProxies: tc.configure, proxies: proxies})
 				engine.Group("").GET("/ip", func(ctx httpx.Context) error {
 					return ctx.JSON(http.StatusOK, map[string]string{"ip": ctx.ClientIP()})
 				})
-				stop := startEngineAndWait(t, engine, addr)
-				defer stop()
+				startServing(t, engine, addr)
 
 				req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/ip", nil)
 				if err != nil {
@@ -244,7 +153,7 @@ func TestClientIPFrameworkDifferences(t *testing.T) {
 				if tc.xRealIP != "" {
 					req.Header.Set("X-Real-IP", tc.xRealIP)
 				}
-				client := &http.Client{Timeout: 2 * time.Second}
+				client := oneShotClient(2 * time.Second)
 				resp, err := client.Do(req)
 				if err != nil {
 					t.Fatalf("request failed: %v", err)
@@ -256,7 +165,7 @@ func TestClientIPFrameworkDifferences(t *testing.T) {
 					t.Fatalf("parse body: %v; body=%q", err, body)
 				}
 				if payload["ip"] != want {
-					t.Fatalf("%s ClientIP = %q, want %q", framework, payload["ip"], want)
+					t.Fatalf("ClientIP = %q, want %q", payload["ip"], want)
 				}
 			})
 		}

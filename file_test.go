@@ -27,6 +27,15 @@ func TestCheckServeFile(t *testing.T) {
 			t.Fatalf("%s: code=%d status=%d message=%q, want 404 with no user message", name, code, status, message)
 		}
 	}
+	if os.Geteuid() != 0 {
+		unreadable := filepath.Join(dir, "unreadable.txt")
+		if err := os.WriteFile(unreadable, []byte("u"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if _, status, _ := ParseError(CheckServeFile(unreadable)); status != http.StatusForbidden {
+			t.Fatalf("unreadable: status=%d, want 403", status)
+		}
+	}
 }
 
 func TestServeFileIgnoresRequestPath(t *testing.T) {

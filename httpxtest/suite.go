@@ -3,6 +3,8 @@ package httpxtest
 import (
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/go-sphere/httpx"
@@ -72,7 +74,7 @@ type Suite struct {
 	// path (httpx.TestRequester) allocates an *http.Response and reads its
 	// body, which on an empty request dominates the measurement; without this
 	// hook the benchmarks measure the harness. See the suites in
-	// conformance/httpxtest_suite_test.go.
+	// conformance/httpxtest_suite_test.go, where the benchmark tables use it.
 	Dispatch func(tb testing.TB, register func(httpx.Router), req *http.Request) func()
 
 	// StdMiddleware wraps a plain net/http middleware as an httpx.Middleware,
@@ -97,6 +99,10 @@ type Suite struct {
 // Suite.Name and Suite.NewEngine are required; Run fails t immediately when
 // either is missing. Cases needing a capability s.Caps does not declare, or a
 // nil optional hook, are skipped with a reason.
+//
+// When every case ran and passed, Run ends with a GoldenFilesInUse subtest
+// that fails if an embedded golden contract was neither compared nor under a
+// skipped case: a file no case produces any more.
 func Run(t *testing.T, s Suite) {
 	t.Helper()
 	if s.Name == "" {
@@ -105,12 +111,22 @@ func Run(t *testing.T, s Suite) {
 	if s.NewEngine == nil {
 		t.Fatal("httpxtest: Suite.NewEngine is required")
 	}
-	root := t.Name()
+	r := runner{suite: s, root: t.Name(), ledger: &goldenLedger{used: map[string]bool{}}}
 	for _, g := range groups {
 		t.Run(g.name, func(t *testing.T) {
-			g.run(t, runner{suite: s, root: root})
+			g.run(t, r)
 		})
 	}
+	casesFailed := t.Failed()
+	t.Run("GoldenFilesInUse", func(t *testing.T) {
+		if casesFailed {
+			t.Skip("a case failed, so a golden file it did not reach is not evidence of an orphan")
+		}
+		if reason, partial := partialRun(); partial {
+			t.Skip(reason)
+		}
+		r.ledger.checkOrphans(t, goldenFS)
+	})
 }
 
 // caseGroup is one named collection of cases, registered by the cases_*.go
@@ -127,8 +143,18 @@ func register(name string, run func(t *testing.T, r runner)) {
 }
 
 type runner struct {
-	suite Suite
-	root  string
+	suite  Suite
+	root   string
+	ledger *goldenLedger
+}
+
+// skipf skips the case and records it, so the golden contracts below it are
+// not reported as orphaned. Cases skip through it rather than t.Skipf;
+// TestCasesSkipThroughRunner enforces that.
+func (r runner) skipf(t *testing.T, format string, args ...any) {
+	t.Helper()
+	r.ledger.skip(r.goldenStem(t))
+	t.Skipf(format, args...)
 }
 
 // response is the part of an HTTP response the cases inspect.
@@ -176,6 +202,11 @@ func (r runner) serveOn(t *testing.T, engine httpx.Engine, req *http.Request) re
 		t.Fatalf("%s: serve %s %s: %v", r.suite.Name, req.Method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// The status line is net/http's "200 OK", as httptest.ResponseRecorder
+	// reports it.
+	if want := strconv.Itoa(resp.StatusCode) + " "; !strings.HasPrefix(resp.Status, want) {
+		t.Fatalf("%s: response Status = %q, want it to start with %q", r.suite.Name, resp.Status, want)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("%s: read response body: %v", r.suite.Name, err)

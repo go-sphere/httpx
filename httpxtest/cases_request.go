@@ -19,7 +19,7 @@ func init() {
 
 // Request-side cases: bodies, the five binders, forms and uploads. Each
 // framework has its own body reader and binder, so these belong in the shared
-// suite rather than in a four-framework test module.
+// suite rather than in the conformance module.
 func casesRequest(t *testing.T, r runner) {
 	t.Run("BodyRaw", func(t *testing.T) {
 		r.assertGolden(t, func(router httpx.Router) {
@@ -105,52 +105,25 @@ func casesRequest(t *testing.T, r runner) {
 		}
 	})
 
-	t.Run("BindJSONQueryURIHeader", func(t *testing.T) {
-		type payload struct {
-			Name string `json:"name"`
-			Age  int    `json:"age"`
-		}
-		type query struct {
-			Active bool `query:"active"`
-		}
-		type uri struct {
-			ID string `uri:"id"`
-		}
-		type header struct {
-			Token string `header:"X-Token"`
-		}
-
-		req := httptest.NewRequest(http.MethodPost, "http://example.com/bind/7?active=true", strings.NewReader(`{"name":"tom","age":11}`))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Token", "token-1")
-
-		r.assertGolden(t, func(router httpx.Router) {
-			router.POST("/bind/:id", func(ctx httpx.Context) error {
-				var p payload
-				var q query
-				var u uri
-				var h header
-				if err := ctx.BindJSON(&p); err != nil {
+	// A header tag names a header the way HTTP does, case-insensitively: a
+	// lowercase tag binds the canonical header a client sent.
+	t.Run("BindHeaderTagIsCaseInsensitive", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/bind/header-case", nil)
+		req.Header.Set("X-Token", "present")
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/bind/header-case", func(ctx httpx.Context) error {
+				var dst struct {
+					Token string `header:"x-token"`
+				}
+				if err := ctx.BindHeader(&dst); err != nil {
 					return err
 				}
-				if err := ctx.BindQuery(&q); err != nil {
-					return err
-				}
-				if err := ctx.BindURI(&u); err != nil {
-					return err
-				}
-				if err := ctx.BindHeader(&h); err != nil {
-					return err
-				}
-				return ctx.JSON(http.StatusOK, map[string]any{
-					"name":   p.Name,
-					"age":    p.Age,
-					"active": q.Active,
-					"id":     u.ID,
-					"token":  h.Token,
-				})
+				return ctx.Text(http.StatusOK, dst.Token)
 			})
 		}, req)
+		if got.Status != http.StatusOK || got.Body != "present" {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "present")
+		}
 	})
 
 	t.Run("BindFormAndFormValue", func(t *testing.T) {
@@ -175,6 +148,27 @@ func casesRequest(t *testing.T, r runner) {
 				})
 			})
 		}, req)
+	})
+
+	// BindForm decodes the form body only; query values are BindQuery's.
+	t.Run("BindFormIgnoresQuery", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/form/query?q=from-query", strings.NewReader("name=bob"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		got := r.serve(t, func(router httpx.Router) {
+			router.POST("/form/query", func(ctx httpx.Context) error {
+				var f struct {
+					Name string `form:"name"`
+					Q    string `form:"q"`
+				}
+				if err := ctx.BindForm(&f); err != nil {
+					return err
+				}
+				return ctx.Text(http.StatusOK, f.Name+"|"+f.Q)
+			})
+		}, req)
+		if got.Status != http.StatusOK || got.Body != "bob|" {
+			t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "bob|")
+		}
 	})
 
 	t.Run("MultipartAndFormFile", func(t *testing.T) {

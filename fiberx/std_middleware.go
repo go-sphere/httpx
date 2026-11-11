@@ -3,7 +3,11 @@ package fiberx
 import (
 	"bytes"
 	"errors"
+	"maps"
 	"net/http"
+	"net/textproto"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,15 +21,20 @@ import (
 // otel/chi/gzip ecosystem. Because fiber buffers the response, the downstream
 // chain runs first into fiber's buffer, which is then replayed through the
 // middleware's (possibly wrapped) writer, so body/header transformations
-// apply. A streamed response (Stream, ServerSentEvents, DataFromReader with a
-// body stream) is not replayed: it keeps its stream, the headers the
-// middleware set before calling next, except Content-Length and
-// Content-Encoding, are added where the handler did not set the same key, and
+// apply. The middleware's header map is the response's, as in net/http: it
+// sees the headers the chain above set, what it sets or deletes before calling
+// next is what the handlers below see (Content-Length and Content-Encoding
+// excepted, which describe the body it writes), and what they set is what it
+// sees afterwards. A streamed response (Stream, ServerSentEvents,
+// DataFromReader with a body stream) is not replayed: it keeps its stream, and
 // whatever the middleware writes after next returns is dropped. If the
 // middleware responds without calling the next handler, the chain is
-// short-circuited. A downstream error that left the response uncommitted is
-// not replayed: only the headers the middleware staged are applied, and the
-// error is returned to be rendered as on the other adapters.
+// short-circuited. A downstream response that is not committed (an error, or
+// a handler that wrote nothing) is not replayed, and neither the middleware
+// nor the adapter commits one the middleware did not write to: only the
+// headers the middleware staged are applied, and an error is returned to be
+// rendered as on the other adapters, including one a layer above returns
+// after the middleware stopped the chain without writing.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(next httpx.Handler) httpx.Handler { return next }
@@ -49,9 +58,14 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 			var nextErr error
 			base := &fiberResponseWriter{fc: fc}
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// net/http shares one header map down the chain: what the
+				// middleware staged is what the handlers below see, and what
+				// they set is what the middleware sees after next.
+				base.sync(false)
 				ctx.SetContext(r.Context())
 				nextErr = next(ctx)
-				if nextErr != nil && !ctx.Committed() {
+				base.reseed()
+				if !ctx.Committed() {
 					return
 				}
 				if fc.Response().IsBodyStream() {
@@ -60,44 +74,80 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 					base.passStream()
 					return
 				}
-				replayFiberResponse(fc, w)
+				replayFiberBody(fc, w, base)
 			})
 			middleware(inner).ServeHTTP(base, req)
-			if nextErr != nil && !base.wroteHeader {
-				// Replaying would commit an empty 200 and the error would
-				// never be rendered.
+			if !base.wroteHeader {
+				// Committing here would send an empty 200 that nothing wrote,
+				// and an error from below or above would never be rendered.
 				base.applyHeader()
-			} else {
-				base.finish()
 			}
 			return nextErr
 		}
 	}
 }
 
-// replayFiberResponse moves the buffered downstream response out of the
-// fiber context and replays it through w (the middleware's view of the
-// response), so wrapping middleware observes and may transform it.
-func replayFiberResponse(fc fiber.Ctx, w http.ResponseWriter) {
+// replayFiberBody moves the buffered downstream body out of the fiber context
+// and replays it with its status through w (the middleware's view of the
+// response), so wrapping middleware observes and may transform it. The
+// headers are already in base's header map (see fiberResponseWriter.reseed);
+// a wrapping writer that keeps a header map of its own gets them moved into
+// that map, which is where the chain below would have written them on
+// net/http.
+func replayFiberBody(fc fiber.Ctx, w http.ResponseWriter, base *fiberResponseWriter) {
+	if header := w.Header(); !sameHeaderMap(header, base.Header()) {
+		maps.Copy(header, takeResponseHeader(fc))
+		base.reseed()
+	}
 	resp := fc.Response()
 	status := resp.StatusCode()
-	header := w.Header()
-	for k, v := range resp.Header.All() {
-		header.Add(string(k), string(v))
-	}
 	body := bytes.Clone(resp.Body())
-	resp.Reset()
+	resp.ResetBody()
 	w.WriteHeader(status)
 	if len(body) > 0 {
 		_, _ = w.Write(body)
 	}
 }
 
-// fiberResponseWriter writes into fiber's buffered response, staging headers
-// until the first write like net/http does.
+// sameHeaderMap reports whether a and b are the same map, not merely equal.
+func sameHeaderMap(a, b http.Header) bool {
+	return reflect.ValueOf(a).UnsafePointer() == reflect.ValueOf(b).UnsafePointer()
+}
+
+// takeResponseHeader moves the response headers out of fiber's response into
+// an http.Header, leaving the status in place. A Content-Type nothing set is
+// not taken (see explicitContentType). The headers are deleted one by one
+// rather than with Reset, which would also clear the flags the server set on
+// the response for this request, such as its no-default-Content-Type one.
+func takeResponseHeader(native fiber.Ctx) http.Header {
+	resp := native.Response()
+	taken := make(http.Header)
+	explicitCT := len(explicitContentType(native)) > 0
+	for k, v := range resp.Header.All() {
+		key := string(k)
+		if key == fiber.HeaderContentType && !explicitCT {
+			continue
+		}
+		taken[key] = append(taken[key], string(v))
+	}
+	resp.Header.Del(fiber.HeaderContentType)
+	for key := range taken {
+		resp.Header.Del(key)
+	}
+	return taken
+}
+
+// fiberResponseWriter writes into fiber's buffered response. Its header map is
+// the response's headers, as net/http's is: it starts as what the response
+// already carries, and the changes made to it — values set, keys deleted —
+// reach fiber's response before the chain below runs and when the response
+// is written.
 type fiberResponseWriter struct {
-	fc          fiber.Ctx
-	header      http.Header
+	fc     fiber.Ctx
+	header http.Header
+	// synced is the header map as last exchanged with fiber's response; a key
+	// it holds that header no longer does was deleted.
+	synced      http.Header
 	wroteHeader bool
 	// streaming is set once the downstream response is a body stream: any
 	// write would replace that stream, so later writes are discarded.
@@ -105,29 +155,91 @@ type fiberResponseWriter struct {
 }
 
 // passStream commits w over a streamed downstream response without touching
-// its body: the staged headers are added for the keys the handler left unset.
+// its body. A length or encoding the middleware staged is dropped: the stream
+// bypasses the middleware's writer, so neither would describe the body.
 func (w *fiberResponseWriter) passStream() {
 	w.wroteHeader = true
 	w.streaming = true
 	markResponseCommitted(w.fc)
-	resp := w.fc.Response()
-	for key, values := range w.header {
-		// The stream bypasses the middleware's writer, so a length or encoding
-		// it staged would not describe the body.
-		if strings.EqualFold(key, "Content-Length") || strings.EqualFold(key, "Content-Encoding") || len(resp.Header.Peek(key)) > 0 {
-			continue
-		}
-		for _, value := range values {
-			resp.Header.Add(key, value)
-		}
-	}
 }
 
 func (w *fiberResponseWriter) Header() http.Header {
 	if w.header == nil {
 		w.header = make(http.Header)
+		w.reseed()
 	}
 	return w.header
+}
+
+// reseed refills the header map, in place so a reference a middleware kept
+// stays live, with the response's current headers. A Content-Type nothing set
+// is left out (see explicitContentType).
+func (w *fiberResponseWriter) reseed() {
+	if w.header == nil {
+		return
+	}
+	clear(w.header)
+	explicitCT := len(explicitContentType(w.fc)) > 0
+	for k, v := range w.fc.Response().Header.All() {
+		key := textproto.CanonicalMIMEHeaderKey(string(k))
+		if key == fiber.HeaderContentType && !explicitCT {
+			continue
+		}
+		w.header[key] = append(w.header[key], string(v))
+	}
+	w.synced = w.header.Clone()
+}
+
+// isBodyHeader reports the headers that describe the body the middleware
+// writes, which are only applied when it writes one.
+func isBodyHeader(key string) bool {
+	return strings.EqualFold(key, "Content-Length") || strings.EqualFold(key, "Content-Encoding")
+}
+
+// sync applies the header map's changes since the last exchange to fiber's
+// response: a deleted key is removed, a changed one replaced, an unchanged one
+// left alone. With withBody false, Content-Length and Content-Encoding stay
+// staged.
+func (w *fiberResponseWriter) sync(withBody bool) {
+	if w.header == nil {
+		return
+	}
+	resp := w.fc.Response()
+	for key := range w.synced {
+		if _, ok := w.header[key]; !ok {
+			resp.Header.Del(key)
+		}
+	}
+	for key, values := range w.header {
+		if slices.Equal(w.synced[key], values) {
+			continue
+		}
+		if isBodyHeader(key) {
+			if !withBody {
+				continue
+			}
+			if strings.EqualFold(key, "Content-Length") {
+				if len(values) > 0 {
+					if n, err := strconv.Atoi(values[0]); err == nil {
+						resp.Header.SetContentLength(n)
+					}
+				}
+				continue
+			}
+		}
+		resp.Header.Del(key)
+		for _, value := range values {
+			resp.Header.Add(key, value)
+		}
+	}
+	w.synced = w.header.Clone()
+	if !withBody {
+		for key := range w.synced {
+			if isBodyHeader(key) {
+				delete(w.synced, key)
+			}
+		}
+	}
 }
 
 func (w *fiberResponseWriter) WriteHeader(code int) {
@@ -140,25 +252,9 @@ func (w *fiberResponseWriter) WriteHeader(code int) {
 	w.fc.Response().SetStatusCode(code)
 }
 
-// applyHeader copies the staged headers into fiber's response without
+// applyHeader applies the header map's changes to fiber's response without
 // committing it.
-func (w *fiberResponseWriter) applyHeader() {
-	resp := w.fc.Response()
-	for key, values := range w.header {
-		if strings.EqualFold(key, "Content-Length") {
-			if len(values) > 0 {
-				if n, err := strconv.Atoi(values[0]); err == nil {
-					resp.Header.SetContentLength(n)
-				}
-			}
-			continue
-		}
-		resp.Header.Del(key)
-		for _, value := range values {
-			resp.Header.Add(key, value)
-		}
-	}
-}
+func (w *fiberResponseWriter) applyHeader() { w.sync(true) }
 
 func (w *fiberResponseWriter) Write(p []byte) (int, error) {
 	if w.streaming {
@@ -169,10 +265,4 @@ func (w *fiberResponseWriter) Write(p []byte) (int, error) {
 	}
 	w.fc.Response().AppendBody(p)
 	return len(p), nil
-}
-
-func (w *fiberResponseWriter) finish() {
-	if !w.wroteHeader {
-		w.WriteHeader(w.fc.Response().StatusCode())
-	}
 }

@@ -194,7 +194,7 @@ func buildNativeGin(tb testing.TB, scenario string, req *http.Request) (func(), 
 	default:
 		ge.GET("/scenario", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	}
-	return ginRunner(tb, "gin", ge, req), true
+	return netHTTPRunner(tb, "gin", ge, req), true
 }
 
 func buildNativeEcho(tb testing.TB, scenario string, req *http.Request) (func(), bool) {

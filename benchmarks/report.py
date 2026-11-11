@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Run every httpx benchmark table in one session and render one report.
 
-The point of this script is the word "one". Each table used to be run by hand,
-at a different commit, with a different sample count, and written up separately,
-so no two numbers in the benchmarks/ directory could be compared. Here the
-conformance test binary is compiled once and every table is measured from that
-same binary, back to back, with the same sampling; the environment, the git
-revision and the dirty files are recorded alongside the numbers.
+The point of this script is the word "one": numbers from tables run by hand,
+at different commits or with different sample counts, cannot be compared. Here
+the conformance test binary is compiled once and every table is measured from
+that same binary, back to back, with the same sampling; the environment, the
+git revision and the dirty files are recorded alongside the numbers.
 """
 import argparse
 import json
@@ -23,9 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 # Generated output goes in its own directory. results/ also holds older raw
 # data from past experiments, and a generator writing into the same namespace
-# will eventually pick a name one of them already used -- which is exactly how
-# the first round's environment.json and network.json were destroyed. None of
-# results/ is tracked: benchmarks/ has no go.mod, so anything committed here
+# would eventually overwrite one of them. None of results/ is tracked: benchmarks/ has no go.mod, so anything committed here
 # ships in the root module's zip to every consumer of the library.
 RESULTS = ROOT / 'benchmarks/results/latest'
 # Compiled test binaries are tens of megabytes; they are kept so a run can be
@@ -77,6 +74,7 @@ def main():
     conformance = BIN / 'conformance.test'
     log(f'compiling the conformance benchmark binary -> {rel(conformance)}')
     run(['go', 'test', '-c', './conformance', '-o', str(conformance)])
+    env['framework_versions'] = framework_versions(conformance)
 
     tables = {}
     for key, bench in (('adapter', '^BenchmarkAdapter$'),
@@ -437,12 +435,15 @@ def _findings_stdx_vs_native(table) -> str:
 
 def _findings_caveats(network) -> str:
     md = ['### What none of this shows\n']
-    if network:
-        md.append('**Section 4 is the one that decides whether any of the above matters, and it '
-                  'says no.** At a fixed rate over a real socket every adapter and every '
-                  'framework lands on the same latency percentiles: the differences measured '
-                  'here are three orders of magnitude below one round trip. Treat sections 1–3 '
-                  'as a budget for the adapter layer, not as a reason to pick a framework.\n')
+    if network and network_summary(network)['indistinguishable']:
+        md.append('**Section 4 is the one that decides whether any of the above matters, and in '
+                  'this run it says no.** At a fixed rate over a real socket every httpx row '
+                  'lands within noise of the framework it wraps. Treat sections 1–3 as a budget '
+                  'for the adapter layer, not as a reason to pick a framework.\n')
+    elif network:
+        md.append('**Section 4 is the one that decides whether any of the above matters, and in '
+                  'this run it shows a difference** beyond its noise threshold; read its table '
+                  'before relying on sections 1–3.\n')
     else:
         md.append('The network section was skipped in this run, so nothing here is checked '
                   'against a real socket. Run it before drawing conclusions about the relative '
@@ -586,13 +587,59 @@ def render_network(data) -> str:
         md.append(f'| {framework} | {scenario} | {mode} | {q("50th"):.2f} ms | '
                   f'{q("95th"):.2f} ms | {q("99th"):.2f} ms | {success:.1%} |')
     md.append('')
-    md.append('**Nearly every row is identical, and that is the finding.** The sections above '
-              'measure tens to hundreds of nanoseconds; one real round trip costs tens of '
-              'microseconds — three orders of magnitude more. At this load the choice of '
-              'framework, and whether httpx is in the path at all, disappears under TCP, HTTP '
-              'parsing and scheduling. The percentages above matter only once the adapter layer '
-              'is actually the bottleneck, and this section is how you tell whether it is.\n')
+    s = network_summary(data)
+    md.append(f"p50 ranges from {s['p50_min']:.2f} ms to {s['p50_max']:.2f} ms across all rows. "
+              f"The largest p50 difference between httpx and the framework it wraps is "
+              f"{s['worst_delta_ms']:.3f} ms ({s['worst_delta_pct']:+.0f}%, "
+              f"{s['worst_row']}); the lowest success rate is {s['min_success']:.1%}.\n")
+    if s['indistinguishable']:
+        md.append('**At this load httpx is indistinguishable from the framework it wraps:** every '
+                  f"httpx row is within {NETWORK_NOISE:.0%} of its native p50. The sections above "
+                  'measure nanoseconds; a round trip costs far more. The percentages above matter '
+                  'only once the adapter layer is actually the bottleneck.\n')
+    else:
+        md.append('**At this load the adapter layer is visible:** at least one httpx row is more '
+                  f"than {NETWORK_NOISE:.0%} slower or faster at p50 than its native counterpart, or "
+                  'a request failed. Re-run before concluding: one shared machine adds scheduling '
+                  'noise.\n')
     return '\n'.join(md)
+
+
+# An httpx p50 within this fraction of its native counterpart is read as no
+# difference: client and server share one machine, so the percentiles carry
+# scheduling noise of about this size.
+NETWORK_NOISE = 0.10
+
+
+def network_summary(data) -> dict:
+    """Derives the network section's conclusion from the run's own samples."""
+    p50 = {}
+    success = []
+    for r in data['results']:
+        key = (r['framework'], r['scenario'], r['mode'])
+        p50.setdefault(key, []).append(r['metrics']['latencies']['50th'] / 1e6)
+        success.append(r['metrics']['success'])
+    medians = {k: statistics.median(v) for k, v in p50.items()}
+    worst = (0.0, 0.0, '—')
+    for (framework, scenario, mode), native in medians.items():
+        if mode != 'native':
+            continue
+        wrapped = medians.get((framework, scenario, 'httpx'))
+        if wrapped is None or native <= 0:
+            continue
+        diff = wrapped - native
+        if abs(diff) > abs(worst[0]):
+            worst = (diff, diff / native * 100, f'{framework} {scenario}')
+    min_success = min(success) if success else 0.0
+    return {
+        'p50_min': min(medians.values()) if medians else 0.0,
+        'p50_max': max(medians.values()) if medians else 0.0,
+        'worst_delta_ms': worst[0],
+        'worst_delta_pct': worst[1],
+        'worst_row': worst[2],
+        'min_success': min_success,
+        'indistinguishable': abs(worst[1]) <= NETWORK_NOISE * 100 and min_success >= 1.0,
+    }
 
 
 def render_gin_depth(table) -> str:
@@ -697,20 +744,21 @@ def environment(args) -> dict:
         'gomaxprocs': args.cpu,
         'samples': args.count,
         'benchtime': args.benchtime,
-        'framework_versions': framework_versions(),
     }
 
 
-def framework_versions() -> list:
+FRAMEWORKS = ('github.com/gin-gonic/gin', 'github.com/labstack/echo/v4',
+              'github.com/gofiber/fiber/v3', 'github.com/cloudwego/hertz')
+
+
+def framework_versions(binary: Path) -> list:
+    """Reads the framework versions compiled into binary, which under go.work
+    can differ from what the adapters' go.mod files require."""
     out = []
-    for module, deps in (('ginx', ['github.com/gin-gonic/gin']),
-                         ('echox', ['github.com/labstack/echo/v4']),
-                         ('fiberx', ['github.com/gofiber/fiber/v3']),
-                         ('hertzx', ['github.com/cloudwego/hertz'])):
-        for line in (ROOT / module / 'go.mod').read_text().splitlines():
-            fields = line.split()
-            if len(fields) >= 2 and fields[0] in deps:
-                out.append(f'{fields[0]} {fields[1]}')
+    for line in capture(['go', 'version', '-m', str(binary)]).splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] == 'dep' and fields[1] in FRAMEWORKS:
+            out.append(f'{fields[1]} {fields[2]}')
     return out
 
 

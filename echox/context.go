@@ -71,6 +71,10 @@ func (c *echoContext) Path() string {
 // handled the request, while the other adapters report nothing.
 const unmatchedRouteKey = "httpx.echox.unmatchedRoute"
 
+// routeErrorKey marks an error a registered route returned to echo, so the
+// engine's error handler never treats it as echo's own unmatched-path error.
+const routeErrorKey = "httpx.echox.routeError"
+
 // FullPath reports the route pattern as it was registered. When the pattern
 // carried a named wildcard, FixWildcardPathIfNeed rewrote it to echo's
 // anonymous form ("/files/*filepath" -> "/files/*") because echo has no named
@@ -87,7 +91,7 @@ func (c *echoContext) FullPath() string {
 	}
 	pattern := c.ctx.Path()
 	if lastCharIs('*', pattern) {
-		if route, ok := c.wildcards.lookup(pattern); ok {
+		if route, ok := c.wildcards.lookup(c.ctx.Request().Method, pattern); ok {
 			return route.pattern
 		}
 	}
@@ -146,7 +150,11 @@ func (c *echoContext) Params() map[string]string {
 // the parameter as "*"; every reading of the parameter set (Param, Params,
 // BindURI) resolves it back through here so none of them can disagree.
 func (c *echoContext) wildcardParamName() string {
-	route, ok := c.wildcards.lookup(c.ctx.Path())
+	pattern := c.ctx.Path()
+	if !lastCharIs('*', pattern) {
+		return ""
+	}
+	route, ok := c.wildcards.lookup(c.ctx.Request().Method, pattern)
 	if !ok {
 		return ""
 	}
@@ -312,39 +320,55 @@ func (c *echoContext) Status(code int) {
 }
 
 func (c *echoContext) JSON(code int, v any) error {
+	resp := c.ctx.Response()
+	committed := resp.Committed
 	// echo labels JSON "application/json" where the other four adapters add
 	// "; charset=utf-8". echo only fills the header when it is still empty, so
 	// writing it first aligns the label while leaving a Content-Type the
 	// handler chose itself (a "+json" media type, say) alone.
-	if header := c.ctx.Response().Header(); header.Get(echo.HeaderContentType) == "" {
-		header.Set(echo.HeaderContentType, "application/json; charset=utf-8")
+	hadType := resp.Header().Get(echo.HeaderContentType) != ""
+	if !hadType {
+		c.setContentType("application/json; charset=utf-8")
 	}
-	if code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+	if bodyless(code) {
 		// echo would write the encoded body, which net/http rejects for these
 		// codes with ErrBodyNotAllowed.
-		c.ctx.Response().WriteHeader(code)
+		c.commit(code)
 		return nil
 	}
-	return c.ctx.JSON(code, v)
+	// echo records code before encoding, and on a committed response still
+	// labels an unlabelled header map; neither may outlive the call when the
+	// response was committed or the encode failed.
+	prev := resp.Status
+	err := c.ctx.JSON(code, v)
+	if committed || !resp.Committed {
+		resp.Status = prev
+	}
+	if committed && !hadType {
+		resp.Header().Del(echo.HeaderContentType)
+	}
+	return err
 }
 
 func (c *echoContext) Text(code int, s string) error {
-	// Pre-set the header with the lowercase charset used by the other
-	// adapters (echo's default is "charset=UTF-8"); echo only sets the
-	// content type when it is still empty.
-	c.ctx.Response().Header().Set(echo.HeaderContentType, "text/plain; charset=utf-8")
-	return c.ctx.String(code, s)
+	// The lowercase charset used by the other adapters; echo's String writes
+	// "charset=UTF-8".
+	c.setContentType("text/plain; charset=utf-8")
+	return c.writeBody(code, []byte(s))
 }
 
 func (c *echoContext) NoContent(code int) error {
-	return c.ctx.NoContent(code)
+	c.commit(code)
+	return nil
 }
 
 func (c *echoContext) Bytes(code int, b []byte, contentType string) error {
 	if contentType == "" {
 		contentType = http.DetectContentType(b)
 	}
-	return c.ctx.Blob(code, contentType, b)
+	// Not echo's Blob, which only labels a response nothing labelled yet.
+	c.setContentType(contentType)
+	return c.writeBody(code, b)
 }
 
 func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
@@ -353,30 +377,74 @@ func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, 
 			_ = rc.Close()
 		}()
 	}
-	if contentType == "" {
-		contentType = http.DetectContentType(nil)
+	if contentType != "" {
+		c.setContentType(contentType)
+	}
+	if bodyless(code) {
+		c.commit(code)
+		return nil
 	}
 	if size >= 0 {
-		c.ctx.Response().Header().Set(echo.HeaderContentLength, strconv.FormatInt(size, 10))
+		c.SetHeader(echo.HeaderContentLength, strconv.FormatInt(size, 10))
 	}
-	return c.ctx.Stream(code, contentType, r)
+	// Not echo's Stream, which labels an unlabelled response with whatever
+	// type it is given; an empty contentType leaves the header as it stands.
+	c.commit(code)
+	_, err := io.Copy(c.ctx.Response(), r)
+	return err
 }
 
 func (c *echoContext) File(path string) error {
-	if err := httpx.CheckServeFile(path); err != nil {
-		return err
+	return httpx.ServeFile(c.ctx.Response(), c.ctx.Request(), path)
+}
+
+// setContentType labels the response, unless it is already committed: its
+// headers went out with the commit, and ResponseHeaderValues must not report a
+// type the client never received.
+func (c *echoContext) setContentType(v string) {
+	c.SetHeader(echo.HeaderContentType, v)
+}
+
+// commit sends the header with code unless the response is already committed,
+// where echo's WriteHeader would log a warning for a write net/http ignores.
+func (c *echoContext) commit(code int) {
+	if resp := c.ctx.Response(); !resp.Committed {
+		resp.WriteHeader(code)
 	}
-	return c.ctx.File(path)
+}
+
+// writeBody commits the response with code and appends b; a status that
+// carries no body drops b.
+func (c *echoContext) writeBody(code int, b []byte) error {
+	c.commit(code)
+	if bodyless(code) {
+		return nil
+	}
+	_, err := c.ctx.Response().Write(b)
+	return err
+}
+
+// bodyless reports a status net/http sends without a body; writing one
+// returns http.ErrBodyNotAllowed.
+func bodyless(code int) bool {
+	return code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified
 }
 
 func (c *echoContext) Redirect(code int, location string) error {
 	if !httpx.ValidRedirectCode(code) {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
 	}
+	if c.ctx.Response().Committed {
+		// echo's Redirect would set Location on a header that already went out.
+		return nil
+	}
 	return c.ctx.Redirect(code, location)
 }
 
 func (c *echoContext) SetHeader(key, value string) {
+	if c.ctx.Response().Committed {
+		return
+	}
 	c.ctx.Response().Header().Set(key, value)
 }
 
@@ -392,7 +460,7 @@ func (c *echoContext) ResponseHeaderValues(key string) []string {
 }
 
 func (c *echoContext) SetCookie(cookie *http.Cookie) {
-	if cookie != nil {
+	if cookie != nil && !c.ctx.Response().Committed {
 		c.ctx.SetCookie(cookie)
 	}
 }
@@ -452,14 +520,17 @@ func (c *echoContext) Flush() error {
 	return nil
 }
 
-// Stream implements httpx.Streamer: each write inside fn is flushed to the
-// client immediately.
+// Stream implements httpx.Streamer: status and headers are flushed to the
+// client before fn runs, and each write inside fn is flushed immediately.
 func (c *echoContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
-	resp := c.ctx.Response()
 	if contentType != "" {
-		resp.Header().Set(echo.HeaderContentType, contentType)
+		c.setContentType(contentType)
 	}
-	resp.WriteHeader(code)
+	c.commit(code)
+	if err := c.Flush(); err != nil {
+		return err
+	}
+	resp := c.ctx.Response()
 	return fn(echoFlushWriter{resp: resp, rc: http.NewResponseController(resp.Writer)})
 }
 

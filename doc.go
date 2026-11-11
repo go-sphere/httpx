@@ -4,16 +4,23 @@
 //
 // This module holds only the contract and the helpers shared by every adapter;
 // it has no third-party dependencies and cannot serve requests by itself.
-// Pick an adapter module and construct its Engine:
+// Pick an adapter module and construct its Engine. The adapters differ in
+// support level:
 //
-//   - github.com/go-sphere/httpx/stdx — plain net/http, no framework dependency.
-//   - github.com/go-sphere/httpx/ginx — Gin.
-//   - github.com/go-sphere/httpx/echox — Echo v4.
-//   - github.com/go-sphere/httpx/fiberx — Fiber v3.
-//   - github.com/go-sphere/httpx/hertzx — Hertz.
+//   - github.com/go-sphere/httpx/stdx — plain net/http, no framework
+//     dependency. The reference implementation of the contract and sphere's
+//     default engine; recommended for production.
+//   - github.com/go-sphere/httpx/ginx — Gin. Production-ready; implements
+//     every interface and optional capability.
+//   - github.com/go-sphere/httpx/echox — Echo v4. Experimental: fairly
+//     complete, not recommended for production.
+//   - github.com/go-sphere/httpx/fiberx — Fiber v3. Reference only:
+//     incomplete, not for production.
+//   - github.com/go-sphere/httpx/hertzx — Hertz. Reference only: incomplete,
+//     not for production.
 //
 // Every adapter's New returns an [Engine] and accepts the same portable
-// options: WithAddr, WithErrorHandler and WithTrustedProxies.
+// options: WithAddr, WithErrorHandler, WithTrustedProxies and WithMaxBodySize.
 //
 // # Usage
 //
@@ -77,7 +84,8 @@
 //
 // Features that not every adapter can offer are separate interfaces probed by
 // type assertion: [AsNativeContext], [AsFlusher], [AsStreamer] (with
-// [ServerSentEvents] on top), [MountStd] and [AsTestRequester].
+// [ServerSentEvents] on top), [AsResponseHeaderEditor], [MountStd] and
+// [AsTestRequester].
 //
 // For unit tests of middleware and handlers without an engine, use
 // github.com/go-sphere/httpx/httpxmock. Adapter authors certify an

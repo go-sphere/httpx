@@ -38,15 +38,20 @@ func casesMiddlewareScope(t *testing.T, r runner) {
 		{"MethodNotAllowed", http.MethodGet, "/known", http.StatusMethodNotAllowed},
 	}
 
+	// The layer wraps the fallback the way it wraps a route: it runs once, and
+	// next returns to it, so an access log or a recovery layer sees the request
+	// end as well as start.
 	t.Run("EngineCoversUnmatchedPath", func(t *testing.T) {
 		for _, tc := range unmatched {
 			t.Run(tc.name, func(t *testing.T) {
-				var ran int
+				var order []string
 				got := r.serveEngine(t, Options{}, func(engine httpx.Engine) {
 					engine.Use(func(next httpx.Handler) httpx.Handler {
 						return func(ctx httpx.Context) error {
-							ran++
-							return next(ctx)
+							order = append(order, "engine-pre")
+							err := next(ctx)
+							order = append(order, "engine-post")
+							return err
 						}
 					})
 					registerKnown(engine.Group(""))
@@ -55,9 +60,9 @@ func casesMiddlewareScope(t *testing.T, r runner) {
 				if got.Status != tc.wantStatus {
 					t.Fatalf("status = %d, want %d; body=%q", got.Status, tc.wantStatus, got.Body)
 				}
-				if ran != 1 {
-					t.Fatalf("the engine layer ran %d times for %s, want exactly 1: an engine-scope chain must cover a path no route matched",
-						ran, tc.target)
+				if joined := strings.Join(order, ","); joined != "engine-pre,engine-post" {
+					t.Fatalf("engine layer order = %q for %s, want %q: an engine-scope chain must wrap a path no route matched, once",
+						joined, tc.target, "engine-pre,engine-post")
 				}
 			})
 		}
@@ -220,15 +225,6 @@ func casesMiddlewareScope(t *testing.T, r runner) {
 		if joined := strings.Join(order, ","); joined != want {
 			t.Fatalf("order = %q, want %q", joined, want)
 		}
-	})
-
-	// Both interfaces include MiddlewareScope, so a caller can register on either
-	// without knowing which it holds. Asserted separately because an adapter
-	// could satisfy Router through an embedded type that is not a scope itself.
-	t.Run("RouterAndEngineAreMiddlewareScopes", func(t *testing.T) {
-		engine := r.suite.NewEngine(t, Options{})
-		var _ httpx.MiddlewareScope = engine
-		var _ httpx.MiddlewareScope = engine.Group("")
 	})
 }
 

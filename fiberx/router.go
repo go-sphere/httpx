@@ -3,6 +3,7 @@ package fiberx
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path"
@@ -112,13 +113,8 @@ func (r *Router) BasePath() string {
 // SupportsRouterFeature reports every feature as unsupported natively. Named
 // wildcards still work: Handle rewrites them to fiber's anonymous form and
 // keeps the name for Param, BindURI and FullPath.
-func (r *Router) SupportsRouterFeature(feature httpx.RouterFeature) bool {
-	switch feature {
-	case httpx.RouterFeatureNamedWildcard:
-		return false
-	default:
-		return false
-	}
+func (r *Router) SupportsRouterFeature(httpx.RouterFeature) bool {
+	return false
 }
 
 // Group returns a nested scope under prefix with m registered on it as if by
@@ -205,23 +201,29 @@ func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 
 // stdLeaf serves a plain net/http handler through fiber's context, so a std
 // handler can sit at the end of a composed middleware chain.
+//
+// It writes like a Responder method, through writeResponse: on a committed
+// response the handler's status and headers are dropped and its bytes append.
+// The handler's writer starts with the headers the chain has set, moved out of
+// fiber's response so that what the writer holds when the handler is done is
+// the header set, and Header().Set replaces a value rather than adding one.
 func stdLeaf(h http.Handler) httpx.Handler {
 	return func(ctx httpx.Context) error {
 		fc, ok := httpx.AsNativeContext[fiber.Ctx](ctx)
 		if !ok {
 			return errors.New("fiberx: fiber context type error")
 		}
-		// fasthttpadaptor hands the handler fasthttp's RequestCtx as
-		// r.Context(), which knows nothing about the context httpx layers set;
-		// fiber's context is that chain's continuation, so it is swapped in
-		// before the handler runs.
-		err := adaptor.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h.ServeHTTP(w, r.WithContext(fc.Context()))
-		}))(fc)
-		if err == nil {
-			markResponseCommitted(fc)
-		}
-		return err
+		return writeResponse(fc, func() error {
+			header := takeResponseHeader(fc)
+			// fasthttpadaptor hands the handler fasthttp's RequestCtx as
+			// r.Context(), which knows nothing about the context httpx layers
+			// set; fiber's context is that chain's continuation, so it is
+			// swapped in before the handler runs.
+			return adaptor.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				maps.Copy(w.Header(), header)
+				h.ServeHTTP(w, r.WithContext(fc.Context()))
+			}))(fc)
+		})
 	}
 }
 

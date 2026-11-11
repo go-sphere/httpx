@@ -10,66 +10,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudwego/hertz/pkg/common/hlog"
-	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
-	"github.com/go-sphere/httpx/echox"
 	"github.com/go-sphere/httpx/fiberx"
-	"github.com/go-sphere/httpx/ginx"
-	"github.com/go-sphere/httpx/hertzx"
-	"github.com/go-sphere/httpx/httpxtest"
-	"github.com/go-sphere/httpx/stdx"
 	"github.com/gofiber/fiber/v3"
 )
-
-// Unlike conformanceFrameworks, includes stdx: the stop semantics belong to the
-// Engine, which stdx has too.
-var shutdownFrameworks = []string{"ginx", "fiberx", "echox", "hertzx", "stdx"}
-
-// Reads the force-close capability from the adapter's shared suite, so the claim
-// is checked against the declaration third-party adapters publish.
-func capsFor(tb testing.TB, name string) httpxtest.Caps {
-	tb.Helper()
-	for _, suite := range httpxtestSuites() {
-		if suite.Name == name {
-			return suite.Caps
-		}
-	}
-	tb.Fatalf("no shared suite declares capabilities for %q", name)
-	return httpxtest.Caps{}
-}
-
-func newShutdownEngine(tb testing.TB, name, addr string) httpx.Engine {
-	tb.Helper()
-	switch name {
-	case "ginx":
-		gin.SetMode(gin.ReleaseMode)
-		return ginx.New(ginx.WithAddr(addr))
-	case "echox":
-		return echox.New(echox.WithAddr(addr))
-	case "fiberx":
-		return fiberx.New(fiberx.WithListen(addr, fiber.ListenConfig{DisableStartupMessage: true}))
-	case "hertzx":
-		hlog.SetSilentMode(true)
-		hlog.SetOutput(io.Discard)
-		return hertzx.New(hertzx.WithAddr(addr))
-	case "stdx":
-		return stdx.New(stdx.WithAddr(addr))
-	default:
-		tb.Fatalf("unknown framework %q", name)
-		return nil
-	}
-}
 
 // Stop(ctx) is not "ask nicely": a drain the caller's context cuts short must
 // still leave the listener closed and IsRunning false, with no timeout error.
 // Needs a real listener, and a request held open across Stop so the drain has
 // something to wait for.
 func TestEngineForcedStopConformance(t *testing.T) {
-	for _, name := range shutdownFrameworks {
-		t.Run(name, func(t *testing.T) {
-			addr := reserveAddrTB(t)
-			engine := newShutdownEngine(t, name, addr)
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine, addr := a.serve(t, serveConfig{})
 
 			release := make(chan struct{})
 			var once sync.Once
@@ -131,22 +84,22 @@ func TestEngineForcedStopConformance(t *testing.T) {
 				t.Fatal("IsRunning() is true after Stop returned")
 			}
 			if stillAccepting(addr) {
-				t.Fatalf("%s is still accepting connections on %s after Stop", name, addr)
+				t.Fatalf("%s is still accepting connections on %s after Stop", a.Name, addr)
 			}
 
 			// Whether a connection in flight is cut is a declared capability,
 			// and both directions are checked: the handler is parked on a gate
 			// nothing opens, so the held request can only finish by being cut.
-			if capsFor(t, name).ForcedStopCutsConnections {
+			if a.Caps.ForcedStopCutsConnections {
 				select {
 				case <-held:
 				case <-time.After(5 * time.Second):
-					t.Fatalf("%s declares ForcedStopCutsConnections, but the request in flight outlived Stop", name)
+					t.Fatalf("%s declares ForcedStopCutsConnections, but the request in flight outlived Stop", a.Name)
 				}
 			} else {
 				select {
 				case <-held:
-					t.Fatalf("%s declares it cannot cut a connection in flight, yet the held request ended at Stop", name)
+					t.Fatalf("%s declares it cannot cut a connection in flight, yet the held request ended at Stop", a.Name)
 				case <-time.After(300 * time.Millisecond):
 				}
 			}
@@ -224,7 +177,10 @@ func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
 		t.Fatal("Stop never closed the listener")
 	}
 	select {
-	case <-served:
+	case startErr := <-served:
+		if startErr != nil {
+			t.Fatalf("Start = %v, want nil once Stop ended it", startErr)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start did not return after the listener closed")
 	}
@@ -248,18 +204,6 @@ func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
 	}
 }
 
-func waitReachable(t *testing.T, addr string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if dialable(addr) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("engine on %s did not become reachable", addr)
-}
-
 // Closing a listener is not instantaneous on every transport, so a refusal is
 // given a window to appear rather than sampled once.
 func stillAccepting(addr string) bool {
@@ -275,49 +219,39 @@ func stillAccepting(addr string) bool {
 	}
 }
 
-func dialable(addr string) bool {
-	conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-// The two lifecycle answers that must not depend on the framework underneath:
-// Stop on an engine that never started has nothing to fail at and returns nil,
-// and Start returns nil — not the framework's "server closed" — once a graceful
-// Stop ended it. Both are on the Engine interface, so a caller can treat any
-// non-nil error from either as a real failure. Needs a real listener for the
-// second; the first runs the same way across all five adapters.
+// The lifecycle answers that must not depend on the framework underneath:
+// Stop on an engine that never started returns nil, Start returns nil — not the
+// framework's "server closed" — once a graceful Stop ended it, IsRunning is
+// false after Stop, and an engine is single-use, so Start after Stop in either
+// order returns httpx.ErrEngineClosed without blocking. A caller can treat any
+// other error from Start or Stop as a real failure.
 func TestEngineLifecycleErrorsConformance(t *testing.T) {
 	t.Run("StopBeforeStartReturnsNil", func(t *testing.T) {
-		for _, name := range shutdownFrameworks {
-			t.Run(name, func(t *testing.T) {
-				engine := newShutdownEngine(t, name, reserveAddrTB(t))
+		for _, a := range adapters() {
+			t.Run(a.Name, func(t *testing.T) {
+				engine, _ := a.serve(t, serveConfig{})
 				stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
 				if err := engine.Stop(stopCtx); err != nil {
-					t.Fatalf("%s Stop before Start = %v, want nil", name, err)
+					t.Fatalf("Stop before Start = %v, want nil", err)
 				}
 				if engine.IsRunning() {
-					t.Fatalf("%s IsRunning() is true after Stop", name)
+					t.Fatal("IsRunning() is true after Stop")
 				}
 				if err := startWithTimeout(t, engine); !errors.Is(err, httpx.ErrEngineClosed) {
-					t.Fatalf("%s Start after Stop = %v, want ErrEngineClosed", name, err)
+					t.Fatalf("Start after Stop = %v, want ErrEngineClosed", err)
 				}
 			})
 		}
 	})
 
 	t.Run("StartReturnsNilAfterGracefulStop", func(t *testing.T) {
-		for _, name := range shutdownFrameworks {
-			t.Run(name, func(t *testing.T) {
+		for _, a := range adapters() {
+			t.Run(a.Name, func(t *testing.T) {
 				// Several rounds, each with a request served first, so a
 				// "closed" error that surfaces only sometimes is caught.
 				for round := range 5 {
-					addr := reserveAddrTB(t)
-					engine := newShutdownEngine(t, name, addr)
+					engine, addr := a.serve(t, serveConfig{})
 					engine.Group("").GET("/ping", func(ctx httpx.Context) error {
 						return ctx.Text(http.StatusOK, "pong")
 					})
@@ -327,10 +261,9 @@ func TestEngineLifecycleErrorsConformance(t *testing.T) {
 					waitReachable(t, addr)
 					// No keep-alive: hertz's drain waits out an idle connection
 					// until its ExitWaitTimeout, five seconds a round.
-					client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
-					resp, err := client.Get("http://" + addr + "/ping")
+					resp, err := oneShotClient(2 * time.Second).Get("http://" + addr + "/ping")
 					if err != nil {
-						t.Fatalf("%s round %d request: %v", name, round, err)
+						t.Fatalf("round %d request: %v", round, err)
 					}
 					_, _ = io.Copy(io.Discard, resp.Body)
 					_ = resp.Body.Close()
@@ -339,18 +272,40 @@ func TestEngineLifecycleErrorsConformance(t *testing.T) {
 					stopErr := engine.Stop(stopCtx)
 					cancel()
 					if stopErr != nil {
-						t.Fatalf("%s round %d graceful Stop = %v, want nil", name, round, stopErr)
+						t.Fatalf("round %d graceful Stop = %v, want nil", round, stopErr)
 					}
 					select {
 					case err := <-served:
 						if err != nil {
-							t.Fatalf("%s round %d Start after graceful Stop = %v, want nil", name, round, err)
+							t.Fatalf("round %d Start after graceful Stop = %v, want nil", round, err)
 						}
 					case <-time.After(5 * time.Second):
-						t.Fatalf("%s round %d Start did not return after Stop", name, round)
+						t.Fatalf("round %d Start did not return after Stop", round)
+					}
+					if engine.IsRunning() {
+						t.Fatalf("round %d IsRunning() is true after Stop", round)
+					}
+					if err := startWithTimeout(t, engine); !errors.Is(err, httpx.ErrEngineClosed) {
+						t.Fatalf("round %d restart after Stop = %v, want ErrEngineClosed", round, err)
 					}
 				}
 			})
 		}
 	})
+}
+
+// startWithTimeout fails the test if Start blocks: a closed engine must return immediately.
+func startWithTimeout(t *testing.T, engine httpx.Engine) error {
+	t.Helper()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- engine.Start()
+	}()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return; a closed engine must fail immediately")
+		return nil
+	}
 }

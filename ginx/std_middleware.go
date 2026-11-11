@@ -13,7 +13,12 @@ import (
 // otel/chi/gzip ecosystem. Request mutations (including context values) and
 // response-writer wrapping are propagated to the downstream httpx chain.
 // If the middleware responds without calling the next handler, the chain is
-// short-circuited.
+// short-circuited. If it stops without writing anything, the response is left
+// to the layers above it, so an error one of them returns is still rendered.
+//
+// The middleware writes with net/http semantics: WriteHeader commits the
+// response, where gin's own writer only records the status for the first body
+// write.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(next httpx.Handler) httpx.Handler { return next }
@@ -25,24 +30,42 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 				return errors.New("AdaptStdMiddleware: gin context type error")
 			}
 			var nextErr error
-			ran := false
+			sw := http.ResponseWriter(stdResponseWriter{gc.Writer})
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				ran = true
 				gc.Request = r
-				if w != http.ResponseWriter(gc.Writer) {
+				if w != sw {
 					old := gc.Writer
 					gc.Writer = newStdWriterBridge(old, w)
 					defer func() { gc.Writer = old }()
 				}
 				nextErr = next(ctx)
 			})
-			middleware(inner).ServeHTTP(gc.Writer, gc.Request)
-			if !ran && !gc.IsAborted() {
-				gc.Abort()
-			}
+			middleware(inner).ServeHTTP(sw, gc.Request)
 			return nextErr
 		}
 	}
+}
+
+// stdResponseWriter is gin's writer as net/http code expects it: WriteHeader
+// with a final status commits the response at once, so a middleware or mounted
+// handler that answers with a status alone has answered, and Committed says
+// so. gin's writer would hold the status until the first body write, leaving
+// the response open to an error rendered by a layer above.
+type stdResponseWriter struct {
+	gin.ResponseWriter
+}
+
+func (w stdResponseWriter) WriteHeader(code int) {
+	w.ResponseWriter.WriteHeader(code)
+	// An informational status does not end the header phase in net/http.
+	if code >= http.StatusOK || code == http.StatusSwitchingProtocols {
+		w.WriteHeaderNow()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the connection's writer.
+func (w stdResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // stdWriterBridge exposes a (possibly wrapped) http.ResponseWriter through
