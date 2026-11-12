@@ -1,6 +1,7 @@
 package stdx
 
 import (
+	"encoding/json"
 	"strconv"
 	"unicode/utf8"
 
@@ -25,8 +26,14 @@ const hexDigits = "0123456789abcdef"
 
 // appendJSONString appends s as a JSON string the way encoding/json does with
 // HTML escaping on: '<', '>' and '&' as \u003c-style escapes, U+2028 and U+2029
-// escaped, and each invalid UTF-8 byte replaced by U+FFFD.
+// escaped. Strings that are not valid UTF-8 are marshaled by encoding/json.
 func appendJSONString(dst []byte, s string) []byte {
+	// encoding/json spells U+FFFD for invalid UTF-8 differently across Go
+	// releases; delegating keeps the bytes those of the running toolchain.
+	if !utf8.ValidString(s) {
+		b, _ := json.Marshal(s) // marshaling a string never fails
+		return append(dst, b...)
+	}
 	dst = append(dst, '"')
 	start := 0
 	for i := 0; i < len(s); {
@@ -57,17 +64,12 @@ func appendJSONString(dst []byte, s string) []byte {
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			dst = append(dst, s[start:i]...)
-			dst = utf8.AppendRune(dst, utf8.RuneError)
-		case r == '\u2028' || r == '\u2029':
-			dst = append(dst, s[start:i]...)
-			dst = append(dst, '\\', 'u', '2', '0', '2', hexDigits[r&0xF])
-		default:
+		if r != '\u2028' && r != '\u2029' {
 			i += size
 			continue
 		}
+		dst = append(dst, s[start:i]...)
+		dst = append(dst, '\\', 'u', '2', '0', '2', hexDigits[r&0xF])
 		i += size
 		start = i
 	}
