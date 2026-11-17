@@ -80,6 +80,9 @@ func (r *Router) Handle(method, path string, h httpx.Handler) {
 		panic(err)
 	}
 	pattern := joinPaths(r.basePath, path)
+	if err := httpx.ValidateWildcardPath(pattern); err != nil {
+		panic(err)
+	}
 	r.engine.root.add(strings.ToUpper(method), pattern, &route{
 		pattern: pattern,
 		// Composed once per route, never per request.

@@ -19,7 +19,7 @@ func oneShotClient(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: &http.Transport{DisableKeepAlives: true}}
 }
 
-func doNetworkRequest(t *testing.T, method, url string, body io.Reader) (*http.Response, string) {
+func doNetworkRequest(t *testing.T, method, url string, body io.Reader) responseSnapshot {
 	t.Helper()
 	reqCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -30,14 +30,14 @@ func doNetworkRequest(t *testing.T, method, url string, body io.Reader) (*http.R
 	resp, err := oneShotClient(0).Do(req)
 	if err != nil || resp == nil {
 		t.Fatalf("request failed: %v", err)
-		return nil, ""
+		return responseSnapshot{}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	return resp, string(b)
+	return responseSnapshot{Status: resp.StatusCode, Body: string(b), Headers: resp.Header}
 }
 
 // BodyReader must yield the request body a real server received. The
@@ -58,9 +58,9 @@ func TestBodyReaderOverNetworkConformance(t *testing.T) {
 			})
 			startServing(t, engine, addr)
 
-			resp, body := doNetworkRequest(t, http.MethodPost, "http://"+addr+"/echo", strings.NewReader("hello body"))
-			if resp.StatusCode != http.StatusOK || body != "hello body" {
-				t.Fatalf("status=%d body=%q, want 200 %q", resp.StatusCode, body, "hello body")
+			got := doNetworkRequest(t, http.MethodPost, "http://"+addr+"/echo", strings.NewReader("hello body"))
+			if got.Status != http.StatusOK || got.Body != "hello body" {
+				t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "hello body")
 			}
 		})
 	}
@@ -98,21 +98,21 @@ func TestStdMiddlewareHeadersReachStreamConformance(t *testing.T) {
 			})
 			startServing(t, engine, addr)
 
-			resp, body := doNetworkRequest(t, http.MethodGet, "http://"+addr+"/sse", nil)
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("status = %d", resp.StatusCode)
+			res := doNetworkRequest(t, http.MethodGet, "http://"+addr+"/sse", nil)
+			if res.Status != http.StatusOK {
+				t.Fatalf("status = %d", res.Status)
 			}
-			if got := resp.Header.Values("X-Std"); len(got) != 1 || got[0] != "staged" {
+			if got := res.Headers.Values("X-Std"); len(got) != 1 || got[0] != "staged" {
 				t.Errorf("X-Std = %q, want exactly [\"staged\"]", got)
 			}
-			if got := resp.Header.Values("X-Both"); len(got) != 1 || got[0] != "handler" {
+			if got := res.Headers.Values("X-Both"); len(got) != 1 || got[0] != "handler" {
 				t.Errorf("X-Both = %q, want the handler's value only", got)
 			}
-			if got := resp.Header.Values("Content-Type"); len(got) != 1 || got[0] != "text/event-stream" {
+			if got := res.Headers.Values("Content-Type"); len(got) != 1 || got[0] != "text/event-stream" {
 				t.Errorf("Content-Type = %q, want the stream's [\"text/event-stream\"]", got)
 			}
-			if body != "data: one\n\n" {
-				t.Errorf("body = %q, want %q", body, "data: one\n\n")
+			if res.Body != "data: one\n\n" {
+				t.Errorf("body = %q, want %q", res.Body, "data: one\n\n")
 			}
 		})
 	}

@@ -61,9 +61,16 @@ func (c *commitRecorder) WriteHeader(code int) {
 	c.ResponseWriter.WriteHeader(code)
 }
 
+func (c *commitRecorder) pendingStatus() int {
+	if c.resp.Status > 0 {
+		return c.resp.Status
+	}
+	return http.StatusOK
+}
+
 func (c *commitRecorder) Write(p []byte) (int, error) {
 	if !c.resp.Committed {
-		c.WriteHeader(http.StatusOK)
+		c.WriteHeader(c.pendingStatus())
 	}
 	return c.ResponseWriter.Write(p)
 }
@@ -74,7 +81,7 @@ func (c *commitRecorder) Unwrap() http.ResponseWriter {
 
 func (c *commitRecorder) FlushError() error {
 	if !c.resp.Committed {
-		c.WriteHeader(http.StatusOK)
+		c.WriteHeader(c.pendingStatus())
 	}
 	return http.NewResponseController(c.ResponseWriter).Flush()
 }
@@ -84,5 +91,9 @@ func (c *commitRecorder) Flush() {
 }
 
 func (c *commitRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return http.NewResponseController(c.ResponseWriter).Hijack()
+	conn, rw, err := http.NewResponseController(c.ResponseWriter).Hijack()
+	if err == nil {
+		c.resp.Committed = true
+	}
+	return conn, rw, err
 }

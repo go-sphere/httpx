@@ -27,13 +27,14 @@ jobs:
         run: make work
 
       # Dependency hygiene per module (GOWORK=off, so each go.mod is checked as
-      # a consumer sees it), then compile and test every module through the
-      # workspace. `make check` adds format/vet/golangci-lint/nilaway and the
-      # race detector for local use; CI deliberately stops at build + test, so
-      # it needs no linter toolchain.
+      # a consumer sees it), then compile and test (including -race) every
+      # module through the workspace. `make check` adds format/vet/golangci-lint/nilaway
+      # for local use; CI needs no external linter toolchain.
       - name: Check dependencies
         run: make tidy-check
       - name: Build
         run: make build
       - name: Test
         run: make test
+      - name: Race Test
+        run: make test-race

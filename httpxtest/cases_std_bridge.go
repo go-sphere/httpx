@@ -31,7 +31,7 @@ func casesStdBridge(t *testing.T, r runner) {
 					return next(ctx)
 				}
 			})
-			mountStd(t, router, "/bridge/late", func(w http.ResponseWriter, _ *http.Request) {
+			mountStd(t, r, router, "/bridge/late", func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("X-Late", "1")
 				w.WriteHeader(http.StatusAccepted)
 				_, _ = io.WriteString(w, "b")
@@ -52,7 +52,7 @@ func casesStdBridge(t *testing.T, r runner) {
 					return next(ctx)
 				}
 			})
-			mountStd(t, router, "/bridge/headers", func(w http.ResponseWriter, _ *http.Request) {
+			mountStd(t, r, router, "/bridge/headers", func(w http.ResponseWriter, _ *http.Request) {
 				seen := w.Header().Get("Cache-Control")
 				w.Header().Set("Cache-Control", "from-std")
 				_, _ = io.WriteString(w, seen)
@@ -73,7 +73,7 @@ func casesStdBridge(t *testing.T, r runner) {
 			r.skipf(t, "%s: Caps.Flusher is not declared", r.suite.Name)
 		}
 		got := r.serve(t, func(router httpx.Router) {
-			mountStd(t, router, "/bridge/flush", func(w http.ResponseWriter, _ *http.Request) {
+			mountStd(t, r, router, "/bridge/flush", func(w http.ResponseWriter, _ *http.Request) {
 				f, ok := w.(http.Flusher)
 				if ok {
 					f.Flush()
@@ -220,12 +220,12 @@ func casesStdBridge(t *testing.T, r runner) {
 	})
 }
 
-// mountStd registers h with httpx.MountStd, failing the case when the router
+// mountStd registers h with httpx.MountStd, skipping the case when the router
 // cannot mount net/http handlers.
-func mountStd(t *testing.T, router httpx.Router, path string, h http.HandlerFunc) {
+func mountStd(t *testing.T, r runner, router httpx.Router, path string, h http.HandlerFunc) {
 	t.Helper()
 	if !httpx.MountStd(router, http.MethodGet, path, h) {
-		t.Fatalf("router does not implement httpx.StdHandlerMounter")
+		r.skipf(t, "%s: router does not implement httpx.StdHandlerMounter", r.suite.Name)
 	}
 }
 

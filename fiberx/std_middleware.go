@@ -56,7 +56,7 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 			// adapters do not have.
 			req = req.WithContext(fc.Context())
 			var nextErr error
-			base := &fiberResponseWriter{fc: fc}
+			base := &fiberResponseWriter{fc: fc, late: responseDecided(fc)}
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// net/http shares one header map down the chain: what the
 				// middleware staged is what the handlers below see, and what
@@ -77,7 +77,7 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 				replayFiberBody(fc, w, base)
 			})
 			middleware(inner).ServeHTTP(base, req)
-			if !base.wroteHeader {
+			if !base.wroteHeader && !base.late {
 				// Committing here would send an empty 200 that nothing wrote,
 				// and an error from below or above would never be rendered.
 				base.applyHeader()
@@ -149,6 +149,7 @@ type fiberResponseWriter struct {
 	// it holds that header no longer does was deleted.
 	synced      http.Header
 	wroteHeader bool
+	late        bool
 	// streaming is set once the downstream response is a body stream: any
 	// write would replace that stream, so later writes are discarded.
 	streaming bool
@@ -201,7 +202,7 @@ func isBodyHeader(key string) bool {
 // left alone. With withBody false, Content-Length and Content-Encoding stay
 // staged.
 func (w *fiberResponseWriter) sync(withBody bool) {
-	if w.header == nil {
+	if w.header == nil || w.late {
 		return
 	}
 	resp := w.fc.Response()
@@ -243,7 +244,10 @@ func (w *fiberResponseWriter) sync(withBody bool) {
 }
 
 func (w *fiberResponseWriter) WriteHeader(code int) {
-	if w.wroteHeader {
+	if w.wroteHeader || w.late {
+		return
+	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
 		return
 	}
 	w.wroteHeader = true
@@ -260,8 +264,15 @@ func (w *fiberResponseWriter) Write(p []byte) (int, error) {
 	if w.streaming {
 		return len(p), nil
 	}
-	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
+	if !w.wroteHeader && !w.late {
+		status := w.fc.Response().StatusCode()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+	}
+	if bodyless(w.fc.Response().StatusCode()) {
+		return len(p), nil
 	}
 	w.fc.Response().AppendBody(p)
 	return len(p), nil

@@ -147,21 +147,21 @@ func (c *Context) JSON(code int, v any) error {
 	defer c.mu.Unlock()
 	c.note("JSON")
 
-	write := ResponseWrite{Kind: KindJSON, Code: code, ContentType: contentTypeJSON, Value: v}
-
-	if !c.res.committed && !bodyAllowed(code) {
-		c.res.Header().Set("Content-Type", contentTypeJSON)
-		c.res.WriteHeader(code)
-		c.writes = append(c.writes, write)
-		return nil
-	}
 	encoded, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	c.res.Header().Set("Content-Type", contentTypeJSON)
+	setDefaultContentType(c.res.Header(), contentTypeJSON)
+	ct := contentTypeJSON
+	if preset := c.res.Header().Get("Content-Type"); preset != "" {
+		ct = preset
+	}
+	write := ResponseWrite{Kind: KindJSON, Code: code, ContentType: ct, Value: v}
+	bodyless := c.commitsBodyless(code)
 	c.res.WriteHeader(code)
-	write.Body = c.appendBody(encoded)
+	if !bodyless {
+		write.Body = c.appendBody(encoded)
+	}
 	c.writes = append(c.writes, write)
 	return nil
 }
@@ -172,10 +172,13 @@ func (c *Context) Text(code int, s string) error {
 	defer c.mu.Unlock()
 	c.note("Text")
 
+	bodyless := c.commitsBodyless(code)
 	write := ResponseWrite{Kind: KindText, Code: code, ContentType: contentTypeText}
 	c.res.Header().Set("Content-Type", contentTypeText)
 	c.res.WriteHeader(code)
-	write.Body = c.appendBody([]byte(s))
+	if !bodyless {
+		write.Body = c.appendBody([]byte(s))
+	}
 	c.writes = append(c.writes, write)
 	return nil
 }
@@ -197,13 +200,16 @@ func (c *Context) Bytes(code int, b []byte, contentType string) error {
 	defer c.mu.Unlock()
 	c.note("Bytes")
 
+	bodyless := c.commitsBodyless(code)
 	if contentType == "" {
 		contentType = http.DetectContentType(b)
 	}
 	write := ResponseWrite{Kind: KindBytes, Code: code, ContentType: contentType}
 	c.res.Header().Set("Content-Type", contentType)
 	c.res.WriteHeader(code)
-	write.Body = c.appendBody(b)
+	if !bodyless {
+		write.Body = c.appendBody(b)
+	}
 	c.writes = append(c.writes, write)
 	return nil
 }
@@ -216,10 +222,11 @@ func (c *Context) Bytes(code int, b []byte, contentType string) error {
 func (c *Context) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
 	c.mu.Lock()
 	c.note("DataFromReader")
+	bodyless := c.commitsBodyless(code)
 	if contentType != "" {
 		c.res.Header().Set("Content-Type", contentType)
 	}
-	if size >= 0 {
+	if !bodyless && size >= 0 {
 		c.res.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	c.res.WriteHeader(code)
@@ -235,7 +242,7 @@ func (c *Context) DataFromReader(code int, contentType string, r io.Reader, size
 	// response is already committed, so nothing the reader does can change
 	// the status out from under it.
 	var err error
-	if r != nil {
+	if !bodyless && r != nil {
 		_, err = io.Copy(lockedWriter{c: c}, r)
 	}
 
@@ -248,6 +255,19 @@ func (c *Context) DataFromReader(code int, contentType string, r io.Reader, size
 		Body:        c.bodySince(start),
 	})
 	return err
+}
+
+func (c *Context) commitsBodyless(code int) bool {
+	if c.res.committed {
+		return !bodyAllowed(c.res.status)
+	}
+	return !bodyAllowed(code)
+}
+
+func setDefaultContentType(h http.Header, ct string) {
+	if _, ok := h["Content-Type"]; !ok {
+		h.Set("Content-Type", ct)
+	}
 }
 
 // File serves the named file through httpx.ServeFile, so Range

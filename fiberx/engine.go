@@ -247,6 +247,7 @@ type Engine struct {
 	maxBodySize int64
 	// settings is read from the app's config once; see registerAppSettings.
 	settings *appSettings
+	started  atomic.Bool
 	running  atomic.Bool
 	// mu orders Start's closed check against Stop: a Stop either finds the
 	// Start it has to end in serving, or makes that Start refuse to serve.
@@ -269,6 +270,8 @@ type appSettings struct {
 	defaultContentType bool
 	// jsonDecoder is the app's configured JSON decoder, used by BindJSON.
 	jsonDecoder func(data []byte, v any) error
+	// jsonEncoder is the app's configured JSON encoder, used by JSON.
+	jsonEncoder func(v any) ([]byte, error)
 }
 
 func newAppSettings(app *fiber.App) *appSettings {
@@ -277,6 +280,7 @@ func newAppSettings(app *fiber.App) *appSettings {
 		unescapePath:       conf.UnescapePath,
 		defaultContentType: !conf.DisableDefaultContentType,
 		jsonDecoder:        conf.JSONDecoder,
+		jsonEncoder:        conf.JSONEncoder,
 	}
 }
 
@@ -456,12 +460,14 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+var errAlreadyStarted = errors.New("fiberx: engine already started")
+
 // Start serves with the configured listen function until [Engine.Stop]. It
 // returns nil once Stop ended it, httpx.ErrEngineClosed when Stop was already
-// called, and otherwise whatever fiber's Listen or Listener returns, such as
-// a bind failure. IsRunning becomes true just before fiber binds, so it may
-// briefly report true before the listener exists, and false once Start has
-// returned.
+// called, an error when Start was already called, and otherwise whatever
+// fiber's Listen or Listener returns, such as a bind failure. IsRunning becomes
+// true just before fiber binds, so it may briefly report true before the
+// listener exists, and false once Start has returned.
 func (e *Engine) Start() error {
 	e.mu.Lock()
 	if e.closed.Load() {
@@ -469,6 +475,10 @@ func (e *Engine) Start() error {
 		// fiber would happily restart after Shutdown; refuse for the uniform
 		// single-use Engine contract.
 		return httpx.ErrEngineClosed
+	}
+	if !e.started.CompareAndSwap(false, true) {
+		e.mu.Unlock()
+		return errAlreadyStarted
 	}
 	serving := make(chan struct{})
 	e.serving = serving

@@ -116,6 +116,7 @@ func middlewareLayers(scenario string) int {
 }
 
 func buildNativeGin(tb testing.TB, scenario string, req *http.Request) (func(), bool) {
+	tb.Helper()
 	gin.SetMode(gin.ReleaseMode)
 	ge := gin.New()
 	for range middlewareLayers(scenario) {
@@ -198,6 +199,7 @@ func buildNativeGin(tb testing.TB, scenario string, req *http.Request) (func(), 
 }
 
 func buildNativeEcho(tb testing.TB, scenario string, req *http.Request) (func(), bool) {
+	tb.Helper()
 	e := echo.New()
 	for range middlewareLayers(scenario) {
 		e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -263,6 +265,7 @@ func buildNativeEcho(tb testing.TB, scenario string, req *http.Request) (func(),
 }
 
 func buildNativeFiber(tb testing.TB, scenario string, req *http.Request) (func(), bool) {
+	tb.Helper()
 	f := fiber.New()
 	for range middlewareLayers(scenario) {
 		f.Use(func(c fiber.Ctx) error { return c.Next() })
@@ -329,6 +332,7 @@ func buildNativeFiber(tb testing.TB, scenario string, req *http.Request) (func()
 }
 
 func buildNativeHertz(tb testing.TB, scenario string, req *http.Request) (func(), bool) {
+	tb.Helper()
 	h := newBenchHertz()
 	for range middlewareLayers(scenario) {
 		h.Use(func(ctx context.Context, rc *app.RequestContext) { rc.Next(ctx) })
@@ -408,15 +412,16 @@ func buildNativeHertz(tb testing.TB, scenario string, req *http.Request) (func()
 // middleware shape net/http has, and hand-written decoding — no form decoder,
 // since reaching for go-playground/form is already a step towards an adapter.
 func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), bool) {
+	tb.Helper()
 	mux := http.NewServeMux()
 	switch scenario {
 	case "JSON1K":
 		mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, _ *http.Request) {
-			writeNativeJSON(w, http.StatusOK, nativePayload1K)
+			writeNativeJSON(w, nativePayload1K)
 		})
 	case "JSON100K":
 		mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, _ *http.Request) {
-			writeNativeJSON(w, http.StatusOK, nativePayload100K)
+			writeNativeJSON(w, nativePayload100K)
 		})
 	case "State":
 		// net/http has no per-request state store; the request context is the
@@ -424,7 +429,7 @@ func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), 
 		// It is not the same thing httpx.Set does — compare the rows knowing that.
 		mux.HandleFunc("GET /scenario", func(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(context.WithValue(r.Context(), nativeStateKey{}, "value"))
-			writeNativeJSON(w, http.StatusOK, map[string]any{"value": r.Context().Value(nativeStateKey{})})
+			writeNativeJSON(w, map[string]any{"value": r.Context().Value(nativeStateKey{})})
 		})
 	case "BindJSON":
 		mux.HandleFunc("POST /scenario", func(w http.ResponseWriter, r *http.Request) {
@@ -435,7 +440,7 @@ func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), 
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			writeNativeJSON(w, http.StatusOK, map[string]any{"name": v.Name})
+			writeNativeJSON(w, map[string]any{"name": v.Name})
 		})
 	case "BindFull":
 		mux.HandleFunc("POST /scenario/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -449,7 +454,7 @@ func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), 
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			writeNativeJSON(w, http.StatusOK, map[string]any{
+			writeNativeJSON(w, map[string]any{
 				"name": b.Name, "age": b.Age, "active": active,
 				"id": r.PathValue("id"), "token": r.Header.Get("X-Token"),
 			})
@@ -461,7 +466,7 @@ func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), 
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			writeNativeJSON(w, http.StatusOK, map[string]any{"length": len(raw)})
+			writeNativeJSON(w, map[string]any{"length": len(raw)})
 		})
 	case "MultipartUpload":
 		mux.HandleFunc("POST /scenario", func(w http.ResponseWriter, r *http.Request) {
@@ -471,7 +476,7 @@ func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), 
 				return
 			}
 			defer func() { _ = file.Close() }()
-			writeNativeJSON(w, http.StatusOK, map[string]any{
+			writeNativeJSON(w, map[string]any{
 				"filename": header.Filename, "size": header.Size, "title": r.FormValue("title"),
 			})
 		})
@@ -492,13 +497,13 @@ func buildNativeStd(tb testing.TB, scenario string, req *http.Request) (func(), 
 
 type nativeStateKey struct{}
 
-func writeNativeJSON(w http.ResponseWriter, status int, v any) {
+func writeNativeJSON(w http.ResponseWriter, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }

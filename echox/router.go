@@ -167,6 +167,10 @@ func (r *Router) normalizeWildcardPath(path string) (string, wildcardRoute) {
 	if err := httpx.ValidateWildcardPath(path); err != nil {
 		panic(err)
 	}
+	joined := joinPaths(r.basePath, path)
+	if err := httpx.ValidateWildcardPath(joined); err != nil {
+		panic(err)
+	}
 	orig := httpx.WildcardParamName(path)
 	if orig == "" || orig == "*" {
 		return path, wildcardRoute{}
@@ -174,7 +178,7 @@ func (r *Router) normalizeWildcardPath(path string) (string, wildcardRoute) {
 	fixed, _ := httpx.FixWildcardPathIfNeed(r, path)
 	return fixed, wildcardRoute{
 		param:   orig,
-		pattern: joinPaths(r.basePath, path),
+		pattern: joined,
 	}
 }
 

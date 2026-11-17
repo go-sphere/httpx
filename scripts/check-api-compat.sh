@@ -3,56 +3,93 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-APIDIFF_VERSION=${APIDIFF_VERSION:-v0.0.0-20260218203240-3dfff04db8fa}
-
-# The baseline is the latest released root tag unless API_BASELINE names one;
-# adapters are tagged together with the root, so it applies to every module.
-API_BASELINE=${API_BASELINE:-$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match 'v[0-9]*')}
+GO_BIN=${GO:-go}
+APIDIFF_VERSION=${APIDIFF_VERSION:-v0.0.0-20261113113407-e3970619a1a4}
 
 MODULES=(
-	".|github.com/go-sphere/httpx|$API_BASELINE"
-	"ginx|github.com/go-sphere/httpx/ginx|$API_BASELINE"
-	"fiberx|github.com/go-sphere/httpx/fiberx|$API_BASELINE"
-	"echox|github.com/go-sphere/httpx/echox|$API_BASELINE"
-	"hertzx|github.com/go-sphere/httpx/hertzx|$API_BASELINE"
-	"stdx|github.com/go-sphere/httpx/stdx|$API_BASELINE"
+	".|github.com/go-sphere/httpx"
+	"ginx|github.com/go-sphere/httpx/ginx"
+	"fiberx|github.com/go-sphere/httpx/fiberx"
+	"echox|github.com/go-sphere/httpx/echox"
+	"hertzx|github.com/go-sphere/httpx/hertzx"
+	"stdx|github.com/go-sphere/httpx/stdx"
 )
+
+resolve_baseline_version() {
+	local module_dir=$1
+	if [[ -n "${API_BASELINE:-}" ]]; then
+		printf '%s\n' "$API_BASELINE"
+		return
+	fi
+	local pattern='v[0-9]*'
+	if [[ "$module_dir" != "." ]]; then
+		pattern="$module_dir/v[0-9]*"
+	fi
+	local tag
+	tag=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match "$pattern")
+	if git -C "$ROOT_DIR" tag --points-at HEAD | grep -Fxq "$tag"; then
+		tag=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match "$pattern" HEAD^)
+	fi
+	if [[ "$module_dir" != "." ]]; then
+		tag=${tag#"$module_dir/"}
+	fi
+	printf '%s\n' "$tag"
+}
 
 work_dir=$(mktemp -d)
 trap 'chmod -R u+w "$work_dir" 2>/dev/null; rm -rf "$work_dir"' EXIT
 
+apidiff_bin="$work_dir/apidiff"
+GOBIN="$work_dir" GOWORK=off "$GO_BIN" install "golang.org/x/exp/cmd/apidiff@$APIDIFF_VERSION"
+
+new_work="$work_dir/go.work"
+(
+	cd "$work_dir"
+	GOWORK=off "$GO_BIN" work init \
+		"$ROOT_DIR" \
+		"$ROOT_DIR/ginx" \
+		"$ROOT_DIR/fiberx" \
+		"$ROOT_DIR/echox" \
+		"$ROOT_DIR/hertzx" \
+		"$ROOT_DIR/stdx"
+) >/dev/null
+
 for entry in "${MODULES[@]}"; do
-	IFS='|' read -r module_dir module_path baseline_version <<<"$entry"
+	IFS='|' read -r module_dir module_path <<<"$entry"
+	baseline_version=$(resolve_baseline_version "$module_dir")
 	temp_dir=$(mktemp -d "$work_dir/module.XXXXXX")
 	baseline_dir="$temp_dir/baseline"
 	old_api="$temp_dir/old.api"
 	new_api="$temp_dir/new.api"
+	changes_file="$temp_dir/changes.txt"
 	mkdir -p "$baseline_dir"
 
 	(
 		cd "$baseline_dir"
-		go mod init httpx-api-baseline >/dev/null
-		go get "$module_path@$baseline_version" >/dev/null
-		go mod download all
-		go run "golang.org/x/exp/cmd/apidiff@$APIDIFF_VERSION" \
-			-m -w "$old_api" "$module_path"
+		GOWORK=off "$GO_BIN" mod init httpx-api-baseline >/dev/null
+		GOWORK=off "$GO_BIN" get "$module_path@$baseline_version" >/dev/null
+		GOWORK=off "$apidiff_bin" -m -w "$old_api" "$module_path"
 	)
 
 	(
 		cd "$ROOT_DIR/$module_dir"
-		go run "golang.org/x/exp/cmd/apidiff@$APIDIFF_VERSION" \
-			-m -w "$new_api" "$module_path"
+		GOWORK="$new_work" "$apidiff_bin" -m -w "$new_api" "$module_path"
 	)
 
-	changes=$(
-		go run "golang.org/x/exp/cmd/apidiff@$APIDIFF_VERSION" \
-			-m -incompatible "$old_api" "$new_api"
-	)
-	if [[ -n "$changes" ]]; then
-		echo "Incompatible API changes in $module_path relative to $baseline_version:" >&2
-		printf '%s\n' "$changes" >&2
+	if [[ ! -s "$old_api" || ! -s "$new_api" ]]; then
+		echo "Failed to export API snapshot for $module_path" >&2
 		exit 1
 	fi
 
-	echo "API compatibility check passed for $module_path"
+	if ! GOWORK=off "$apidiff_bin" -m -incompatible "$old_api" "$new_api" >"$changes_file"; then
+		echo "apidiff failed comparing $module_path relative to $baseline_version" >&2
+		exit 1
+	fi
+	if [[ -s "$changes_file" ]]; then
+		echo "Incompatible API changes in $module_path relative to $baseline_version:" >&2
+		cat "$changes_file" >&2
+		exit 1
+	fi
+
+	echo "API compatibility check passed for $module_path ($baseline_version)"
 done

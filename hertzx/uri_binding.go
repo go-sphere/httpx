@@ -25,5 +25,5 @@ func (c *hertzContext) bindURIWithForm(dst any) error {
 	for _, p := range c.ctx.Params {
 		values.Set(p.Key, p.Value)
 	}
-	return uriDecoder.Decode(dst, values)
+	return decodeFormValues(uriDecoder, dst, values)
 }

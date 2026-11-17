@@ -284,13 +284,13 @@ func casesStaticMiddleware(t *testing.T, r runner) {
 
 	for _, tc := range []struct {
 		name     string
-		register func(httpx.Router, httpx.Middleware)
+		register func(*testing.T, httpx.Router, httpx.Middleware)
 		path     string
 		want     string
 	}{
 		{
 			name: "Static",
-			register: func(router httpx.Router, m httpx.Middleware) {
+			register: func(_ *testing.T, router httpx.Router, m httpx.Middleware) {
 				router.Use(m)
 				router.Static("/assets", dir)
 			},
@@ -299,7 +299,7 @@ func casesStaticMiddleware(t *testing.T, r runner) {
 		},
 		{
 			name: "StaticFS",
-			register: func(router httpx.Router, m httpx.Middleware) {
+			register: func(_ *testing.T, router httpx.Router, m httpx.Middleware) {
 				router.Use(m)
 				router.StaticFS("/files", os.DirFS(dir))
 			},
@@ -308,11 +308,13 @@ func casesStaticMiddleware(t *testing.T, r runner) {
 		},
 		{
 			name: "HandleStd",
-			register: func(router httpx.Router, m httpx.Middleware) {
+			register: func(t *testing.T, router httpx.Router, m httpx.Middleware) {
 				router.Use(m)
-				httpx.MountStd(router, http.MethodGet, "/mounted", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if !httpx.MountStd(router, http.MethodGet, "/mounted", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					_, _ = w.Write([]byte("from-std"))
-				}))
+				})) {
+					r.skipf(t, "%s: router does not implement httpx.StdHandlerMounter", r.suite.Name)
+				}
 			},
 			path: "/mounted",
 			want: "from-std",
@@ -321,7 +323,7 @@ func casesStaticMiddleware(t *testing.T, r runner) {
 		t.Run(tc.name, func(t *testing.T) {
 			var ran bool
 			got := r.serve(t, func(router httpx.Router) {
-				tc.register(router, func(next httpx.Handler) httpx.Handler {
+				tc.register(t, router, func(next httpx.Handler) httpx.Handler {
 					return func(ctx httpx.Context) error {
 						ran = true
 						ctx.SetHeader("X-Middleware", "1")

@@ -32,13 +32,13 @@ func TestStreamThroughStdMiddlewareIsIncrementalConformance(t *testing.T) {
 			if a.StdMiddleware == nil {
 				t.Skipf("%s: no StdMiddleware hook declared", a.Name)
 			}
-			resp := assertStreamIncremental(t, a, a.StdMiddleware(func(next http.Handler) http.Handler {
+			headers := assertStreamIncremental(t, a, a.StdMiddleware(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("X-Std", "staged")
 					next.ServeHTTP(w, r)
 				})
 			}))
-			if got := resp.Header.Get("X-Std"); got != "staged" {
+			if got := headers.Get("X-Std"); got != "staged" {
 				t.Errorf("X-Std = %q, want %q", got, "staged")
 			}
 		})
@@ -47,8 +47,8 @@ func TestStreamThroughStdMiddlewareIsIncrementalConformance(t *testing.T) {
 
 // assertStreamIncremental serves a two-event stream behind mw (when non-nil)
 // on a real listener and fails unless the first event is read before the
-// callback is allowed to finish. It returns the response for header checks.
-func assertStreamIncremental(t *testing.T, a adapter, mw httpx.Middleware) *http.Response {
+// callback is allowed to finish. It returns the response headers for checks.
+func assertStreamIncremental(t *testing.T, a adapter, mw httpx.Middleware) http.Header {
 	t.Helper()
 	engine, addr := a.serve(t, serveConfig{})
 	router := engine.Group("")
@@ -110,7 +110,7 @@ func assertStreamIncremental(t *testing.T, a adapter, mw httpx.Middleware) *http
 	if !strings.Contains(string(rest), "data: two") {
 		t.Fatalf("remainder = %q, want it to contain %q", rest, "data: two")
 	}
-	return resp
+	return resp.Header
 }
 
 // The first flush commits the status line and headers, so a client waiting for

@@ -49,7 +49,7 @@ make build         # compile all modules (CI)
 make test          # test all modules (CI)
 make tidy-check    # module hygiene, GOWORK=off (CI)
 make lint          # fmt check, vet, golangci-lint, nilaway
-make check         # tidy-check + lint + race tests (local gate)
+make check         # tidy-check + lint + test + race tests (local gate)
 make bench-report  # regenerate benchmarks/BENCHMARK.md
 make golden        # rewrite the goldens from every adapter, then verify
 (cd ginx && go test -run TestConformance -v .)   # one adapter's shared suite
@@ -141,8 +141,9 @@ cannot flush is a no-op, never an error; fiberx has no flusher), `AsStreamer`
 behind `AdaptStdMiddleware` the stream is passed through, not replayed),
 `AsResponseHeaderEditor` (append to and read response headers), and
 `RouterFeatureProvider`. `ServerSentEvents` (`sse.go`) builds SSE on
-`Streamer`. `File` serves regular files only: every adapter calls
-`httpx.CheckServeFile` first, so a directory or missing path is a 404 error.
+`Streamer`. `File` serves regular files only: `stdx`/`ginx`/`echox` call
+`httpx.ServeFile`, and `fiberx`/`hertzx` call `httpx.CheckServeFile` first, so
+a directory, FIFO, or missing path is a 404 error without blocking.
 
 ### Errors
 

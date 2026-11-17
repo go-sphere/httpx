@@ -86,7 +86,7 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 // parents. It panics on an invalid wildcard (httpx.ValidateWildcardPath) and
 // on any registration hertz itself rejects, such as a conflicting route.
 func (r *Router) Handle(method, path string, h httpx.Handler) {
-	mustValidWildcard(path)
+	r.mustValidWildcard(path)
 	r.group.Handle(strings.ToUpper(method), path, r.toHertzHandler(h))
 }
 
@@ -99,14 +99,18 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 // Any registers h for path with hertz's Any, so the method set beyond the
 // standard ones is hertz's.
 func (r *Router) Any(path string, h httpx.Handler) {
-	mustValidWildcard(path)
+	r.mustValidWildcard(path)
 	r.group.Any(path, r.toHertzHandler(h))
 }
 
 // mustValidWildcard fails registration loudly and uniformly across adapters
-// for wildcard shapes the shared contract does not support.
-func mustValidWildcard(path string) {
-	if err := httpx.ValidateWildcardPath(path); err != nil {
+// for wildcard shapes the shared contract does not support. Both relPath and
+// the joined group+route pattern are validated.
+func (r *Router) mustValidWildcard(relPath string) {
+	if err := httpx.ValidateWildcardPath(relPath); err != nil {
+		panic(err)
+	}
+	if err := httpx.ValidateWildcardPath(path.Join(r.group.BasePath(), relPath)); err != nil {
 		panic(err)
 	}
 }
@@ -405,8 +409,18 @@ func (w *stdResponseWriter) Header() http.Header {
 	return w.header
 }
 
+func (w *stdResponseWriter) pendingStatus() int {
+	if s := w.rc.Response.StatusCode(); s > 0 {
+		return s
+	}
+	return http.StatusOK
+}
+
 func (w *stdResponseWriter) WriteHeader(code int) {
 	if w.wroteHeader {
+		return
+	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
 		return
 	}
 	w.wroteHeader = true
@@ -456,7 +470,10 @@ func (w *stdResponseWriter) Write(b []byte) (int, error) {
 		return len(b), nil
 	}
 	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(w.pendingStatus())
+	}
+	if bodylessStatus(w.rc.Response.StatusCode()) {
+		return len(b), nil
 	}
 	w.rc.Response.AppendBody(b)
 	return len(b), nil
@@ -466,7 +483,7 @@ func (w *stdResponseWriter) Write(b []byte) (int, error) {
 // the adapter's Flush does, a no-op without a live connection.
 func (w *stdResponseWriter) Flush() {
 	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(w.pendingStatus())
 	}
 	// The stream this flush starts goes through w, so w keeps writing.
 	streaming := w.streaming

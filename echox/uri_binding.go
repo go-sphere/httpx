@@ -2,6 +2,7 @@ package echox
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 
@@ -29,7 +30,7 @@ func bindForm(dst any, ctx echo.Context) error {
 	if err := req.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		return err
 	}
-	return formDecoder.Decode(dst, req.PostForm)
+	return decodeFormValues(formDecoder, dst, req.PostForm)
 }
 
 // bindURIWithForm decodes the matched route's parameters into dst. It is a
@@ -44,22 +45,45 @@ func (c *echoContext) bindURIWithForm(dst any) error {
 	if len(names) == 0 {
 		return nil
 	}
-	params := c.ctx.ParamValues()
-	decode := c.decodesParams()
-	wildcard := c.wildcardParamName()
 	values := make(url.Values, len(names))
-	for i, key := range names {
-		value := ""
-		if i < len(params) {
-			value = params[i]
-			if decode {
-				value = decodeParamValue(value)
+	c.visitParams(func(key, value string) {
+		values.Set(key, value)
+	})
+	return decodeFormValues(uriDecoder, dst, values)
+}
+
+func validateFormKeys(values url.Values) error {
+	for k := range values {
+		insideBracket := false
+		for i := 0; i < len(k); i++ {
+			switch k[i] {
+			case '[':
+				if insideBracket {
+					return fmt.Errorf("echox: invalid form key %q: unexpected '['", k)
+				}
+				insideBracket = true
+			case ']':
+				if !insideBracket {
+					return fmt.Errorf("echox: invalid form key %q: missing '['", k)
+				}
+				insideBracket = false
 			}
 		}
-		if key == "*" && wildcard != "" {
-			key = wildcard
+		if insideBracket {
+			return fmt.Errorf("echox: invalid form key %q: missing ']'", k)
 		}
-		values.Set(key, value)
 	}
-	return uriDecoder.Decode(dst, values)
+	return nil
+}
+
+func decodeFormValues(d *form.Decoder, dst any, values url.Values) (err error) {
+	if err := validateFormKeys(values); err != nil {
+		return err
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("echox: form decode panic: %v", r)
+		}
+	}()
+	return d.Decode(dst, values)
 }

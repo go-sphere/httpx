@@ -90,6 +90,7 @@ func BenchmarkContextLifecycle(b *testing.B) {
 	for b.Loop() {
 		ctx, _ := engine.pool.Get().(*stdContext)
 		ctx.reset(w, req)
+		ctx.recycle()
 		engine.pool.Put(ctx)
 	}
 }

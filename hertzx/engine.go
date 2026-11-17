@@ -31,6 +31,7 @@ type ErrorHandler func(ctx context.Context, rc *app.RequestContext, err error)
 type Config struct {
 	engine            *server.Hertz
 	addr              string
+	setAddr           bool
 	errHandler        ErrorHandler
 	defaultMiddleware bool
 	clientIP          app.ClientIP
@@ -51,7 +52,7 @@ func NewConfig(opts ...Option) *Config {
 		opt(&conf)
 	}
 	if conf.engine == nil {
-		if conf.addr != "" {
+		if conf.setAddr {
 			conf.engine = server.New(server.WithHostPorts(conf.addr))
 		} else {
 			conf.engine = server.New()
@@ -88,14 +89,18 @@ func WithEngine(engine *server.Hertz) Option {
 func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		conf.addr = addr
+		conf.setAddr = true
 	}
 }
 
 // WithNativeErrorHandler installs hertz's own error handler shape. Use it when
 // the handler needs the *app.RequestContext directly; WithErrorHandler is the
-// portable option that every adapter accepts.
+// portable option that every adapter accepts. A nil errHandler is ignored.
 func WithNativeErrorHandler(errHandler ErrorHandler) Option {
 	return func(conf *Config) {
+		if errHandler == nil {
+			return
+		}
 		conf.errHandler = errHandler
 	}
 }
@@ -272,9 +277,20 @@ func staticLeaf(err error) httpx.Handler {
 // that inspects hertz's errors report a failure for every unmatched path.
 func (e *Engine) fallbackHandler(fb *httpx.MiddlewareFallback) app.HandlerFunc {
 	return func(ctx context.Context, rc *app.RequestContext) {
+		// Hertz leaves partial params matched during NoMethod routing and sets
+		// 404/405 beforehand; reset both so unmatched chains see a clean slate.
+		rc.Params = rc.Params[:0]
+		fallbackStatus := rc.Response.StatusCode()
+		rc.SetStatusCode(http.StatusOK)
 		hc := newHertzContext(ctx, rc)
 		err := fb.Handler()(hc)
-		if err == nil || hertzResponseCommitted(rc) {
+		if hertzResponseCommitted(rc) {
+			return
+		}
+		if err == nil {
+			if rc.Response.StatusCode() == http.StatusOK {
+				rc.SetStatusCode(fallbackStatus)
+			}
 			return
 		}
 		e.errHandler(hc.Context(), rc, err)
@@ -451,6 +467,9 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	}
 	hctx.Request.Header.SetMethod(req.Method)
 	hctx.Request.SetRequestURI(urlStr)
+	if req.Host != "" {
+		hctx.Request.Header.SetHost(req.Host)
+	}
 	if req.Body != nil {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {

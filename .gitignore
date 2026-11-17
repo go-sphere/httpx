@@ -181,6 +181,8 @@ benchmarks/results/
 *.tmp
 *.swp
 *~
+__pycache__/
+*.pyc
 /code_review
 .ocr-result.json
 

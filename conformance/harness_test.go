@@ -64,6 +64,7 @@ func adapters() []adapter {
 // a reserved one.
 var servers = map[string]func(testing.TB, serveConfig) (httpx.Engine, string){
 	"ginx": func(tb testing.TB, cfg serveConfig) (httpx.Engine, string) {
+		tb.Helper()
 		gin.SetMode(gin.ReleaseMode)
 		addr := reserveAddr(tb)
 		opts := []ginx.Option{ginx.WithAddr(addr), ginx.WithMaxBodySize(cfg.maxBodySize)}
@@ -73,6 +74,7 @@ var servers = map[string]func(testing.TB, serveConfig) (httpx.Engine, string){
 		return ginx.New(opts...), addr
 	},
 	"fiberx": func(tb testing.TB, cfg serveConfig) (httpx.Engine, string) {
+		tb.Helper()
 		ln := listenLoopback(tb)
 		opts := []fiberx.Option{
 			fiberx.WithListener(ln, fiber.ListenConfig{DisableStartupMessage: true}),
@@ -84,6 +86,7 @@ var servers = map[string]func(testing.TB, serveConfig) (httpx.Engine, string){
 		return fiberx.New(opts...), ln.Addr().String()
 	},
 	"echox": func(tb testing.TB, cfg serveConfig) (httpx.Engine, string) {
+		tb.Helper()
 		addr := reserveAddr(tb)
 		opts := []echox.Option{echox.WithAddr(addr), echox.WithMaxBodySize(cfg.maxBodySize)}
 		if cfg.trustProxies {
@@ -92,6 +95,7 @@ var servers = map[string]func(testing.TB, serveConfig) (httpx.Engine, string){
 		return echox.New(opts...), addr
 	},
 	"hertzx": func(tb testing.TB, cfg serveConfig) (httpx.Engine, string) {
+		tb.Helper()
 		hlog.SetSilentMode(true)
 		hlog.SetOutput(io.Discard)
 		ln := listenLoopback(tb)
@@ -107,6 +111,7 @@ var servers = map[string]func(testing.TB, serveConfig) (httpx.Engine, string){
 		return hertzx.New(opts...), ln.Addr().String()
 	},
 	"stdx": func(tb testing.TB, cfg serveConfig) (httpx.Engine, string) {
+		tb.Helper()
 		addr := reserveAddr(tb)
 		opts := []stdx.Option{stdx.WithAddr(addr), stdx.WithMaxBodySize(cfg.maxBodySize)}
 		if cfg.trustProxies {

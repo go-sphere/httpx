@@ -73,6 +73,13 @@ func toAnonymousWildcardPath(path string) string {
 	if path == "" {
 		return path
 	}
+	star := strings.IndexByte(path, '*')
+	if star < 0 {
+		return path
+	}
+	if strings.IndexByte(path[star+1:], '/') < 0 {
+		return path[:star+1]
+	}
 
 	var b strings.Builder
 	b.Grow(len(path))

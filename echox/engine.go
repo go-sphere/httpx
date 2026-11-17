@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-sphere/httpx"
@@ -225,6 +226,8 @@ type Engine struct {
 	// shares it, and no other engine can see it. See wildcardTable.
 	wildcards   *wildcardTable
 	maxBodySize int64
+	lifecycleMu sync.Mutex
+	started     atomic.Bool
 	running     atomic.Bool
 	closed      atomic.Bool
 }
@@ -408,24 +411,36 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+var errAlreadyStarted = errors.New("echox: engine already started")
+
 // Start binds the server's address (":http" when empty), then serves until
 // [Engine.Stop]. IsRunning becomes true only after the listener is bound. It
 // returns nil after Stop, httpx.ErrEngineClosed when Stop was already called,
-// and the listen or serve error otherwise.
+// an error when Start was already called, and the listen or serve error
+// otherwise.
 func (e *Engine) Start() error {
+	e.lifecycleMu.Lock()
 	if e.closed.Load() {
+		e.lifecycleMu.Unlock()
 		return httpx.ErrEngineClosed
+	}
+	if !e.started.CompareAndSwap(false, true) {
+		e.lifecycleMu.Unlock()
+		return errAlreadyStarted
 	}
 	addr := e.server.Addr
 	if addr == "" {
 		addr = ":http"
 	}
-	// Bind first so IsRunning only reports true once the listener exists.
+	// Bind under lifecycleMu so a concurrent Stop sets closed/inShutdown either
+	// strictly before Start checks closed or after ln exists for Serve.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		e.lifecycleMu.Unlock()
 		return err
 	}
 	e.running.Store(true)
+	e.lifecycleMu.Unlock()
 	defer e.running.Store(false)
 	if err := e.server.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -439,7 +454,9 @@ func (e *Engine) Start() error {
 // returned. A nil ctx waits indefinitely. After Stop, Start returns
 // httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
+	e.lifecycleMu.Lock()
 	e.closed.Store(true)
+	e.lifecycleMu.Unlock()
 	// httpx.Close force-closes when the graceful drain fails, so the server is
 	// down whatever it returns — the running flag has to fall with it. Storing
 	// it only on a nil error left IsRunning reporting true for the rest of the

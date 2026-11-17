@@ -46,7 +46,7 @@ setup code is portable across all five:
 | `WithNativeErrorHandler(h)` | adapter's own `ErrorHandler` | `ginx` and `hertzx` only — the two frameworks whose error-handler shape the adapter installs directly. |
 | `WithTrustedProxies(...)` | `...string` | Uniform `ClientIP` policy; an empty list ignores forwarding headers. |
 | `WithMaxBodySize(n)` | `int64` | Request body limit for routes registered through the adapter; over it is a 413 through the error handler. `n <= 0` (default) adds none, though `fiberx`/`hertzx` keep their framework's own 4 MiB limit, raised to `n` when `n` is larger. |
-| `WithEngine(e)` | native engine | Bring your own `*gin.Engine`, `*echo.Echo`, `*fiber.App`, `*server.Hertz`. |
+| `WithEngine(e)` | native engine | Bring your own `*gin.Engine`, `*echo.Echo`, `*fiber.App`, `*server.Hertz` (`stdx` takes `WithServer(*http.Server)`). |
 
 Two related names are *not* portable, on purpose:
 
@@ -264,8 +264,11 @@ middleware to, and net/http has no middleware type but the one
 ### Plain net/http middleware
 
 `AdaptStdMiddleware(func(http.Handler) http.Handler) httpx.Middleware` is on all
-five adapters and works the same way on each: request mutation (including
-context values), response-writer wrapping and short-circuiting all propagate.
+five adapters: context values (`ctx.Context()`), response-writer wrapping and
+short-circuiting all propagate (on `stdx`, `ginx` and `echox`, arbitrary
+`*http.Request` header/field mutations propagate as well, whereas `fiberx` and
+`hertzx` forward `context.Context` mutations while buffering non-streamed
+responses for replay).
 `func(http.Handler) http.Handler` is framework-neutral, so unlike a native
 middleware it maps directly onto the composed form.
 

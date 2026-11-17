@@ -98,7 +98,7 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 // parents. It panics on an invalid wildcard (httpx.ValidateWildcardPath) and
 // on any registration gin itself rejects, such as a conflicting route.
 func (r *Router) Handle(method, path string, h httpx.Handler) {
-	mustValidWildcard(path)
+	r.mustValidWildcard(path)
 	r.group.Handle(strings.ToUpper(method), path, r.toGinHandler(h))
 }
 
@@ -109,9 +109,13 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 }
 
 // mustValidWildcard fails registration loudly and uniformly across adapters
-// for wildcard shapes the shared contract does not support.
-func mustValidWildcard(path string) {
-	if err := httpx.ValidateWildcardPath(path); err != nil {
+// for wildcard shapes the shared contract does not support. Both path and the
+// joined group+route pattern are validated.
+func (r *Router) mustValidWildcard(relPath string) {
+	if err := httpx.ValidateWildcardPath(relPath); err != nil {
+		panic(err)
+	}
+	if err := httpx.ValidateWildcardPath(path.Join(r.group.BasePath(), relPath)); err != nil {
 		panic(err)
 	}
 }
@@ -119,7 +123,7 @@ func mustValidWildcard(path string) {
 // Any registers h for path with gin's Any, which covers the nine standard
 // HTTP methods.
 func (r *Router) Any(path string, h httpx.Handler) {
-	mustValidWildcard(path)
+	r.mustValidWildcard(path)
 	r.group.Any(path, r.toGinHandler(h))
 }
 

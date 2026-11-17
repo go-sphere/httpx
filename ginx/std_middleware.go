@@ -82,11 +82,25 @@ type stdWriterBridge struct {
 }
 
 func newStdWriterBridge(orig gin.ResponseWriter, target http.ResponseWriter) *stdWriterBridge {
+	status := orig.Status()
+	if status == 0 {
+		status = http.StatusOK
+	}
+	size := orig.Size()
+	if size < 0 {
+		size = 0
+	}
 	return &stdWriterBridge{
 		ResponseWriter: orig,
 		target:         target,
-		status:         http.StatusOK,
+		status:         status,
+		size:           size,
+		wroteHeader:    orig.Written(),
 	}
+}
+
+func (b *stdWriterBridge) Unwrap() http.ResponseWriter {
+	return b.target
 }
 
 func (b *stdWriterBridge) Header() http.Header {
@@ -94,13 +108,18 @@ func (b *stdWriterBridge) Header() http.Header {
 }
 
 func (b *stdWriterBridge) WriteHeader(code int) {
-	if code > 0 && !b.wroteHeader {
-		b.status = code
-		// Record on the original gin writer too (it defers the actual write)
-		// so gin's finalization flushes the right status when the wrapped
-		// writer never writes a body.
-		b.ResponseWriter.WriteHeader(code)
+	if b.wroteHeader || code <= 0 {
+		return
 	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		b.target.WriteHeader(code)
+		return
+	}
+	b.status = code
+	// Record on the original gin writer too (it defers the actual write)
+	// so gin's finalization flushes the right status when the wrapped
+	// writer never writes a body.
+	b.ResponseWriter.WriteHeader(code)
 }
 
 func (b *stdWriterBridge) WriteHeaderNow() {
@@ -135,8 +154,31 @@ func (b *stdWriterBridge) Written() bool {
 }
 
 func (b *stdWriterBridge) Flush() {
-	if f, ok := b.target.(http.Flusher); ok {
-		b.WriteHeaderNow()
-		f.Flush()
+	_ = b.flush()
+}
+
+func (b *stdWriterBridge) flush() error {
+	b.WriteHeaderNow()
+	return flushHTTPWriter(b.target)
+}
+
+func flushHTTPWriter(w http.ResponseWriter) error {
+	if w == nil {
+		return nil
 	}
+	for cur := w; cur != nil; {
+		if f, ok := cur.(http.Flusher); ok {
+			f.Flush()
+			return nil
+		}
+		u, ok := cur.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		cur = u.Unwrap()
+	}
+	if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
 }

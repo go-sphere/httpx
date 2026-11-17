@@ -81,7 +81,7 @@ func (c ginContext) Params() map[string]string {
 // normalizeParam strips the leading "/" that gin includes in wildcard values,
 // so /files/*filepath yields "a/b" for /files/a/b on every adapter.
 func (c ginContext) normalizeParam(key, value string) string {
-	if strings.HasPrefix(value, "/") && strings.Contains(c.ctx.FullPath(), "*"+key) {
+	if strings.HasPrefix(value, "/") && strings.HasSuffix(c.ctx.FullPath(), "/*"+key) {
 		return strings.TrimPrefix(value, "/")
 	}
 	return value
@@ -116,7 +116,7 @@ func (c ginContext) Headers() map[string][]string {
 	out := make(map[string][]string, len(src))
 	for k, v := range src {
 		ck := textproto.CanonicalMIMEHeaderKey(k)
-		out[ck] = append([]string(nil), v...)
+		out[ck] = append(out[ck], v...)
 	}
 	return out
 }
@@ -204,6 +204,9 @@ func (c ginContext) BindURI(dst any) error {
 }
 
 func (c ginContext) uriValues() map[string][]string {
+	if len(c.ctx.Params) == 0 {
+		return nil
+	}
 	m := make(map[string][]string, len(c.ctx.Params))
 	for _, p := range c.ctx.Params {
 		m[p.Key] = []string{c.normalizeParam(p.Key, p.Value)}
@@ -373,6 +376,13 @@ func bodyless(code int) bool {
 	return code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified
 }
 
+func (c ginContext) commitsBodyless(code int) bool {
+	if c.ctx.Writer.Written() {
+		return bodyless(c.ctx.Writer.Status())
+	}
+	return bodyless(code)
+}
+
 func (c ginContext) JSON(code int, v any) error {
 	// Use Gin's configured codec, but marshal directly so failures return
 	// as errors instead of being buried in Gin's c.Errors.
@@ -384,9 +394,10 @@ func (c ginContext) JSON(code int, v any) error {
 	if err != nil {
 		return err
 	}
+	bl := c.commitsBodyless(code)
 	c.ctx.Status(code)
 	c.setContentType(jsonContentType, true)
-	if bodyless(code) {
+	if bl {
 		c.ctx.Writer.WriteHeaderNow()
 		return nil
 	}
@@ -397,9 +408,10 @@ func (c ginContext) JSON(code int, v any) error {
 // Text, like Bytes, writes directly rather than through gin's Render, which
 // records a write error in c.Errors and returns nothing.
 func (c ginContext) Text(code int, s string) error {
+	bl := c.commitsBodyless(code)
 	c.ctx.Status(code)
 	c.setContentType(textContentType, false)
-	if bodyless(code) {
+	if bl {
 		c.ctx.Writer.WriteHeaderNow()
 		return nil
 	}
@@ -421,9 +433,10 @@ func (c ginContext) Bytes(code int, b []byte, contentType string) error {
 	if contentType == "" {
 		contentType = http.DetectContentType(b)
 	}
+	bl := c.commitsBodyless(code)
 	c.ctx.Status(code)
 	c.setContentType([]string{contentType}, false)
-	if bodyless(code) {
+	if bl {
 		c.ctx.Writer.WriteHeaderNow()
 		return nil
 	}
@@ -437,17 +450,18 @@ func (c ginContext) DataFromReader(code int, contentType string, r io.Reader, si
 			_ = rc.Close()
 		}()
 	}
+	bl := c.commitsBodyless(code)
 	if contentType != "" {
 		c.setContentType([]string{contentType}, false)
 	}
-	if size >= 0 && !c.ctx.Writer.Written() {
+	if !bl && size >= 0 && !c.ctx.Writer.Written() {
 		c.ctx.Writer.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	c.ctx.Status(code)
 	// gin's own DataFromReader records a copy error in c.Errors instead of
 	// returning it, and an empty reader leaves the header unwritten.
 	c.ctx.Writer.WriteHeaderNow()
-	if bodyless(code) {
+	if bl || r == nil {
 		return nil
 	}
 	_, err := io.Copy(c.ctx.Writer, r)
@@ -514,7 +528,9 @@ func (c ginContext) Context() context.Context {
 }
 
 func (c ginContext) SetContext(ctx context.Context) {
-	c.ctx.Request = c.ctx.Request.WithContext(ctx)
+	if ctx != nil {
+		c.ctx.Request = c.ctx.Request.WithContext(ctx)
+	}
 }
 
 func (c ginContext) StatusCode() int {
@@ -534,6 +550,12 @@ func (c ginContext) NativeContext() any {
 
 // Flush implements httpx.Flusher: the first flush commits status and headers.
 func (c ginContext) Flush() error {
+	if b, ok := c.ctx.Writer.(*stdWriterBridge); ok {
+		return b.flush()
+	}
+	if !c.ctx.Writer.Written() {
+		c.ctx.Writer.WriteHeaderNow()
+	}
 	c.ctx.Writer.Flush()
 	return nil
 }
@@ -546,17 +568,23 @@ func (c ginContext) Stream(code int, contentType string, fn func(w io.Writer) er
 	}
 	c.ctx.Status(code)
 	// WriteHeader in net/http only buffers the header; the flush sends it.
-	c.ctx.Writer.WriteHeaderNow()
-	c.ctx.Writer.Flush()
-	return fn(ginFlushWriter{w: c.ctx.Writer})
+	if err := c.Flush(); err != nil {
+		return err
+	}
+	if fn == nil {
+		return nil
+	}
+	return fn(ginFlushWriter{c: c})
 }
 
 type ginFlushWriter struct {
-	w gin.ResponseWriter
+	c ginContext
 }
 
 func (fw ginFlushWriter) Write(p []byte) (int, error) {
-	n, err := fw.w.Write(p)
-	fw.w.Flush()
-	return n, err
+	n, err := fw.c.ctx.Writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+	return n, fw.c.Flush()
 }

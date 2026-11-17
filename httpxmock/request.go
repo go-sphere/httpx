@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strings"
 )
 
 // defaultMultipartMemory matches every adapter: parse up to 32 MiB of a
@@ -123,6 +124,9 @@ func (c *Context) Header(key string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("Header")
+	if strings.EqualFold(key, "Host") {
+		return ""
+	}
 	return c.req.Header.Get(key)
 }
 
@@ -136,9 +140,16 @@ func (c *Context) Headers() map[string][]string {
 	if len(c.req.Header) == 0 {
 		return nil
 	}
-	out := make(map[string][]string, len(c.req.Header))
+	var out map[string][]string
 	for k, v := range c.req.Header {
-		out[textproto.CanonicalMIMEHeaderKey(k)] = append([]string(nil), v...)
+		ck := textproto.CanonicalMIMEHeaderKey(k)
+		if ck == "Host" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string][]string, len(c.req.Header))
+		}
+		out[ck] = append(out[ck], v...)
 	}
 	return out
 }

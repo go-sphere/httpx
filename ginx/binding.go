@@ -19,10 +19,6 @@ import (
 // verdict is dropped.
 type queryBinding struct{}
 
-func (queryBinding) Name() string {
-	return "query"
-}
-
 func (queryBinding) Bind(req *http.Request, obj any) error {
 	return binding.MapFormWithTag(obj, req.URL.Query(), "query")
 }

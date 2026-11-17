@@ -176,9 +176,11 @@ type Engine struct {
 	notFound   *httpx.MiddlewareFallback
 	notAllowed *httpx.MiddlewareFallback
 
-	pool    sync.Pool
-	running atomic.Bool
-	closed  atomic.Bool
+	pool        sync.Pool
+	lifecycleMu sync.Mutex
+	started     atomic.Bool
+	running     atomic.Bool
+	closed      atomic.Bool
 }
 
 // New returns a net/http-backed engine configured by opts. The dynamic type
@@ -333,24 +335,36 @@ func staticLeaf(err error) httpx.Handler {
 	return func(httpx.Context) error { return err }
 }
 
+var errAlreadyStarted = errors.New("stdx: engine already started")
+
 // Start binds the server's address (":http" when empty), then serves until
 // [Engine.Stop]. IsRunning becomes true only after the listener is bound. It
 // returns nil after Stop, httpx.ErrEngineClosed when Stop was already called,
-// and the listen or serve error otherwise.
+// an error when Start was already called, and the listen or serve error
+// otherwise.
 func (e *Engine) Start() error {
+	e.lifecycleMu.Lock()
 	if e.closed.Load() {
+		e.lifecycleMu.Unlock()
 		return httpx.ErrEngineClosed
+	}
+	if !e.started.CompareAndSwap(false, true) {
+		e.lifecycleMu.Unlock()
+		return errAlreadyStarted
 	}
 	addr := e.server.Addr
 	if addr == "" {
 		addr = ":http"
 	}
-	// Bind first so IsRunning only reports true once the listener exists.
+	// Bind under lifecycleMu so a concurrent Stop sets closed/inShutdown either
+	// strictly before Start checks closed or after ln exists for Serve.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		e.lifecycleMu.Unlock()
 		return err
 	}
 	e.running.Store(true)
+	e.lifecycleMu.Unlock()
 	defer e.running.Store(false)
 	if err := e.server.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -364,7 +378,9 @@ func (e *Engine) Start() error {
 // returned. A nil ctx waits indefinitely. Stop on an engine that never
 // started returns nil, and Start then returns httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
+	e.lifecycleMu.Lock()
 	e.closed.Store(true)
+	e.lifecycleMu.Unlock()
 	// httpx.Close force-closes when the graceful drain fails, so the server is
 	// down whatever it returns and the running flag falls with it.
 	defer e.running.Store(false)

@@ -309,3 +309,79 @@ func startWithTimeout(t *testing.T, engine httpx.Engine) error {
 		return nil
 	}
 }
+
+func TestDoubleStartReturnsErrorAndKeepsServingConformance(t *testing.T) {
+	t.Run("WhileRunning", func(t *testing.T) {
+		for _, a := range adapters() {
+			t.Run(a.Name, func(t *testing.T) {
+				engine, addr := a.serve(t, serveConfig{})
+				engine.Group("").GET("/ping", func(ctx httpx.Context) error {
+					return ctx.Text(http.StatusOK, "pong")
+				})
+				startServing(t, engine, addr)
+
+				if err := startWithTimeout(t, engine); err == nil {
+					t.Fatal("second Start() returned nil, want non-nil error")
+				}
+
+				resp, err := oneShotClient(2 * time.Second).Get("http://" + addr + "/ping")
+				if err != nil {
+					t.Fatalf("GET /ping after double Start: %v", err)
+				}
+				body, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusOK || string(body) != "pong" {
+					t.Fatalf("GET /ping = %d %q, want 200 pong", resp.StatusCode, body)
+				}
+			})
+		}
+	})
+
+	t.Run("Concurrent", func(t *testing.T) {
+		for _, a := range adapters() {
+			t.Run(a.Name, func(t *testing.T) {
+				engine, addr := a.serve(t, serveConfig{})
+				engine.Group("").GET("/ping", func(ctx httpx.Context) error {
+					return ctx.Text(http.StatusOK, "pong")
+				})
+
+				errs := make(chan error, 2)
+				var wg sync.WaitGroup
+				wg.Add(2)
+				for range 2 {
+					go func() {
+						defer wg.Done()
+						errs <- engine.Start()
+					}()
+				}
+
+				var firstErr error
+				select {
+				case firstErr = <-errs:
+				case <-time.After(5 * time.Second):
+					t.Fatal("concurrent double Start did not return an error from the loser")
+				}
+				if firstErr == nil {
+					t.Fatal("first exiting Start in concurrent double-Start = nil, want error")
+				}
+				waitReachable(t, addr)
+
+				resp, err := oneShotClient(2 * time.Second).Get("http://" + addr + "/ping")
+				if err != nil {
+					t.Fatalf("GET /ping: %v", err)
+				}
+				_ = resp.Body.Close()
+
+				stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				if err := engine.Stop(stopCtx); err != nil {
+					t.Fatalf("Stop: %v", err)
+				}
+				wg.Wait()
+				if secondErr := <-errs; secondErr != nil {
+					t.Fatalf("serving Start after Stop = %v, want nil", secondErr)
+				}
+			})
+		}
+	})
+}

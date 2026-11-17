@@ -103,6 +103,22 @@ const maxRetainedKeys = 64
 
 // recycle releases per-request state before the context returns to the pool.
 func (c *stdContext) recycle() {
+	c.req = nil
+	c.rw = responseWriter{}
+	c.route = nil
+	clear(c.values)
+	clear(c.valueBuf[:])
+	c.values = c.valueBuf[:0]
+	clear(c.uriBuf[:])
+	if len(c.uriValues) > maxRetainedKeys {
+		c.uriValues = nil
+	} else {
+		clear(c.uriValues)
+	}
+	if len(c.query) > maxRetainedKeys || len(c.queryRaw) > maxRetainedScratch {
+		c.query = nil
+		c.queryRaw = ""
+	}
 	switch n := len(c.keys); {
 	case n == 0:
 	case n > maxRetainedKeys:
@@ -261,7 +277,8 @@ func (c *stdContext) Headers() map[string][]string {
 	}
 	out := make(map[string][]string, len(src))
 	for k, v := range src {
-		out[textproto.CanonicalMIMEHeaderKey(k)] = append([]string(nil), v...)
+		ck := textproto.CanonicalMIMEHeaderKey(k)
+		out[ck] = append(out[ck], v...)
 	}
 	return out
 }
@@ -393,23 +410,45 @@ func (c *stdContext) BindQuery(dst any) error {
 		// The same shortcut BindURI takes when the route has no parameters.
 		return nil
 	}
-	return httpx.WrapBindError(queryDecoder.Decode(dst, values))
+	return httpx.WrapBindError(decodeFormValues(queryDecoder, dst, values))
 }
 
 func (c *stdContext) BindForm(dst any) error {
-	if err := c.req.ParseForm(); err != nil {
-		return httpx.WrapBindError(err)
-	}
-	values := c.req.PostForm
-	if c.req.MultipartForm == nil && isMultipart(c.req) {
-		if err := c.req.ParseMultipartForm(defaultMultipartMemory); err != nil {
+	if isMultipart(c.req) {
+		if c.req.MultipartForm == nil {
+			// Parse using a shallow copy with empty RawQuery so malformed URL
+			// query escapes do not fail binding of a valid multipart body.
+			req := *c.req
+			if req.URL != nil && req.URL.RawQuery != "" {
+				u := *req.URL
+				u.RawQuery = ""
+				req.URL = &u
+			}
+			err := req.ParseMultipartForm(defaultMultipartMemory)
+			c.req.PostForm = req.PostForm
+			c.req.MultipartForm = req.MultipartForm
+			if err != nil {
+				return httpx.WrapBindError(err)
+			}
+		}
+	} else if c.req.PostForm == nil {
+		req := *c.req
+		if req.URL != nil && req.URL.RawQuery != "" {
+			u := *req.URL
+			u.RawQuery = ""
+			req.URL = &u
+		}
+		err := req.ParseForm()
+		c.req.PostForm = req.PostForm
+		if err != nil {
 			return httpx.WrapBindError(err)
 		}
 	}
+	values := c.req.PostForm
 	if c.req.MultipartForm != nil && len(c.req.MultipartForm.Value) > 0 {
 		values = url.Values(c.req.MultipartForm.Value)
 	}
-	return httpx.WrapBindError(formDecoder.Decode(dst, values))
+	return httpx.WrapBindError(decodeFormValues(formDecoder, dst, values))
 }
 
 func (c *stdContext) BindURI(dst any) error {
@@ -430,7 +469,7 @@ func (c *stdContext) BindURI(dst any) error {
 				values[name] = []string{c.values[i]}
 			}
 		}
-		err := uriDecoder.Decode(dst, values)
+		err := decodeFormValues(uriDecoder, dst, values)
 		clear(values)
 		return httpx.WrapBindError(err)
 	}
@@ -442,7 +481,7 @@ func (c *stdContext) BindHeader(dst any) error {
 	// so binding allocates no copy of the headers. Both agree on canonical
 	// keys: net/http canonicalizes on parse and in Header.Set, which is the
 	// same assumption Header() already makes when it looks one up.
-	return httpx.WrapBindError(headerDecoder.Decode(dst, url.Values(c.req.Header)))
+	return httpx.WrapBindError(decodeFormValues(headerDecoder, dst, url.Values(c.req.Header)))
 }
 
 // Responder (httpx.Responder)
@@ -482,7 +521,10 @@ func (c *stdContext) setContentType(v []string, keep bool) {
 }
 
 func (c *stdContext) JSON(code int, v any) error {
-	if bodyless(code) {
+	if c.commitsBodyless(code) {
+		if _, err := json.Marshal(v); err != nil {
+			return err
+		}
 		c.setContentType(jsonContentType, true)
 		c.rw.WriteHeader(code)
 		return nil
@@ -512,7 +554,7 @@ func (c *stdContext) JSON(code int, v any) error {
 // writeJSONBytes writes b, already-encoded JSON, as JSON writes an encoded
 // value: same status handling, same Content-Type rule.
 func (c *stdContext) writeJSONBytes(code int, b []byte) error {
-	if bodyless(code) {
+	if c.commitsBodyless(code) {
 		c.setContentType(jsonContentType, true)
 		c.rw.WriteHeader(code)
 		return nil
@@ -538,7 +580,7 @@ func (w *jsonBodyWriter) Write(p []byte) (int, error) {
 	}
 	rw := (*responseWriter)(w)
 	if !rw.written {
-		if h := rw.Header(); h["Content-Type"] == nil {
+		if h := rw.Header(); !hasHeaderKey(h, "Content-Type") {
 			h["Content-Type"] = jsonContentType
 		}
 	}
@@ -548,10 +590,23 @@ func (w *jsonBodyWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+func hasHeaderKey(h http.Header, key string) bool {
+	_, ok := h[key]
+	return ok
+}
+
+func (c *stdContext) commitsBodyless(code int) bool {
+	if c.rw.written {
+		return bodyless(c.rw.status)
+	}
+	return bodyless(code)
+}
+
 func (c *stdContext) Text(code int, s string) error {
 	c.setContentType(textContentType, false)
+	bl := c.commitsBodyless(code)
 	c.rw.WriteHeader(code)
-	if bodyless(code) {
+	if bl {
 		return nil
 	}
 	_, err := io.WriteString(&c.rw, s)
@@ -568,8 +623,9 @@ func (c *stdContext) Bytes(code int, b []byte, contentType string) error {
 		contentType = http.DetectContentType(b)
 	}
 	c.setContentType([]string{contentType}, false)
+	bl := c.commitsBodyless(code)
 	c.rw.WriteHeader(code)
-	if bodyless(code) {
+	if bl {
 		return nil
 	}
 	_, err := c.rw.Write(b)
@@ -583,7 +639,7 @@ func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, s
 	if contentType != "" {
 		c.setContentType([]string{contentType}, false)
 	}
-	if bodyless(code) {
+	if c.commitsBodyless(code) {
 		c.rw.WriteHeader(code)
 		return nil
 	}
@@ -591,6 +647,9 @@ func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, s
 		c.rw.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	c.rw.WriteHeader(code)
+	if r == nil {
+		return nil
+	}
 	_, err := io.Copy(&c.rw, r)
 	return err
 }
@@ -655,7 +714,9 @@ func (c *stdContext) Get(key string) (any, bool) {
 func (c *stdContext) Context() context.Context { return c.req.Context() }
 
 func (c *stdContext) SetContext(ctx context.Context) {
-	c.req = c.req.WithContext(ctx)
+	if ctx != nil {
+		c.req = c.req.WithContext(ctx)
+	}
 }
 
 func (c *stdContext) StatusCode() int { return c.rw.status }
@@ -686,9 +747,19 @@ func (c *stdContext) Flush() error {
 // nothing; the controller is what follows an Unwrap chain, at the price of
 // allocating the ErrNotSupported it returns when the chain ends nowhere.
 func flush(w http.ResponseWriter) error {
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
+	if w == nil {
 		return nil
+	}
+	for cur := w; cur != nil; {
+		if f, ok := cur.(http.Flusher); ok {
+			f.Flush()
+			return nil
+		}
+		u, ok := cur.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		cur = u.Unwrap()
 	}
 	if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		return err
@@ -705,6 +776,9 @@ func (c *stdContext) Stream(code int, contentType string, fn func(w io.Writer) e
 	c.rw.WriteHeader(code)
 	if err := c.Flush(); err != nil {
 		return err
+	}
+	if fn == nil {
+		return nil
 	}
 	return fn(flushWriter{c: c})
 }
@@ -809,5 +883,6 @@ func bodyless(code int) bool {
 
 func isMultipart(req *http.Request) bool {
 	ct := req.Header.Get("Content-Type")
-	return len(ct) >= 9 && strings.EqualFold(ct[:9], "multipart")
+	mediaType, _, _ := strings.Cut(strings.TrimSpace(ct), ";")
+	return strings.EqualFold(strings.TrimSpace(mediaType), "multipart/form-data")
 }

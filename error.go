@@ -246,10 +246,10 @@ func ParseError(err error) (code int32, status int32, message string) {
 	if err == nil {
 		return 0, http.StatusInternalServerError, ""
 	}
-	// errors.AsType rather than errors.As: the pointer target errors.As needs
-	// escapes to the heap, which cost one allocation per lookup on every
-	// rendered error.
-	if he, ok := errors.AsType[Error](err); ok {
+	// Direct type assertion rather than errors.AsType[Error]: partial wrappers
+	// (StatusError, CodeError, MessageError) around an inner Error must still
+	// override individual fields in the AsType checks below.
+	if he, ok := err.(Error); ok {
 		return he.GetCode(), he.GetStatus(), he.GetMessage()
 	}
 	if se, ok := errors.AsType[StatusError](err); ok {

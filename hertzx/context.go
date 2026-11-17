@@ -106,23 +106,19 @@ func (c *hertzContext) Header(key string) string {
 }
 
 func (c *hertzContext) Headers() map[string][]string {
-	header := &c.ctx.Request.Header
-	if header.Len() == 0 {
-		return nil
-	}
-	out := make(map[string][]string, header.Len())
-	header.VisitAll(func(k, v []byte) {
+	var out map[string][]string
+	c.ctx.Request.Header.VisitAll(func(k, v []byte) {
 		key := textproto.CanonicalMIMEHeaderKey(string(k))
 		if key == "Host" {
 			// net/http moves Host out of the header map, so gin/echo never
 			// expose it here; filter it for cross-adapter consistency.
 			return
 		}
+		if out == nil {
+			out = make(map[string][]string)
+		}
 		out[key] = append(out[key], string(v))
 	})
-	if len(out) == 0 {
-		return nil
-	}
 	return out
 }
 
@@ -135,17 +131,13 @@ func (c *hertzContext) Cookie(name string) (string, error) {
 }
 
 func (c *hertzContext) Cookies() map[string]string {
-	header := &c.ctx.Request.Header
-	if header.Len() == 0 {
-		return nil
-	}
-	out := make(map[string]string)
-	header.VisitAllCookie(func(k, v []byte) {
+	var out map[string]string
+	c.ctx.Request.Header.VisitAllCookie(func(k, v []byte) {
+		if out == nil {
+			out = make(map[string]string)
+		}
 		out[string(k)] = string(v)
 	})
-	if len(out) == 0 {
-		return nil
-	}
 	return out
 }
 
@@ -206,6 +198,14 @@ func (c *hertzContext) BindURI(dst any) error {
 }
 
 func (c *hertzContext) BindHeader(dst any) error {
+	header := &c.ctx.Request.Header
+	host := header.Host()
+	if len(host) == 0 {
+		return httpx.WrapBindError(c.ctx.BindHeader(dst))
+	}
+	saved := bytes.Clone(host)
+	header.SetHostBytes(nil)
+	defer header.SetHostBytes(saved)
 	return httpx.WrapBindError(c.ctx.BindHeader(dst))
 }
 
@@ -263,7 +263,21 @@ func (c *hertzContext) Status(code int) {
 	}
 }
 
+func (c *hertzContext) commitsBodyless(code int) bool {
+	if c.Committed() {
+		return bodylessStatus(c.ctx.Response.StatusCode())
+	}
+	return bodylessStatus(code)
+}
+
 func (c *hertzContext) JSON(code int, v any) error {
+	bl := c.commitsBodyless(code)
+	if bl {
+		var probe protocol.Response
+		if err := (render.JSONRender{Data: v}).Render(&probe); err != nil {
+			return err
+		}
+	}
 	return c.writeBody(func() error {
 		// Use Hertz's configured marshaler (including ResetJSONMarshal), while
 		// returning encoding failures instead of letting RequestContext.JSON
@@ -272,8 +286,9 @@ func (c *hertzContext) JSON(code int, v any) error {
 		header := &c.ctx.Response.Header
 		preset := bytes.Clone(explicitContentType(header))
 		r := render.JSONRender{Data: v}
-		if bodylessStatus(code) {
+		if bl {
 			c.ctx.Status(code)
+			c.ctx.Response.ResetBody()
 			if len(preset) == 0 {
 				r.WriteContentType(&c.ctx.Response)
 			}
@@ -292,9 +307,16 @@ func (c *hertzContext) JSON(code int, v any) error {
 }
 
 func (c *hertzContext) Text(code int, s string) error {
+	bl := c.commitsBodyless(code)
 	return c.writeBody(func() error {
-		c.ctx.String(code, s)
-		return nil
+		c.ctx.SetContentType("text/plain; charset=utf-8")
+		c.ctx.Status(code)
+		if bl {
+			c.ctx.Response.ResetBody()
+			return nil
+		}
+		_, err := c.ctx.WriteString(s)
+		return err
 	})
 }
 
@@ -307,25 +329,44 @@ func (c *hertzContext) NoContent(code int) error {
 }
 
 func (c *hertzContext) Bytes(code int, b []byte, contentType string) error {
+	if contentType == "" {
+		contentType = http.DetectContentType(b)
+	}
+	bl := c.commitsBodyless(code)
 	return c.writeBody(func() error {
-		if contentType == "" {
-			contentType = http.DetectContentType(b)
+		c.ctx.SetContentType(contentType)
+		c.ctx.Status(code)
+		if bl {
+			c.ctx.Response.ResetBody()
+			return nil
 		}
-		c.ctx.Data(code, contentType, b)
-		return nil
+		_, err := c.ctx.Write(b)
+		return err
 	})
 }
 
 func (c *hertzContext) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
+	bl := c.commitsBodyless(code)
+	if bl {
+		if closer, ok := r.(io.Closer); ok {
+			defer func() { _ = closer.Close() }()
+		}
+		return c.writeBody(func() error {
+			if contentType != "" {
+				c.ctx.SetContentType(contentType)
+			}
+			c.ctx.Status(code)
+			c.ctx.Response.ResetBody()
+			return nil
+		})
+	}
 	return c.writeBody(func() error {
 		if contentType != "" {
 			c.ctx.SetContentType(contentType)
 		}
 		c.ctx.Status(code)
-		if bodylessStatus(code) {
-			if closer, ok := r.(io.Closer); ok {
-				return closer.Close()
-			}
+		if r == nil {
+			c.ctx.Response.ResetBody()
 			return nil
 		}
 		c.ctx.SetBodyStream(r, streamSize(size))
@@ -398,6 +439,9 @@ func (c *hertzContext) SetHeader(key, value string) {
 	if c.Committed() {
 		return
 	}
+	if strings.EqualFold(key, "Set-Cookie") {
+		c.ctx.Response.Header.DelAllCookies()
+	}
 	// Not hertz's c.Header, which deletes the header for an empty value.
 	c.ctx.Response.Header.Set(key, value)
 }
@@ -416,6 +460,13 @@ func (c *hertzContext) ResponseHeaderValues(key string) []string {
 			return []string{string(ct)}
 		}
 		return nil
+	}
+	if strings.EqualFold(key, "Set-Cookie") {
+		var cookies []string
+		c.ctx.Response.Header.VisitAllCookie(func(_, v []byte) {
+			cookies = append(cookies, string(v))
+		})
+		return cookies
 	}
 	values := c.ctx.Response.Header.GetAll(key)
 	// hertz answers Set-Cookie with one empty string when no cookie is set.
@@ -460,7 +511,9 @@ func (c *hertzContext) Context() context.Context {
 }
 
 func (c *hertzContext) SetContext(ctx context.Context) {
-	c.baseCtx = ctx
+	if ctx != nil {
+		c.baseCtx = ctx
+	}
 }
 
 func (c *hertzContext) StatusCode() int {
@@ -525,13 +578,17 @@ func (c *hertzContext) Stream(code int, contentType string, fn func(w io.Writer)
 			c.ctx.SetContentType(contentType)
 		}
 		c.ctx.Status(code)
-		// The response is committed from here on: the status and content type
-		// are decided and, over a real connection, already flushed. Recording
-		// it keeps an error returned by fn from being rendered over the stream.
-		c.ctx.Set(responseCommittedKey, true)
 	}
-	if err := c.Flush(); err != nil {
+	err := c.Flush()
+	// Record committed state after Flush: in in-process tests no hijack writer
+	// is attached, so without markCommitted a following error or write could see
+	// the response as still uncommitted.
+	markCommitted(c.ctx)
+	if err != nil {
 		return err
+	}
+	if fn == nil {
+		return nil
 	}
 	return fn(hertzFlushWriter{c: c})
 }

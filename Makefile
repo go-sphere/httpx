@@ -131,7 +131,7 @@ check: tidy-check
 verify: check api-compat
 
 api-compat:
-	./scripts/check-api-compat.sh
+	GO="$(GO)" ./scripts/check-api-compat.sh
 
 bench:
 	$(GO) test -run '^$$' -bench BenchmarkFramework -benchmem ./conformance/...

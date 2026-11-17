@@ -13,6 +13,7 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
+GO = os.environ.get('GO', 'go')
 
 
 def main():
@@ -22,15 +23,16 @@ def main():
     parser.add_argument('--rate', type=int, default=5000)
     parser.add_argument('--duration', default='3s')
     parser.add_argument('--repeat', type=int, default=3)
+    parser.add_argument('--cpu', type=int, default=4, help='GOMAXPROCS for servers and load generator (default: 4)')
     parser.add_argument('--output', type=Path, default=ROOT / 'benchmarks/results/latest/network.json')
     args = parser.parse_args()
-    if args.rate <= 0 or args.repeat <= 0:
-        parser.error('rate and repeat must be positive')
-    env = dict(os.environ, GOMAXPROCS='4')
+    if args.rate <= 0 or args.repeat <= 0 or args.cpu <= 0:
+        parser.error('rate, repeat and cpu must be positive')
+    env = dict(os.environ, GOMAXPROCS=str(args.cpu))
     with tempfile.TemporaryDirectory(prefix='httpx-network-') as tmp:
         binary = args.binary or Path(tmp) / 'server.test'
         if not args.binary:
-            subprocess.run(['go', 'test', '-c', './conformance', '-o', str(binary)], cwd=ROOT, check=True)
+            subprocess.run([GO, 'test', '-c', './conformance', '-o', str(binary)], cwd=ROOT, check=True)
         results = []
         jobs = [(f, s, m) for f in ('gin', 'echo', 'fiber', 'hertz', 'std')
                 for s in ('Empty', 'JSON1K') for m in ('native', 'httpx')]
@@ -91,7 +93,7 @@ def main():
                         server.wait()
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(dict(rate=args.rate, duration=args.duration,
-                                               repeat=args.repeat, gomaxprocs=4,
+                                               repeat=args.repeat, gomaxprocs=args.cpu,
                                                client_workers=16, results=results), indent=2) + '\n')
 
 

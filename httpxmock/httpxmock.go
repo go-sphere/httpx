@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 
 	"github.com/go-sphere/httpx"
@@ -150,9 +151,16 @@ func WithState(key string, val any) Option {
 	return func(c *Context) { c.setState(key, val) }
 }
 
-// WithHeader adds a request header.
+// WithHeader adds a request header. Host is applied to Request.Host instead of
+// Request.Header to match net/http server requests.
 func WithHeader(key, value string) Option {
-	return func(c *Context) { c.req.Header.Add(key, value) }
+	return func(c *Context) {
+		if strings.EqualFold(key, "Host") {
+			c.req.Host = value
+			return
+		}
+		c.req.Header.Add(key, value)
+	}
 }
 
 // WithCookie adds a request cookie.

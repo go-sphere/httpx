@@ -41,7 +41,7 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
-			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
+			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
 				gin.SetMode(gin.ReleaseMode)
 				engineOpts := []ginx.Option{ginx.WithEngine(gin.New())}
 				if opts.ErrorHandler != nil {
@@ -67,7 +67,7 @@ func httpxtestSuites() []httpxtest.Suite {
 			Caps: httpxtest.Caps{
 				ForcedStopCutsConnections: false,
 			},
-			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
+			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
 				var engineOpts []fiberx.Option
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, fiberx.WithErrorHandler(opts.ErrorHandler))
@@ -95,7 +95,7 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
-			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
+			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
 				engineOpts := []echox.Option{echox.WithEngine(echo.New())}
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, echox.WithErrorHandler(opts.ErrorHandler))
@@ -126,7 +126,7 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  false,
 			},
-			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
+			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
 				hlog.SetSilentMode(true)
 				hlog.SetOutput(io.Discard)
 				var engineOpts []hertzx.Option
@@ -156,7 +156,7 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
-			NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
+			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
 				var engineOpts []stdx.Option
 				if opts.ErrorHandler != nil {
 					engineOpts = append(engineOpts, stdx.WithErrorHandler(opts.ErrorHandler))
@@ -195,6 +195,7 @@ func BenchmarkHTTPXTestSuite(b *testing.B) {
 // the native side of BenchmarkNativeVsHTTPX resetting the request identically.
 
 func ginDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
+	tb.Helper()
 	gin.SetMode(gin.ReleaseMode)
 	ge := gin.New()
 	register(ginx.New(ginx.WithEngine(ge)).Group(""))
@@ -202,6 +203,7 @@ func ginDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) 
 }
 
 func stdDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
+	tb.Helper()
 	engine := stdx.New()
 	register(engine.Group(""))
 	handler, ok := engine.(http.Handler)
@@ -212,6 +214,7 @@ func stdDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) 
 }
 
 func echoDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
+	tb.Helper()
 	e := echo.New()
 	register(echox.New(echox.WithEngine(e)).Group(""))
 	return netHTTPRunner(tb, "echox", e, req)
@@ -221,6 +224,7 @@ func echoDispatch(tb testing.TB, register func(httpx.Router), req *http.Request)
 // does not expose, so it builds the app with the configuration
 // fiberx.NewConfig documents for one and passes it in.
 func fiberDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
+	tb.Helper()
 	f := fiber.New(fiber.Config{
 		ErrorHandler:              fiberx.DefaultErrorHandler,
 		UnescapePath:              true,
@@ -234,12 +238,14 @@ func fiberDispatch(tb testing.TB, register func(httpx.Router), req *http.Request
 }
 
 func hertzDispatch(tb testing.TB, register func(httpx.Router), req *http.Request) func() {
+	tb.Helper()
 	h := newBenchHertz()
 	register(hertzx.New(hertzx.WithEngine(h)).Group(""))
 	return hertzRunner(tb, "hertzx", h, req)
 }
 
 func netHTTPRunner(tb testing.TB, name string, h http.Handler, req *http.Request) func() {
+	tb.Helper()
 	w := &benchmarkResponseWriter{header: make(http.Header), status: http.StatusOK}
 	run := func() {
 		clear(w.header)
@@ -255,6 +261,7 @@ func netHTTPRunner(tb testing.TB, name string, h http.Handler, req *http.Request
 // fiberRunner resets the cached multipart form too; without that, every
 // iteration after the first would reuse fiber's parse.
 func fiberRunner(tb testing.TB, name string, f *fiber.App, req *http.Request) func() {
+	tb.Helper()
 	handler := f.Handler()
 	ctx := &fasthttp.RequestCtx{}
 	fillFastHTTPRequest(tb, &ctx.Request, req)
@@ -275,6 +282,7 @@ func fiberRunner(tb testing.TB, name string, f *fiber.App, req *http.Request) fu
 // hertzRunner refills the request every iteration: hertz has no "reset the
 // response only" API, and ResetWithoutConn clears the request too.
 func hertzRunner(tb testing.TB, name string, h *server.Hertz, req *http.Request) func() {
+	tb.Helper()
 	rc := h.NewContext()
 	ctx := context.Background()
 	body := readRequestBody(tb, req)

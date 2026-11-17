@@ -43,12 +43,21 @@ func CheckServeFile(path string) error {
 // rejected. A path CheckServeFile refuses, or one that cannot be opened,
 // writes nothing and returns the Error CheckServeFile would report.
 func ServeFile(w http.ResponseWriter, r *http.Request, path string) error {
+	// Stat before Open so special files (e.g. FIFOs) fail fast instead of
+	// blocking in open(2); re-check f.Stat() after Open to guard against TOCTOU swaps.
+	info, err := os.Stat(path)
+	if err != nil {
+		return statError(err)
+	}
+	if err := regularFileError(info); err != nil {
+		return err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return statError(err)
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
+	info, err = f.Stat()
 	if err != nil {
 		return statError(err)
 	}

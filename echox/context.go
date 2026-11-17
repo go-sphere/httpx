@@ -118,31 +118,34 @@ func (c *echoContext) Params() map[string]string {
 	if len(names) == 0 {
 		return nil
 	}
+	out := make(map[string]string, len(names))
+	c.visitParams(func(name, value string) {
+		out[name] = value
+	})
+	return out
+}
+
+func (c *echoContext) visitParams(fn func(name, value string)) {
+	names := c.ctx.ParamNames()
+	if len(names) == 0 {
+		return
+	}
 	values := c.ctx.ParamValues()
 	decode := c.decodesParams()
-	out := make(map[string]string, len(names))
+	wildcard := c.wildcardParamName()
 	for i, name := range names {
 		value := ""
 		if i < len(values) {
 			value = values[i]
+			if decode {
+				value = decodeParamValue(value)
+			}
 		}
-		if decode {
-			out[name] = decodeParamValue(value)
-		} else {
-			out[name] = value
+		if name == "*" && wildcard != "" {
+			name = wildcard
 		}
+		fn(name, value)
 	}
-	if v, exists := out["*"]; exists {
-		if name := c.wildcardParamName(); name != "" {
-			out[name] = v
-			// "*" is this adapter's normalization artifact: the route was
-			// registered as /*name, so Params must read the same as on an
-			// adapter with native named wildcards. An anonymous /* route
-			// has no entry here and keeps its "*" key.
-			delete(out, "*")
-		}
-	}
-	return out
 }
 
 // wildcardParamName reports the name the matched route's wildcard was
@@ -231,7 +234,7 @@ func (c *echoContext) Headers() map[string][]string {
 	out := make(map[string][]string, len(src))
 	for k, v := range src {
 		ck := textproto.CanonicalMIMEHeaderKey(k)
-		out[ck] = append([]string(nil), v...)
+		out[ck] = append(out[ck], v...)
 	}
 	return out
 }
@@ -268,12 +271,35 @@ func (c *echoContext) FormFile(name string) (*multipart.FileHeader, error) {
 	return c.ctx.FormFile(name)
 }
 
+const maxBodyPrealloc = 4 << 20
+
+func readBody(r io.Reader, size int64) ([]byte, error) {
+	if size < 0 || size > maxBodyPrealloc {
+		return io.ReadAll(r)
+	}
+	buf := make([]byte, 0, size+1)
+	for {
+		if len(buf) == cap(buf) {
+			rest, err := io.ReadAll(r)
+			return append(buf, rest...), err
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if err == io.EOF {
+			return buf, nil
+		}
+		if err != nil {
+			return buf, err
+		}
+	}
+}
+
 func (c *echoContext) BodyRaw() ([]byte, error) {
 	req := c.ctx.Request()
 	if req.Body == nil {
 		return nil, nil
 	}
-	body, err := io.ReadAll(req.Body)
+	body, err := readBody(req.Body, req.ContentLength)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +318,11 @@ func (c *echoContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *echoContext) BindJSON(dst any) error {
-	return httpx.WrapBindError(json.NewDecoder(c.ctx.Request().Body).Decode(dst))
+	body := c.ctx.Request().Body
+	if body == nil {
+		return httpx.WrapBindError(io.EOF)
+	}
+	return httpx.WrapBindError(json.NewDecoder(body).Decode(dst))
 }
 
 func (c *echoContext) BindQuery(dst any) error {
@@ -319,9 +349,26 @@ func (c *echoContext) Status(code int) {
 	}
 }
 
+func (c *echoContext) commitsBodyless(code int) bool {
+	if resp := c.ctx.Response(); resp.Committed {
+		return bodyless(resp.Status)
+	}
+	return bodyless(code)
+}
+
 func (c *echoContext) JSON(code int, v any) error {
 	resp := c.ctx.Response()
 	committed := resp.Committed
+	if c.commitsBodyless(code) {
+		if _, err := json.Marshal(v); err != nil {
+			return err
+		}
+		if !committed && resp.Header().Get(echo.HeaderContentType) == "" {
+			c.setContentType("application/json; charset=utf-8")
+		}
+		c.commit(code)
+		return nil
+	}
 	// echo labels JSON "application/json" where the other four adapters add
 	// "; charset=utf-8". echo only fills the header when it is still empty, so
 	// writing it first aligns the label while leaving a Content-Type the
@@ -329,12 +376,6 @@ func (c *echoContext) JSON(code int, v any) error {
 	hadType := resp.Header().Get(echo.HeaderContentType) != ""
 	if !hadType {
 		c.setContentType("application/json; charset=utf-8")
-	}
-	if bodyless(code) {
-		// echo would write the encoded body, which net/http rejects for these
-		// codes with ErrBodyNotAllowed.
-		c.commit(code)
-		return nil
 	}
 	// echo records code before encoding, and on a committed response still
 	// labels an unlabelled header map; neither may outlive the call when the
@@ -344,7 +385,7 @@ func (c *echoContext) JSON(code int, v any) error {
 	if committed || !resp.Committed {
 		resp.Status = prev
 	}
-	if committed && !hadType {
+	if (committed || !resp.Committed) && !hadType {
 		resp.Header().Del(echo.HeaderContentType)
 	}
 	return err
@@ -377,10 +418,11 @@ func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, 
 			_ = rc.Close()
 		}()
 	}
+	bl := c.commitsBodyless(code)
 	if contentType != "" {
 		c.setContentType(contentType)
 	}
-	if bodyless(code) {
+	if bl {
 		c.commit(code)
 		return nil
 	}
@@ -390,6 +432,9 @@ func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, 
 	// Not echo's Stream, which labels an unlabelled response with whatever
 	// type it is given; an empty contentType leaves the header as it stands.
 	c.commit(code)
+	if r == nil {
+		return nil
+	}
 	_, err := io.Copy(c.ctx.Response(), r)
 	return err
 }
@@ -416,8 +461,9 @@ func (c *echoContext) commit(code int) {
 // writeBody commits the response with code and appends b; a status that
 // carries no body drops b.
 func (c *echoContext) writeBody(code int, b []byte) error {
+	bl := c.commitsBodyless(code)
 	c.commit(code)
-	if bodyless(code) {
+	if bl {
 		return nil
 	}
 	_, err := c.ctx.Response().Write(b)
@@ -486,7 +532,9 @@ func (c *echoContext) Context() context.Context {
 }
 
 func (c *echoContext) SetContext(ctx context.Context) {
-	c.ctx.SetRequest(c.ctx.Request().WithContext(ctx))
+	if ctx != nil {
+		c.ctx.SetRequest(c.ctx.Request().WithContext(ctx))
+	}
 }
 
 func (c *echoContext) StatusCode() int {
@@ -508,7 +556,11 @@ func (c *echoContext) NativeContext() any {
 func (c *echoContext) Flush() error {
 	resp := c.ctx.Response()
 	if !resp.Committed {
-		resp.WriteHeader(resp.Status)
+		status := resp.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		resp.WriteHeader(status)
 	}
 	// Go under echo.Response.Flush(), which panics when unsupported. The
 	// httpx.Flusher contract makes an unsupported flush a no-op, so the
@@ -529,6 +581,9 @@ func (c *echoContext) Stream(code int, contentType string, fn func(w io.Writer) 
 	c.commit(code)
 	if err := c.Flush(); err != nil {
 		return err
+	}
+	if fn == nil {
+		return nil
 	}
 	resp := c.ctx.Response()
 	return fn(echoFlushWriter{resp: resp, rc: http.NewResponseController(resp.Writer)})

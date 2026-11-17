@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
@@ -193,10 +194,12 @@ type Engine struct {
 	maxBodySize int64
 	// notFound and notAllowed carry the engine chain into the unmatched-path
 	// answers; see installRouteFallback.
-	notFound   *httpx.MiddlewareFallback
-	notAllowed *httpx.MiddlewareFallback
-	running    atomic.Bool
-	closed     atomic.Bool
+	notFound    *httpx.MiddlewareFallback
+	notAllowed  *httpx.MiddlewareFallback
+	lifecycleMu sync.Mutex
+	started     atomic.Bool
+	running     atomic.Bool
+	closed      atomic.Bool
 }
 
 // New constructs a gin-backed Engine configured by opts. The dynamic type is
@@ -275,8 +278,18 @@ func staticLeaf(err error) httpx.Handler {
 // that inspects gin's errors report a failure for every unmatched path.
 func (e *Engine) fallbackHandler(fb *httpx.MiddlewareFallback) gin.HandlerFunc {
 	return func(gc *gin.Context) {
+		fallbackStatus := gc.Writer.Status()
+		// Reset gin's pre-set 404/405 status so middleware sees 200 and a silent
+		// ErrorHandler falls back to err's status rather than fallbackStatus.
+		gc.Status(http.StatusOK)
 		err := fb.Handler()(newGinContext(gc))
-		if err == nil || gc.Writer.Written() {
+		if gc.Writer.Written() {
+			return
+		}
+		if err == nil {
+			if gc.Writer.Status() == http.StatusOK {
+				gc.Status(fallbackStatus)
+			}
 			return
 		}
 		e.errHandler(gc, err)
@@ -312,24 +325,36 @@ func (e *Engine) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 	}
 }
 
+var errAlreadyStarted = errors.New("ginx: engine already started")
+
 // Start binds the server's address (":http" when empty), then serves until
 // [Engine.Stop]. IsRunning becomes true only after the listener is bound. It
 // returns nil after Stop, httpx.ErrEngineClosed when Stop was already called,
-// and the listen or serve error otherwise.
+// an error when Start was already called, and the listen or serve error
+// otherwise.
 func (e *Engine) Start() error {
+	e.lifecycleMu.Lock()
 	if e.closed.Load() {
+		e.lifecycleMu.Unlock()
 		return httpx.ErrEngineClosed
+	}
+	if !e.started.CompareAndSwap(false, true) {
+		e.lifecycleMu.Unlock()
+		return errAlreadyStarted
 	}
 	addr := e.server.Addr
 	if addr == "" {
 		addr = ":http"
 	}
-	// Bind first so IsRunning only reports true once the listener exists.
+	// Bind under lifecycleMu so a concurrent Stop sets closed/inShutdown either
+	// strictly before Start checks closed or after ln exists for Serve.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		e.lifecycleMu.Unlock()
 		return err
 	}
 	e.running.Store(true)
+	e.lifecycleMu.Unlock()
 	defer e.running.Store(false)
 	if err := e.server.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -343,7 +368,9 @@ func (e *Engine) Start() error {
 // returned. A nil ctx waits indefinitely. After Stop, Start returns
 // httpx.ErrEngineClosed.
 func (e *Engine) Stop(ctx context.Context) error {
+	e.lifecycleMu.Lock()
 	e.closed.Store(true)
+	e.lifecycleMu.Unlock()
 	// httpx.Close force-closes when the graceful drain fails, so the server is
 	// down whatever it returns — the running flag has to fall with it. Storing
 	// it only on a nil error left IsRunning reporting true for the rest of the
@@ -357,6 +384,10 @@ func (e *Engine) IsRunning() bool {
 	return e.running.Load()
 }
 
+// neverClosedCloseNotify satisfies gin's CloseNotifier forwarding for every
+// in-process Do call without allocating a channel per request.
+var neverClosedCloseNotify = make(chan bool)
+
 // closeNotifyRecorder augments httptest.ResponseRecorder with the legacy
 // http.CloseNotifier interface. gin's responseWriter forwards CloseNotify to
 // the underlying writer unconditionally, so handlers that probe it (e.g.
@@ -365,15 +396,14 @@ func (e *Engine) IsRunning() bool {
 // no connection that could drop.
 type closeNotifyRecorder struct {
 	*httptest.ResponseRecorder
-	done chan bool
 }
 
-func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return r.done }
+func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return neverClosedCloseNotify }
 
 // Do serves req in-process through the gin engine and returns the buffered
 // response. It implements httpx.TestRequester.
 func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	rr := httptest.NewRecorder()
-	e.engine.ServeHTTP(&closeNotifyRecorder{ResponseRecorder: rr, done: make(chan bool)}, req)
+	e.engine.ServeHTTP(&closeNotifyRecorder{ResponseRecorder: rr}, req)
 	return rr.Result(), nil
 }

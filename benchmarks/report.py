@@ -9,6 +9,7 @@ git revision and the dirty files are recorded alongside the numbers.
 """
 import argparse
 import json
+import os
 import platform
 import re
 import shutil
@@ -20,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+GO = os.environ.get('GO', 'go')
 # Generated output goes in its own directory. results/ also holds older raw
 # data from past experiments, and a generator writing into the same namespace
 # would eventually overwrite one of them. None of results/ is tracked: benchmarks/ has no go.mod, so anything committed here
@@ -73,7 +75,7 @@ def main():
     # inlining decisions, same dependency versions, no rebuild between tables.
     conformance = BIN / 'conformance.test'
     log(f'compiling the conformance benchmark binary -> {rel(conformance)}')
-    run(['go', 'test', '-c', './conformance', '-o', str(conformance)])
+    run([GO, 'test', '-c', './conformance', '-o', str(conformance)])
     env['framework_versions'] = framework_versions(conformance)
 
     tables = {}
@@ -89,7 +91,7 @@ def main():
     if not args.skip_gin_depth:
         ginbin = BIN / 'ginx.test'
         log(f'compiling the ginx diagnostic binary -> {rel(ginbin)}')
-        run(['go', 'test', '-c', './ginx', '-o', str(ginbin)])
+        run([GO, 'test', '-c', './ginx', '-o', str(ginbin)])
         raw = RESULTS / 'gin-depth.txt'
         log(f'measuring the gin deep-chain curves -> {rel(raw)}')
         raw.write_text(bench_binary(ginbin, '^(BenchmarkGinCallDepth|BenchmarkGinDepthCurve|BenchmarkNestedScopes)$', args))
@@ -101,7 +103,8 @@ def main():
         log(f'running the fixed-rate network comparison at {args.rate}/s -> {rel(out)}')
         try:
             run([sys.executable, str(ROOT / 'benchmarks/network.py'),
-                 '--binary', str(conformance), '--rate', str(args.rate), '--output', str(out)])
+                 '--binary', str(conformance), '--rate', str(args.rate),
+                 '--cpu', str(args.cpu), '--output', str(out)])
             network = json.loads(out.read_text())
         except subprocess.CalledProcessError:
             log('network comparison failed (is vegeta installed?); the section is omitted')
@@ -733,7 +736,7 @@ def environment(args) -> dict:
     dirty = capture(['git', 'status', '--porcelain'])
     return {
         'date_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-        'go': capture(['go', 'version']),
+        'go': capture([GO, 'version']),
         'platform': platform.platform(),
         'cpu': cpu_model(),
         'git_head': head,
@@ -755,7 +758,7 @@ def framework_versions(binary: Path) -> list:
     """Reads the framework versions compiled into binary, which under go.work
     can differ from what the adapters' go.mod files require."""
     out = []
-    for line in capture(['go', 'version', '-m', str(binary)]).splitlines():
+    for line in capture([GO, 'version', '-m', str(binary)]).splitlines():
         fields = line.split()
         if len(fields) >= 3 and fields[0] == 'dep' and fields[1] in FRAMEWORKS:
             out.append(f'{fields[1]} {fields[2]}')
@@ -797,6 +800,6 @@ def log(message: str):
 
 
 if __name__ == '__main__':
-    if shutil.which('go') is None:
-        sys.exit('go is not on PATH')
+    if shutil.which(GO) is None:
+        sys.exit(f'{GO} is not on PATH')
     main()

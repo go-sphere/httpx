@@ -200,7 +200,7 @@ func writeGolden(t *testing.T, name, content string) {
 	t.Logf("wrote %s", path)
 }
 
-func goldenSourceDir() (string, bool) {
+var goldenSourceDir = sync.OnceValues(func() (string, bool) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return "", false
@@ -210,13 +210,15 @@ func goldenSourceDir() (string, bool) {
 	if err != nil || !info.IsDir() {
 		return dir, false
 	}
-	probe := filepath.Join(dir, ".writable")
-	if err := os.WriteFile(probe, nil, 0o644); err != nil {
+	f, err := os.CreateTemp(dir, ".writable-*")
+	if err != nil {
 		return dir, false
 	}
-	_ = os.Remove(probe)
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
 	return dir, true
-}
+})
 
 func diffContracts(wantName, want, gotName, got string) string {
 	wantLines := strings.Split(strings.TrimRight(want, "\n"), "\n")
@@ -302,7 +304,7 @@ func (l *goldenLedger) checkOrphans(t *testing.T, fsys fs.FS) {
 	}
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() || e.Name() == "README.md" {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || e.Name() == "README.md" {
 			continue
 		}
 		names = append(names, e.Name())

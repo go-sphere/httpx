@@ -174,7 +174,10 @@ func (f *MiddlewareFallback) Handler() Handler {
 	if cur := f.cur.Load(); cur != nil && cur.own == own {
 		return cur.h
 	}
-	h := f.chain.ComposeOwn(f.leaf)
+	h := f.leaf
+	if own != nil {
+		h = ComposeMiddleware(f.leaf, *own)
+	}
 	f.cur.Store(&composedFallback{own: own, h: h})
 	return h
 }

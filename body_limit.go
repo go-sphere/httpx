@@ -15,11 +15,15 @@ func LimitRequestBody(w http.ResponseWriter, r *http.Request, n int64) error {
 	if n <= 0 {
 		return nil
 	}
-	if r.ContentLength > n {
-		return &http.MaxBytesError{Limit: n}
-	}
 	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, n)
+	}
+	if r.ContentLength > n {
+		r.Close = true
+		if w != nil {
+			w.Header().Set("Connection", "close")
+		}
+		return &http.MaxBytesError{Limit: n}
 	}
 	return nil
 }

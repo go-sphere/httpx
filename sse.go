@@ -48,9 +48,52 @@ type SSEEvent struct {
 	Retry time.Duration
 }
 
-// dataLineBreaks translates the three event-stream line break forms to LF so
-// payload lines can be split uniformly.
-var dataLineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+// writeLines appends each CR, LF, or CRLF-separated line of s with prefix.
+func writeLines(buf *bytes.Buffer, prefix, s string) {
+	for i := 0; ; {
+		nl := strings.IndexAny(s[i:], "\r\n")
+		if nl < 0 {
+			buf.WriteString(prefix)
+			buf.WriteString(s[i:])
+			buf.WriteByte('\n')
+			return
+		}
+		buf.WriteString(prefix)
+		buf.WriteString(s[i : i+nl])
+		buf.WriteByte('\n')
+		i += nl
+		if s[i] == '\r' && i+1 < len(s) && s[i+1] == '\n' {
+			i += 2
+		} else {
+			i++
+		}
+	}
+}
+
+func writeEventHeader(buf *bytes.Buffer, id, event string, retry time.Duration) error {
+	if strings.ContainsAny(id, "\r\n\x00") {
+		return fmt.Errorf("httpx: SSE event ID %q contains CR, LF, or NUL", id)
+	}
+	if strings.ContainsAny(event, "\r\n") {
+		return fmt.Errorf("httpx: SSE event type %q contains CR or LF", event)
+	}
+	if event != "" {
+		buf.WriteString("event: ")
+		buf.WriteString(event)
+		buf.WriteByte('\n')
+	}
+	if id != "" {
+		buf.WriteString("id: ")
+		buf.WriteString(id)
+		buf.WriteByte('\n')
+	}
+	if retry >= time.Millisecond {
+		buf.WriteString("retry: ")
+		buf.WriteString(strconv.FormatInt(int64(retry/time.Millisecond), 10))
+		buf.WriteByte('\n')
+	}
+	return nil
+}
 
 // encode appends the wire form of e to buf. It reports an error for field
 // values that would break event framing instead of writing them.
@@ -58,33 +101,11 @@ func (e *SSEEvent) encode(buf *bytes.Buffer) error {
 	if e.ID == "" && e.Event == "" && e.Data == "" && e.Retry < time.Millisecond {
 		return errors.New("httpx: SSE event is empty")
 	}
-	if strings.ContainsAny(e.ID, "\r\n\x00") {
-		return fmt.Errorf("httpx: SSE event ID %q contains CR, LF, or NUL", e.ID)
-	}
-	if strings.ContainsAny(e.Event, "\r\n") {
-		return fmt.Errorf("httpx: SSE event type %q contains CR or LF", e.Event)
-	}
-	if e.Event != "" {
-		buf.WriteString("event: ")
-		buf.WriteString(e.Event)
-		buf.WriteByte('\n')
-	}
-	if e.ID != "" {
-		buf.WriteString("id: ")
-		buf.WriteString(e.ID)
-		buf.WriteByte('\n')
-	}
-	if e.Retry >= time.Millisecond {
-		buf.WriteString("retry: ")
-		buf.WriteString(strconv.FormatInt(int64(e.Retry/time.Millisecond), 10))
-		buf.WriteByte('\n')
+	if err := writeEventHeader(buf, e.ID, e.Event, e.Retry); err != nil {
+		return err
 	}
 	if e.Data != "" {
-		for line := range strings.SplitSeq(dataLineBreaks.Replace(e.Data), "\n") {
-			buf.WriteString("data: ")
-			buf.WriteString(line)
-			buf.WriteByte('\n')
-		}
+		writeLines(buf, "data: ", e.Data)
 	}
 	buf.WriteByte('\n')
 	return nil
@@ -115,6 +136,9 @@ func NewSSEWriter(w io.Writer) *SSEWriter {
 // It reports an error if e is empty, if a field value would break event
 // framing (see the SSEEvent field docs), or if the underlying write fails.
 func (s *SSEWriter) Send(e *SSEEvent) error {
+	if e == nil {
+		return nil
+	}
 	s.buf.Reset()
 	if err := e.encode(&s.buf); err != nil {
 		return err
@@ -136,7 +160,19 @@ func (s *SSEWriter) SendJSON(event string, v any) error {
 	if err != nil {
 		return err
 	}
-	return s.Send(&SSEEvent{Event: event, Data: string(data)})
+	s.buf.Reset()
+	if err := writeEventHeader(&s.buf, "", event, 0); err != nil {
+		return err
+	}
+	if !bytes.ContainsAny(data, "\r\n") {
+		s.buf.WriteString("data: ")
+		s.buf.Write(data)
+		s.buf.WriteByte('\n')
+	} else {
+		writeLines(&s.buf, "data: ", string(data))
+	}
+	s.buf.WriteByte('\n')
+	return s.flushBuf()
 }
 
 // Comment writes a comment (a line starting with ":") to the stream.
@@ -145,11 +181,7 @@ func (s *SSEWriter) SendJSON(event string, v any) error {
 // Line breaks in text produce one comment line each.
 func (s *SSEWriter) Comment(text string) error {
 	s.buf.Reset()
-	for line := range strings.SplitSeq(dataLineBreaks.Replace(text), "\n") {
-		s.buf.WriteString(": ")
-		s.buf.WriteString(line)
-		s.buf.WriteByte('\n')
-	}
+	writeLines(&s.buf, ": ", text)
 	s.buf.WriteByte('\n')
 	return s.flushBuf()
 }
@@ -177,6 +209,9 @@ func (s *SSEWriter) flushBuf() error {
 // If ctx does not implement Streamer, ServerSentEvents returns
 // ErrStreamerNotSupported without writing to the response.
 func ServerSentEvents(ctx Context, fn func(w *SSEWriter) error) error {
+	if fn == nil {
+		return errors.New("httpx: SSE callback is nil")
+	}
 	streamer, ok := AsStreamer(ctx)
 	if !ok {
 		return ErrStreamerNotSupported

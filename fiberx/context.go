@@ -263,12 +263,12 @@ func (c fiberContext[T]) Cookie(name string) (string, error) {
 }
 
 func (c fiberContext[T]) Cookies() map[string]string {
-	out := make(map[string]string)
+	var out map[string]string
 	for k, v := range c.ctx.Request().Header.Cookies() {
+		if out == nil {
+			out = make(map[string]string)
+		}
 		out[string(k)] = string(v)
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }
@@ -312,19 +312,20 @@ func (c fiberContext[T]) BindJSON(dst any) error {
 	return httpx.WrapBindError(settingsOf(c.ctx).jsonDecoder(c.ctx.BodyRaw(), dst))
 }
 
-// bind returns fiber's binder with validation off: Bind* decodes only, and an
-// app passed through WithEngine may have a StructValidator configured. None of
-// the binders used through it reads the body with fiber's decoding Body.
-func (c fiberContext[T]) bind() *fiber.Bind {
-	return c.ctx.Bind().SkipValidation(true)
+// withBind runs fn with validation disabled and restores SkipValidation(false)
+// afterwards so pooled DefaultCtx instances keep validation for native users.
+func (c fiberContext[T]) withBind(fn func(*fiber.Bind) error) error {
+	b := c.ctx.Bind().SkipValidation(true)
+	defer b.SkipValidation(false)
+	return fn(b)
 }
 
 func (c fiberContext[T]) BindQuery(dst any) error {
-	return httpx.WrapBindError(c.bind().Query(dst))
+	return httpx.WrapBindError(c.withBind(func(b *fiber.Bind) error { return b.Query(dst) }))
 }
 
 func (c fiberContext[T]) BindForm(dst any) error {
-	return httpx.WrapBindError(c.bind().Form(dst))
+	return httpx.WrapBindError(c.withBind(func(b *fiber.Bind) error { return b.Form(dst) }))
 }
 
 func (c fiberContext[T]) BindURI(dst any) error {
@@ -350,7 +351,7 @@ func (c fiberContext[T]) bindURI(dst any) error {
 	}
 	wildcard := c.wildcardParamName()
 	if wildcard == "" && !c.decodesParams() {
-		return c.bind().URI(dst)
+		return c.withBind(func(b *fiber.Bind) error { return b.URI(dst) })
 	}
 	names := route.Params
 	if wildcard != "" {
@@ -404,13 +405,13 @@ func (c fiberContext[T]) bindHeader(dst any) error {
 	header := &c.ctx.Request().Header
 	host := header.Host()
 	if len(host) == 0 {
-		return c.bind().Header(dst)
+		return c.withBind(func(b *fiber.Bind) error { return b.Header(dst) })
 	}
 	// The returned slice aliases the buffer that emptying the host reuses.
 	saved := bytes.Clone(host)
 	header.SetHostBytes(nil)
 	defer header.SetHostBytes(saved)
-	return c.bind().Header(dst)
+	return c.withBind(func(b *fiber.Bind) error { return b.Header(dst) })
 }
 
 // Responder (httpx.Responder)
@@ -474,7 +475,31 @@ func (c fiberContext[T]) Status(code int) {
 	}
 }
 
+func bodyless(code int) bool {
+	return code >= 100 && code < 200 || code == http.StatusNoContent || code == http.StatusNotModified
+}
+
+func commitsBodyless(native fiber.Ctx, code int) bool {
+	if responseDecided(native) {
+		return bodyless(native.Response().StatusCode())
+	}
+	return bodyless(code)
+}
+
 func (c fiberContext[T]) JSON(code int, v any) error {
+	if commitsBodyless(c.ctx, code) {
+		if _, err := settingsOf(c.ctx).jsonEncoder(v); err != nil {
+			return err
+		}
+		return c.writeBody(func() error {
+			if len(explicitContentType(c.ctx)) == 0 {
+				c.ctx.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
+			}
+			c.ctx.Status(code)
+			c.ctx.Response().ResetBody()
+			return nil
+		})
+	}
 	return c.writeBody(func() error {
 		// fiber's JSON replaces the Content-Type unless handed one; a preset
 		// one is copied out because it aliases the buffer JSON writes into.
@@ -493,9 +518,15 @@ func (c fiberContext[T]) JSON(code int, v any) error {
 }
 
 func (c fiberContext[T]) Text(code int, s string) error {
+	bl := commitsBodyless(c.ctx, code)
 	return c.writeBody(func() error {
 		c.ctx.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
-		return c.ctx.Status(code).SendString(s)
+		c.ctx.Status(code)
+		if bl {
+			c.ctx.Response().ResetBody()
+			return nil
+		}
+		return c.ctx.SendString(s)
 	})
 }
 
@@ -508,22 +539,47 @@ func (c fiberContext[T]) NoContent(code int) error {
 }
 
 func (c fiberContext[T]) Bytes(code int, b []byte, contentType string) error {
+	if contentType == "" {
+		contentType = http.DetectContentType(b)
+	}
+	bl := commitsBodyless(c.ctx, code)
 	return c.writeBody(func() error {
-		if contentType == "" {
-			contentType = http.DetectContentType(b)
-		}
 		c.ctx.Set(fiber.HeaderContentType, contentType)
+		c.ctx.Status(code)
+		if bl {
+			c.ctx.Response().ResetBody()
+			return nil
+		}
 		// SetBody copies: fiber's Send keeps b and serializes it after the
 		// handler returns, by which time the caller may have reused it.
-		c.ctx.Status(code).Response().SetBody(b)
+		c.ctx.Response().SetBody(b)
 		return nil
 	})
 }
 
 func (c fiberContext[T]) DataFromReader(code int, contentType string, r io.Reader, size int64) error {
+	bl := commitsBodyless(c.ctx, code)
+	if bl {
+		if rc, ok := r.(io.Closer); ok {
+			defer func() { _ = rc.Close() }()
+		}
+		return c.writeBody(func() error {
+			if contentType != "" {
+				c.ctx.Set(fiber.HeaderContentType, contentType)
+			}
+			c.ctx.Status(code)
+			c.ctx.Response().ResetBody()
+			return nil
+		})
+	}
 	return c.writeBody(func() error {
 		if contentType != "" {
 			c.ctx.Set(fiber.HeaderContentType, contentType)
+		}
+		if r == nil {
+			c.ctx.Status(code)
+			c.ctx.Response().ResetBody()
+			return nil
 		}
 		return c.ctx.Status(code).SendStream(r, streamSize(size))
 	})
@@ -551,9 +607,14 @@ func (c fiberContext[T]) File(path string) error {
 		return httpx.InternalServerError(err)
 	}
 	return c.writeBody(func() error {
+		header := &c.ctx.Request().Header
+		if enc := header.Peek(fiber.HeaderAcceptEncoding); len(enc) > 0 {
+			saved := string(enc)
+			defer header.Set(fiber.HeaderAcceptEncoding, saved)
+		}
 		// fiber serves the file through a request URI set to its path, so the
 		// path is escaped for a name holding '#', '?' or '%' to survive.
-		return c.ctx.SendFile(escapeFilePath(abs))
+		return c.ctx.SendFile(escapeFilePath(abs), fiber.SendFile{ByteRange: true})
 	})
 }
 
@@ -580,6 +641,9 @@ func (c fiberContext[T]) SetHeader(key, value string) {
 	if c.Committed() {
 		return
 	}
+	if strings.EqualFold(key, fiber.HeaderSetCookie) {
+		c.ctx.Response().Header.DelAllCookies()
+	}
 	c.ctx.Set(key, value)
 }
 
@@ -591,6 +655,13 @@ func (c fiberContext[T]) AddHeader(key, value string) {
 }
 
 func (c fiberContext[T]) ResponseHeaderValues(key string) []string {
+	if strings.EqualFold(key, fiber.HeaderSetCookie) {
+		var cookies []string
+		for _, v := range c.ctx.Response().Header.Cookies() {
+			cookies = append(cookies, string(v))
+		}
+		return cookies
+	}
 	var raw [][]byte
 	if strings.EqualFold(key, fiber.HeaderContentType) {
 		if ct := explicitContentType(c.ctx); len(ct) > 0 {
@@ -659,7 +730,9 @@ func (c fiberContext[T]) Context() context.Context {
 }
 
 func (c fiberContext[T]) SetContext(ctx context.Context) {
-	c.ctx.SetContext(ctx)
+	if ctx != nil {
+		c.ctx.SetContext(ctx)
+	}
 }
 
 func (c fiberContext[T]) StatusCode() int {
@@ -720,7 +793,9 @@ func (c fiberContext[T]) Stream(code int, contentType string, fn func(w io.Write
 				return
 			}
 		}
-		_ = fn(fw)
+		if fn != nil {
+			_ = fn(fw)
+		}
 	})
 }
 

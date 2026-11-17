@@ -1,7 +1,9 @@
 package stdx
 
 import (
+	"fmt"
 	"net/textproto"
+	"net/url"
 	"reflect"
 	"strings"
 
@@ -41,4 +43,40 @@ func newHeaderDecoder() *form.Decoder {
 		return name
 	})
 	return d
+}
+
+func validateFormKeys(values url.Values) error {
+	for k := range values {
+		insideBracket := false
+		for i := 0; i < len(k); i++ {
+			switch k[i] {
+			case '[':
+				if insideBracket {
+					return fmt.Errorf("stdx: invalid form key %q: unexpected '['", k)
+				}
+				insideBracket = true
+			case ']':
+				if !insideBracket {
+					return fmt.Errorf("stdx: invalid form key %q: missing '['", k)
+				}
+				insideBracket = false
+			}
+		}
+		if insideBracket {
+			return fmt.Errorf("stdx: invalid form key %q: missing ']'", k)
+		}
+	}
+	return nil
+}
+
+func decodeFormValues(d *form.Decoder, dst any, values url.Values) (err error) {
+	if err := validateFormKeys(values); err != nil {
+		return err
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("stdx: form decode panic: %v", r)
+		}
+	}()
+	return d.Decode(dst, values)
 }
