@@ -309,7 +309,11 @@ func (c fiberContext[T]) BodyReader() io.ReadCloser {
 
 // BindJSON decodes the raw body (see BodyReader) with the app's JSONDecoder.
 func (c fiberContext[T]) BindJSON(dst any) error {
-	return httpx.WrapBindError(settingsOf(c.ctx).jsonDecoder(c.ctx.BodyRaw(), dst))
+	body := c.ctx.BodyRaw()
+	if len(body) == 0 {
+		return httpx.WrapBindError(io.EOF)
+	}
+	return httpx.WrapBindError(settingsOf(c.ctx).jsonDecoder(body, dst))
 }
 
 // withBind runs fn with validation disabled and restores SkipValidation(false)

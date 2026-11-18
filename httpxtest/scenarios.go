@@ -37,12 +37,6 @@ type Scenario struct {
 	Header map[string]string
 	// Body is the request body, or nil.
 	Body []byte
-	// BenchmarkOnly marks a scenario that is measured but not recorded as a
-	// golden contract.
-	//
-	// Deprecated: no scenario sets it. A response too large to review is
-	// recorded as a json-sha256 digest instead (see httpxtest/golden).
-	BenchmarkOnly bool
 }
 
 // NewRequest builds a fresh request for the scenario.
@@ -330,9 +324,6 @@ func staticScenario() Scenario {
 func casesScenarios(t *testing.T, r runner) {
 	for _, sc := range Scenarios() {
 		t.Run(sc.Name, func(t *testing.T) {
-			if sc.BenchmarkOnly {
-				r.skipf(t, "%s is measured but not recorded: its response is too large for a contract", sc.Name)
-			}
 			r.assertGolden(t, sc.Register, sc.NewRequest())
 		})
 	}

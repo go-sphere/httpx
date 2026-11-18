@@ -143,7 +143,9 @@ func normalizeFiberError(err error) error {
 // enabled and DisableHeadAutoRegister set, as [NewConfig] does. [New]
 // registers one fallback handler on engine with app.Use. Do not combine it
 // with [WithTrustedProxies]; configure TrustProxy on your own fiber.Config
-// instead.
+// instead. Because fiber.Config is immutable after fiber.New, when passing
+// WithEngine(app) alongside [WithMaxBodySize](n) where n > app.Config().BodyLimit,
+// callers must set BodyLimit on fiber.Config when creating app.
 func WithEngine(engine *fiber.App) Option {
 	return func(conf *Config) {
 		conf.engine = engine
@@ -201,8 +203,10 @@ func WithErrorHandler(errHandler httpx.ErrorHandler) Option {
 // fiber.Config.BodyLimit (4 MiB by default) first, answering through
 // fiber.Config.ErrorHandler instead. An app built by the adapter has BodyLimit
 // raised to n when n exceeds it; an app passed through [WithEngine] keeps its
-// own. When that app streams request bodies (StreamRequestBody), only a
-// declared Content-Length is checked.
+// own because fiber.Config is immutable after fiber.New, so callers passing
+// WithEngine(app) alongside WithMaxBodySize(n) with n > app.Config().BodyLimit
+// must set BodyLimit on fiber.Config when creating app. When that app streams
+// request bodies (StreamRequestBody), only a declared Content-Length is checked.
 func WithMaxBodySize(n int64) Option {
 	return func(conf *Config) {
 		conf.maxBodySize = n

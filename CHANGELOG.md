@@ -4,12 +4,13 @@
 
 ### Breaking changes
 
-- **Breaking** `stdx`: a server the adapter creates (the default, or
-  `WithAddr`) now has `ReadHeaderTimeout` (10 s, `DefaultReadHeaderTimeout`)
-  and `IdleTimeout` (120 s, `DefaultIdleTimeout`), so a client that sends its
-  headers slowly or leaves a keep-alive connection idle no longer holds it
-  forever. No whole-request read or write timeout is set. A server supplied
-  with `WithServer` is unchanged.
+- **Breaking** `stdx`, `ginx`, `echox`: a server the adapter creates (the
+  default, or `WithAddr`) now has `ReadHeaderTimeout` (10 s; exported as
+  `DefaultReadHeaderTimeout` in `stdx`) and `IdleTimeout` (120 s; exported as
+  `DefaultIdleTimeout` in `stdx`), so a client that sends its headers slowly or
+  leaves a keep-alive connection idle no longer holds it forever. No
+  whole-request read or write timeout is set. A server supplied with
+  `WithServer` is unchanged.
 
 - **Breaking** behaviour on every adapter, aligning them on one contract:
   - `BindForm` binds the form body only (urlencoded and multipart fields);
@@ -33,16 +34,24 @@
   - `WithErrorHandler(nil)` is ignored on every adapter: the handler
     configured before it stays (echox and stdx used to reset to the
     default). ginx's `WithNativeErrorHandler(nil)` is ignored too.
-- **Breaking** `echox`: route errors are always rendered inside the route, at
-  the end of the composed chain, as on ginx and with `WithErrorHandler`.
-  With the default configuration an echo middleware registered with
-  `UseNative` now gets nil back from `next` and reads the rendered status from
-  the response, instead of receiving the error. An `HTTPErrorHandler` set on
-  the echo instance after `New` renders route errors too.
+- **Breaking** `echox`:
+  - Upgraded `github.com/labstack/echo/v4` to `v4.16.5`, which defaults to
+    using the connection peer IP when `Echo.IPExtractor` is nil instead of
+    trusting forwarding headers from every peer; configure
+    `WithTrustedProxies` when running behind a reverse proxy.
+  - Route errors are always rendered inside the route, at the end of the
+    composed chain, as on ginx and with `WithErrorHandler`. With the default
+    configuration an echo middleware registered with `UseNative` now gets nil
+    back from `next` and reads the rendered status from the response, instead
+    of receiving the error. An `HTTPErrorHandler` set on the echo instance
+    after `New` renders route errors too.
 - **Breaking** `fiberx`: `BodyReader` and `Bind*` read the raw request body:
   a gzip body is no longer decompressed (no other adapter did), and an unknown
   `Content-Encoding` no longer writes a 415 into the response. `BindJSON` uses
   the app's `JSONDecoder`. Multipart parsing still goes through fasthttp.
+- **Breaking** `httpxtest`: `Scenario.BenchmarkOnly` is removed (a response
+  too large to review is recorded as a json-sha256 digest instead; see
+  `httpxtest/golden`).
 - **Breaking** for third-party adapters run through `httpxtest`: the new cases
   below pin contracts an adapter may not meet yet.
 
@@ -80,7 +89,6 @@
 - hertzx `Stop` waits for in-flight requests until its context is done (hertz
   capped the wait at `ExitWaitTimeout`, 5 s by default); the standard
   transport's own 30 s cap remains.
-- `httpxtest.Scenario.BenchmarkOnly` is deprecated; no scenario sets it.
 - `httpxmock` counts `Committed` and `ResponseHeaderValues` in `CallCount`.
 - `httpxtest`: duplicate cases are removed (their unique assertions folded
   into the cases kept), the `ReleaseRegression` group is gone, and `Run` ends
@@ -92,7 +100,8 @@
   covered by `TestEngineLifecycleErrorsConformance` are removed; stdx-only
   regressions moved to `stdx`.
 - `make api-compat` compares against the latest released tag (override with
-  `API_BASELINE`) and includes `stdx`.
+  `API_BASELINE`), includes `stdx`, and checks against
+  `compat/api-incompatibilities.txt`.
 - `benchmarks/report.py` derives the network section's conclusion from the
   run and reads framework versions from the compiled binary;
   `benchmarks/network.py` writes under `results/latest/` by default.
@@ -128,10 +137,11 @@
   handler receives the context set with `SetContext`; `Flush` sends the
   status line and headers before any body; `Do` reports a "200 OK" status
   line; a committing write no longer allocates hertz's key map.
-- fiberx: `File` serves names containing `#`, `?` or `%`; `Bind*` no longer
-  runs a `StructValidator` configured on an app passed through `WithEngine`;
-  `ClientIP` no longer returns a view of pooled request memory; `Do` has no
-  1 s timeout; `HandleStd`/`Static` follow the post-commit rules.
+- fiberx: `BindJSON` returns `httpx.WrapBindError(io.EOF)` on an empty body,
+  matching the other adapters; `File` serves names containing `#`, `?` or `%`;
+  `Bind*` no longer runs a `StructValidator` configured on an app passed through
+  `WithEngine`; `ClientIP` no longer returns a view of pooled request memory;
+  `Do` has no 1 s timeout; `HandleStd`/`Static` follow the post-commit rules.
 - ginx: `Text` and `Bytes` return write errors instead of recording them in
   gin's error list.
 - ginx and hertzx: `SetHeader(key, "")` sends an empty header instead of

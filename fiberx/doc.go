@@ -60,9 +60,12 @@
 //     DisableDefaultContentType, so a response nothing labelled carries no
 //     Content-Type.
 //   - fiber.Config is immutable after fiber.New, so an app supplied with
-//     WithEngine keeps its own ErrorHandler, UnescapePath, CaseSensitive,
-//     StrictRouting, DisableHeadAutoRegister and DisableDefaultContentType
-//     settings and cannot be combined with WithTrustedProxies. httpx handler
+//     WithEngine keeps its own ErrorHandler, BodyLimit, UnescapePath,
+//     CaseSensitive, StrictRouting, DisableHeadAutoRegister and
+//     DisableDefaultContentType settings and cannot be combined with
+//     WithTrustedProxies. In particular, when passing WithEngine(app)
+//     alongside WithMaxBodySize(n) where n > app.Config().BodyLimit, callers
+//     must set BodyLimit on fiber.Config when creating app. httpx handler
 //     errors are still rendered by the adapter, and fasthttp's default
 //     Content-Type is never reported by ResponseHeaderValues nor copied by
 //     HandleStd or AdaptStdMiddleware. WithErrorHandler(nil) is ignored.

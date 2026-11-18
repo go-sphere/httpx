@@ -1,0 +1,6 @@
+# Intentional breaking changes relative to the baseline tag, one exact
+# `apidiff -m -incompatible` output line per entry.
+#
+# httpxtest.Scenario.BenchmarkOnly was deprecated in v0.0.6+Unreleased and
+# removed because large responses are recorded as json-sha256 digests instead.
+- ./httpxtest.Scenario.BenchmarkOnly: removed

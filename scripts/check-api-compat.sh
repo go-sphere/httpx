@@ -5,6 +5,12 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 GO_BIN=${GO:-go}
 APIDIFF_VERSION=${APIDIFF_VERSION:-v0.0.0-20261113113407-e3970619a1a4}
+ALLOWLIST="$ROOT_DIR/compat/api-incompatibilities.txt"
+
+if [[ ! -f "$ALLOWLIST" ]]; then
+	echo "API compatibility allowlist not found: $ALLOWLIST" >&2
+	exit 1
+fi
 
 MODULES=(
 	".|github.com/go-sphere/httpx"
@@ -85,9 +91,19 @@ for entry in "${MODULES[@]}"; do
 		echo "apidiff failed comparing $module_path relative to $baseline_version" >&2
 		exit 1
 	fi
-	if [[ -s "$changes_file" ]]; then
+
+	unexpected_file="$temp_dir/unexpected.txt"
+	: >"$unexpected_file"
+	while IFS= read -r change; do
+		[[ -z "$change" ]] && continue
+		if ! grep -Fqx -- "$change" "$ALLOWLIST"; then
+			printf '%s\n' "$change" >>"$unexpected_file"
+		fi
+	done <"$changes_file"
+
+	if [[ -s "$unexpected_file" ]]; then
 		echo "Incompatible API changes in $module_path relative to $baseline_version:" >&2
-		cat "$changes_file" >&2
+		cat "$unexpected_file" >&2
 		exit 1
 	fi
 

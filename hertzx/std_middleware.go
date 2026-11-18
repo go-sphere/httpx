@@ -32,6 +32,11 @@ import (
 // without committing, and an error is returned to be rendered as on the other
 // adapters. The same holds when the middleware stops the chain without writing,
 // so a layer above can still answer.
+//
+// Request bridging is one-way except for context values: r.Context() propagates
+// downstream to the httpx chain, while in-place mutations to other
+// *http.Request fields (such as r.Header, r.URL, or r.Body) do not write back
+// to Hertz.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(next httpx.Handler) httpx.Handler { return next }

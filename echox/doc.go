@@ -59,4 +59,7 @@
 //     error handler (echo's HTTPErrorHandler without WithErrorHandler), so a
 //     UseNative layer sees the rendered response and a nil error after next.
 //   - Stop cuts connections still in flight once its context expires.
+//   - A server the adapter creates bounds header reads (10s) and idle
+//     keep-alive connections (120s); one supplied with [WithServer] is used as
+//     configured.
 package echox

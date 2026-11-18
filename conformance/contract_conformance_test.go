@@ -120,13 +120,14 @@ func TestClientIPFrameworkDifferences(t *testing.T) {
 		},
 		{
 			// Without WithTrustedProxies each adapter keeps its framework's own
-			// default: gin, echo and hertz honor forwarding headers from any
-			// peer, fiber and stdx answer with the peer.
+			// default: gin and hertz honor forwarding headers from any peer,
+			// whereas echo (v4.16.5+ defaults to peer IP when IPExtractor == nil),
+			// fiber and stdx answer with the peer.
 			name: "DefaultPolicyHonorsForwardedFor",
 			xff:  "203.0.113.9",
 			want: map[string]string{
-				"ginx": "203.0.113.9", "echox": "203.0.113.9", "hertzx": "203.0.113.9",
-				"fiberx": "127.0.0.1", "stdx": "127.0.0.1",
+				"ginx": "203.0.113.9", "hertzx": "203.0.113.9",
+				"echox": "127.0.0.1", "fiberx": "127.0.0.1", "stdx": "127.0.0.1",
 			},
 		},
 	}

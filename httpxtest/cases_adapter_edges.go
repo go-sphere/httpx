@@ -1,6 +1,7 @@
 package httpxtest
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -354,6 +355,28 @@ func casesAdapterEdges(t *testing.T, r runner) {
 		}, req)
 		if got.Status != http.StatusBadRequest {
 			t.Fatalf("status=%d body=%q, want 400", got.Status, got.Body)
+		}
+	})
+
+	t.Run("BindJSONEmptyBodyReturnsEOF", func(t *testing.T) {
+		type payload struct {
+			Name string `json:"name"`
+		}
+		var bindErr error
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/bind-json-empty", strings.NewReader(""))
+		req.Header.Set("Content-Type", "application/json")
+		got := r.serveWith(t, Options{ErrorHandler: statusTextErrorHandler}, func(router httpx.Router) {
+			router.POST("/bind-json-empty", func(ctx httpx.Context) error {
+				var p payload
+				bindErr = ctx.BindJSON(&p)
+				return bindErr
+			})
+		}, req)
+		if got.Status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%q, want 400", got.Status, got.Body)
+		}
+		if !errors.Is(bindErr, io.EOF) {
+			t.Fatalf("BindJSON error = %v, want errors.Is(err, io.EOF)", bindErr)
 		}
 	})
 

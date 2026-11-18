@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
@@ -31,10 +32,10 @@ type Config struct {
 type Option func(*Config)
 
 // NewConfig applies opts in order and fills the defaults: echo.New(), an
-// http.Server listening on ":8080", and [DefaultErrorHandler] in
-// Echo.HTTPErrorHandler unless [WithErrorHandler] was given or the supplied
-// Echo already has a non-default handler. [New] calls it; most callers pass
-// options to New directly.
+// http.Server listening on ":8080" (see [WithAddr] for its timeouts), and
+// [DefaultErrorHandler] in Echo.HTTPErrorHandler unless [WithErrorHandler] was
+// given or the supplied Echo already has a non-default handler. [New] calls it;
+// most callers pass options to New directly.
 func NewConfig(opts ...Option) *Config {
 	conf := &Config{}
 	for _, opt := range opts {
@@ -60,9 +61,7 @@ func NewConfig(opts ...Option) *Config {
 		conf.engine.HTTPErrorHandler = DefaultErrorHandler
 	}
 	if conf.server == nil {
-		conf.server = &http.Server{
-			Addr: ":8080",
-		}
+		conf.server = newServer(":8080")
 	}
 	return conf
 }
@@ -117,7 +116,8 @@ func WithEngine(engine *echo.Echo) Option {
 
 // WithServer supplies the http.Server to serve with. [New] installs the echo
 // instance as its Handler, replacing any handler already set; the server's
-// other fields are kept. Start serves plain HTTP on a listener it binds
+// other fields (timeouts, Addr) are kept, and none of the defaults [WithAddr]
+// describes are applied. Start serves plain HTTP on a listener it binds
 // itself, so the server's TLS configuration is not used.
 //
 // Order matters with [WithAddr]: WithAddr after WithServer sets Addr on this
@@ -128,15 +128,34 @@ func WithServer(server *http.Server) Option {
 	}
 }
 
+// The timeouts of a server the adapter creates; see [WithAddr].
+const (
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultIdleTimeout       = 120 * time.Second
+)
+
+func newServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		ReadHeaderTimeout: defaultReadHeaderTimeout,
+		IdleTimeout:       defaultIdleTimeout,
+	}
+}
+
 // WithAddr sets the listen address, creating the http.Server when none was
 // supplied. It is the framework-neutral option present on every adapter. The
 // default is ":8080"; an empty address listens on ":http".
+//
+// A server the adapter creates limits how long a client may take to send its
+// request headers (10s) and how long an idle keep-alive connection stays open
+// (120s), so slow or idle clients cannot hold connections forever. It sets no
+// read or write timeout for the whole request, which would cut uploads and
+// streamed responses; supply a server with [WithServer] to choose other
+// limits.
 func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		if conf.server == nil {
-			conf.server = &http.Server{
-				Addr: addr,
-			}
+			conf.server = newServer(addr)
 		} else {
 			conf.server.Addr = addr
 		}
@@ -172,10 +191,10 @@ func WithMaxBodySize(n int64) Option {
 
 // WithTrustedProxies sets the uniform trusted-proxy policy for ClientIP:
 // X-Forwarded-For is honored only when the direct peer is inside the given
-// IPs/CIDRs, and an empty list ignores forwarding headers entirely (echo's
-// default trusts every peer). Echo never reads X-Real-IP; a bracketed IPv6
-// entry is normalized, and a blank entry falls back to the peer. Invalid
-// entries panic at construction time.
+// IPs/CIDRs, and an empty list ignores forwarding headers entirely (which is
+// also Echo v4.16.5+'s default when IPExtractor is nil). Echo never reads
+// X-Real-IP; a bracketed IPv6 entry is normalized, and a blank entry falls back
+// to the peer. Invalid entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
 		cidrs, err := httpx.ParseCIDRs(proxies)

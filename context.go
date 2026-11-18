@@ -20,8 +20,9 @@ type RequestInfo interface {
 	// ClientIP returns the best-effort client IP.
 	//
 	// SECURITY: which forwarding headers (X-Forwarded-For, X-Real-IP) are
-	// trusted differs per framework by default — gin, echo and hertz trust
-	// every peer, fiber trusts none. For a uniform, spoofing-resistant policy use
+	// trusted differs per framework by default — gin and hertz trust every
+	// peer, whereas echo (v4.16.5+), fiber and stdx ignore forwarding headers.
+	// For a uniform, spoofing-resistant policy use
 	// the adapter's WithTrustedProxies option: with it configured,
 	// X-Forwarded-For is honored only when the direct peer is inside the
 	// given CIDR list, and an empty list ignores forwarding headers
@@ -175,9 +176,11 @@ type Binder interface {
 // response would otherwise still be rewritable after the point at which a
 // client has conceptually received it.
 //
-// A status that carries no body (1xx, 204, 304) is committed by every
-// body-writing method without one: the bytes are dropped, a reader passed to
-// DataFromReader is closed without being read, and the call returns nil.
+// Bodyless statuses (1xx, 204, 304) drop body bytes, close any reader passed
+// to DataFromReader unread, and return nil. Terminal bodyless statuses (101,
+// 204, 304) commit the response, whereas informational 1xx statuses such as
+// 103 Early Hints leave it uncommitted on adapters supporting a subsequent
+// final response.
 //
 // A Content-Type set with SetHeader before the write is replaced by the one the
 // method writes, except by JSON, which keeps it so a handler can answer with a

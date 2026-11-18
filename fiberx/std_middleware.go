@@ -35,6 +35,11 @@ import (
 // headers the middleware staged are applied, and an error is returned to be
 // rendered as on the other adapters, including one a layer above returns
 // after the middleware stopped the chain without writing.
+//
+// Request bridging is one-way except for context values: r.Context() propagates
+// downstream to the httpx chain, while in-place mutations to other
+// *http.Request fields (such as r.Header, r.URL, or r.Body) do not write back
+// to Fiber.
 func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middleware {
 	if middleware == nil {
 		return func(next httpx.Handler) httpx.Handler { return next }
