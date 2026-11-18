@@ -21,6 +21,13 @@ MODULES=(
 	"stdx|github.com/go-sphere/httpx/stdx"
 )
 
+baseline_resolution_failed() {
+	echo "Cannot resolve a baseline release tag matching '$1' from git history." >&2
+	echo "A shallow clone without tags is the usual cause: actions/checkout needs fetch-depth: 0." >&2
+	echo "Set API_BASELINE to compare against a specific tag instead." >&2
+	exit 1
+}
+
 resolve_baseline_version() {
 	local module_dir=$1
 	if [[ -n "${API_BASELINE:-}" ]]; then
@@ -32,9 +39,9 @@ resolve_baseline_version() {
 		pattern="$module_dir/v[0-9]*"
 	fi
 	local tag
-	tag=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match "$pattern")
+	tag=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match "$pattern" 2>/dev/null) || baseline_resolution_failed "$pattern"
 	if git -C "$ROOT_DIR" tag --points-at HEAD | grep -Fxq "$tag"; then
-		tag=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match "$pattern" HEAD^)
+		tag=$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match "$pattern" HEAD^ 2>/dev/null) || baseline_resolution_failed "$pattern"
 	fi
 	if [[ "$module_dir" != "." ]]; then
 		tag=${tag#"$module_dir/"}
