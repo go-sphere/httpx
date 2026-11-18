@@ -2,6 +2,7 @@ package echox
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"maps"
 	"net/http"
@@ -46,8 +47,9 @@ type wildcardRoute struct {
 // Registration copies the map and publishes the copy, so a lookup on the
 // request path takes no lock and allocates nothing.
 type wildcardTable struct {
-	mu     sync.Mutex
-	routes atomic.Pointer[map[wildcardKey]wildcardRoute]
+	mu      sync.Mutex
+	routes  atomic.Pointer[map[wildcardKey]wildcardRoute]
+	claimed map[wildcardKey]string
 }
 
 type wildcardKey struct {
@@ -55,9 +57,58 @@ type wildcardKey struct {
 	pattern string
 }
 
-// set records route for method and the normalized pattern, or removes the
-// entry when route has no name: re-registering the pattern with an anonymous
-// wildcard replaces the named route in echo too.
+var echoAnyMethods = []string{
+	http.MethodConnect,
+	http.MethodDelete,
+	http.MethodGet,
+	http.MethodHead,
+	http.MethodOptions,
+	http.MethodPatch,
+	http.MethodPost,
+	echo.PROPFIND,
+	http.MethodPut,
+	http.MethodTrace,
+	echo.REPORT,
+}
+
+func canonicalEchoShape(joined string) string {
+	trimmed := strings.TrimPrefix(joined, "/")
+	parts := strings.Split(trimmed, "/")
+	for i, part := range parts {
+		switch {
+		case strings.HasPrefix(part, "*"):
+			parts[i] = "*"
+		case strings.HasPrefix(part, ":"):
+			if idx := strings.IndexByte(part[1:], ':'); idx >= 0 {
+				parts[i] = ":" + part[1+idx:]
+			} else {
+				parts[i] = ":"
+			}
+		}
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+func (t *wildcardTable) claim(methods []string, joined string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.claimed == nil {
+		t.claimed = make(map[wildcardKey]string)
+	}
+	shape := canonicalEchoShape(joined)
+	for _, m := range methods {
+		key := wildcardKey{method: m, pattern: shape}
+		if prev, exists := t.claimed[key]; exists {
+			panic(fmt.Sprintf("echox: duplicate route %s %s (conflicts with %s)", m, joined, prev))
+		}
+	}
+	for _, m := range methods {
+		t.claimed[wildcardKey{method: m, pattern: shape}] = joined
+	}
+}
+
+// set records route for method and the normalized pattern, or clears the entry
+// when route has no name.
 func (t *wildcardTable) set(method, pattern string, route wildcardRoute) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -185,10 +236,14 @@ func (r *Router) normalizeWildcardPath(path string) (string, wildcardRoute) {
 // Handle registers h for method (upper-cased) and path joined onto BasePath,
 // wrapped in the httpx middleware registered so far on this scope and its
 // parents. A named wildcard is rewritten for echo and its name kept for this
-// method. It panics on an invalid wildcard (httpx.ValidateWildcardPath).
+// method. It panics on an invalid wildcard (httpx.ValidateWildcardPath) or a
+// duplicate registration for the same method and path shape.
 func (r *Router) Handle(method, path string, h httpx.Handler) {
+	upper := strings.ToUpper(method)
+	joined := joinPaths(r.basePath, path)
 	fixed, wildcard := r.normalizeWildcardPath(path)
-	route := r.group.Add(strings.ToUpper(method), echoRoutePath(r.basePath, fixed), r.toEchoHandler(h))
+	r.wildcards.claim([]string{upper}, joined)
+	route := r.group.Add(upper, echoRoutePath(r.basePath, fixed), r.toEchoHandler(h))
 	r.recordWildcard(route, wildcard)
 }
 
@@ -211,7 +266,9 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 // Any registers h for path with echo's Any, so the method set beyond the
 // standard ones is echo's.
 func (r *Router) Any(path string, h httpx.Handler) {
+	joined := joinPaths(r.basePath, path)
 	fixed, wildcard := r.normalizeWildcardPath(path)
+	r.wildcards.claim(echoAnyMethods, joined)
 	for _, route := range r.group.Any(echoRoutePath(r.basePath, fixed), r.toEchoHandler(h)) {
 		r.recordWildcard(route, wildcard)
 	}
@@ -313,7 +370,11 @@ func (r *Router) toEchoHandler(h httpx.Handler) echo.HandlerFunc {
 		// A handler that only set the status still owes a response; echo itself
 		// would let it fall out as 200.
 		if resp := ec.Response(); !resp.Committed {
-			resp.WriteHeader(resp.Status)
+			status := resp.Status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			resp.WriteHeader(status)
 		}
 		return nil
 	}
@@ -333,7 +394,7 @@ func commitErrorStatus(resp *echo.Response, err error) {
 	if resp.Committed {
 		return
 	}
-	if resp.Status == http.StatusOK {
+	if resp.Status == 0 || resp.Status == http.StatusOK {
 		// Classify the normalized error so echo's own 404/405 keeps its status
 		// instead of being reported as an unclassified 500.
 		_, status, _ := httpx.ClassifyError(normalizeEchoError(err))
@@ -403,7 +464,7 @@ func lastCharIs(char uint8, str string) bool {
 // net/http middleware). net/http removes them only for the request it served,
 // so without this an upload spilled to disk would stay there.
 func removeReplacedMultipartForm(orig, cur *http.Request) {
-	if cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
+	if orig != nil && cur != nil && cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
 		_ = cur.MultipartForm.RemoveAll()
 	}
 }

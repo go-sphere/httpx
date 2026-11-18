@@ -6,7 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,6 +178,7 @@ type Engine struct {
 
 	pool        sync.Pool
 	lifecycleMu sync.Mutex
+	ln          net.Listener
 	started     atomic.Bool
 	running     atomic.Bool
 	closed      atomic.Bool
@@ -242,7 +243,11 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// swallowed the error still owes that status; see below.
 	fallbackStatus := 0
 	var handler httpx.Handler
-	r, allow := e.root.match(req.Method, req.URL.Path, &ctx.values)
+	path := req.URL.Path
+	if path == "" {
+		path = "/"
+	}
+	r, allow := e.root.match(req.Method, path, &ctx.values)
 	if r != nil {
 		ctx.route = r
 		handler = r.handler
@@ -258,13 +263,18 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// composition around the leaf stays the same value for every request
 			// and can be cached. A layer therefore sees the header already set,
 			// which is the right way round: it can read or replace it.
-			sort.Strings(allow)
+			slices.Sort(allow)
 			ctx.SetHeader("Allow", strings.Join(allow, ", "))
 			handler = e.notAllowed.Handler()
 			fallbackStatus = http.StatusMethodNotAllowed
 		}
 	}
 
+	defer func() {
+		if ctx != nil {
+			removeReplacedMultipartForm(req, ctx.req)
+		}
+	}()
 	var err error
 	if r != nil {
 		err = httpx.LimitRequestBody(w, req, e.maxBodySize)
@@ -295,9 +305,12 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Recycled without a defer: a context whose handler panicked is left to
 	// the garbage collector rather than handed to the next request, and the
-	// happy path saves the defer.
+	// happy path saves the defer. Clear ctx before Put so the panic-cleanup
+	// defer does not read the pooled instance concurrently.
 	ctx.recycle()
-	e.pool.Put(ctx)
+	recycled := ctx
+	ctx = nil
+	e.pool.Put(recycled)
 }
 
 // commitErrorStatus records the error's own status when the configured
@@ -322,7 +335,7 @@ func commitErrorStatus(rw *responseWriter, err error) {
 // net/http middleware). net/http removes them only for the request it served,
 // so without this an upload spilled to disk would stay there.
 func removeReplacedMultipartForm(orig, cur *http.Request) {
-	if cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
+	if cur != nil && orig != nil && cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
 		_ = cur.MultipartForm.RemoveAll()
 	}
 }
@@ -363,9 +376,15 @@ func (e *Engine) Start() error {
 		e.lifecycleMu.Unlock()
 		return err
 	}
+	e.ln = ln
 	e.running.Store(true)
 	e.lifecycleMu.Unlock()
-	defer e.running.Store(false)
+	defer func() {
+		e.lifecycleMu.Lock()
+		e.ln = nil
+		e.lifecycleMu.Unlock()
+		e.running.Store(false)
+	}()
 	if err := e.server.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -380,11 +399,18 @@ func (e *Engine) Start() error {
 func (e *Engine) Stop(ctx context.Context) error {
 	e.lifecycleMu.Lock()
 	e.closed.Store(true)
+	ln := e.ln
 	e.lifecycleMu.Unlock()
 	// httpx.Close force-closes when the graceful drain fails, so the server is
 	// down whatever it returns and the running flag falls with it.
 	defer e.running.Store(false)
-	return httpx.Close(ctx, e.server)
+	err := httpx.Close(ctx, e.server)
+	if ln != nil {
+		if closeErr := ln.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
+		}
+	}
+	return err
 }
 
 // IsRunning returns true if the server is currently running.
@@ -411,38 +437,44 @@ func (e *Engine) clientIP(req *http.Request) string {
 	if len(e.trustedProxies) == 0 || !ipInAny(remote, e.trustedProxies) {
 		return remote
 	}
-	// The chain is walked right to left in the header string itself. Splitting
-	// it and reversing the result allocated twice per call, and ClientIP is on
-	// the path of every access log and rate limiter.
-	xff := req.Header.Get("X-Forwarded-For")
-	for rest := xff; rest != ""; {
-		raw := rest
-		if i := strings.LastIndexByte(rest, ','); i >= 0 {
-			raw, rest = rest[i+1:], rest[:i]
-		} else {
-			rest = ""
+	// Walk every X-Forwarded-For header line from right to left so multiple
+	// X-Forwarded-For headers cannot hide earlier hops behind req.Header.Get().
+	// Splitting and reversing slices would allocate twice per call, whereas
+	// walking backwards in place allocates nothing.
+	xffs := req.Header["X-Forwarded-For"]
+	if len(xffs) == 0 {
+		return remote
+	}
+	for idx := len(xffs) - 1; idx >= 0; idx-- {
+		for rest := xffs[idx]; rest != ""; {
+			raw := rest
+			if i := strings.LastIndexByte(rest, ','); i >= 0 {
+				raw, rest = rest[i+1:], rest[:i]
+			} else {
+				rest = ""
+			}
+			ip := strings.TrimSpace(raw)
+			if ip == "" {
+				continue
+			}
+			// Parsed once and handed to the range check.
+			parsed := net.ParseIP(ip)
+			if parsed == nil {
+				// A malformed entry ends the chain: everything to its left is
+				// unverifiable.
+				return remote
+			}
+			if netsContain(e.trustedProxies, parsed) {
+				continue
+			}
+			return ip
 		}
-		ip := strings.TrimSpace(raw)
-		if ip == "" {
-			continue
-		}
-		// Parsed once and handed to the range check.
-		parsed := net.ParseIP(ip)
-		if parsed == nil {
-			// A malformed entry ends the chain: everything to its left is
-			// unverifiable.
-			return remote
-		}
-		if netsContain(e.trustedProxies, parsed) {
-			continue
-		}
-		return ip
 	}
 	// Every hop, the client included, is inside the trusted ranges, so the
 	// leftmost entry is that client. Everything non-blank on the way here parsed
 	// as an IP; the one chain with nothing verifiable left is the one whose left
 	// edge is blank, and the peer still wins there.
-	first := xff
+	first := xffs[0]
 	if i := strings.IndexByte(first, ','); i >= 0 {
 		first = first[:i]
 	}

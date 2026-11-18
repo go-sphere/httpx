@@ -27,7 +27,7 @@ func TestRouteShapePrecedence(t *testing.T) {
 		{"/users/new/edit", "/users/:id/*rest", true},
 		{"/a/b/:y", "/a/:x/c", true},
 	} {
-		if got := beats(parseRouteShape(tc.a), parseRouteShape(tc.b)); got != tc.want {
+		if got := beats(parseRouteShape(tc.a, true), parseRouteShape(tc.b, true), true); got != tc.want {
 			t.Errorf("beats(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}
@@ -141,8 +141,46 @@ func TestRouteOrderMayMatch(t *testing.T) {
 		{"/posts/*", "/users/new", false},
 		{"/users/x", "/users/*", true},
 	} {
-		if got := mayMatch(tc.path, parseRouteShape(tc.route), true); got != tc.want {
+		if got := mayMatch(tc.path, parseRouteShape(tc.route, true), true, true); got != tc.want {
 			t.Errorf("mayMatch(%q, %q) = %v, want %v", tc.path, tc.route, got, tc.want)
 		}
+	}
+}
+
+func TestRouteOrderStrictRoutingAndCaseInsensitive(t *testing.T) {
+	// With strictRouting, /users and /users/ stay distinct shapes, while /users/
+	// beats /users/*rest and native /users/ does not match /users.
+	usersNoSlash := parseRouteShape("/users", true)
+	usersSlash := parseRouteShape("/users/", true)
+	usersWild := parseRouteShape("/users/*rest", true)
+	if beats(usersNoSlash, usersSlash, true) || beats(usersSlash, usersNoSlash, true) {
+		t.Fatalf("expected /users and /users/ to stay unordered under strictRouting")
+	}
+	if !beats(usersSlash, usersWild, true) {
+		t.Fatalf("expected /users/ to beat /users/*rest under strictRouting")
+	}
+	if mayMatch("/users/", usersNoSlash, true, true) {
+		t.Fatalf("expected mayMatch(/users/, /users) = false under strictRouting")
+	}
+
+	// With caseSensitive=false, a mixed-case static route still beats an
+	// earlier lowercase wildcard route.
+	staticMixed := parseRouteShape("/Users/new", false)
+	if !beats(staticMixed, parseRouteShape("/users/*rest", false), false) {
+		t.Fatalf("expected /Users/new to beat /users/*rest when caseSensitive=false")
+	}
+
+	app := fiber.New(fiber.Config{CaseSensitive: false, StrictRouting: true})
+	r := New(WithEngine(app)).Group("")
+	r.GET("/users/*rest", func(ctx httpx.Context) error { return ctx.Text(200, "wild") })
+	r.GET("/Users/new", func(ctx httpx.Context) error { return ctx.Text(200, "static") })
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/Users/new", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "static" {
+		t.Fatalf("body = %q, want %q", body, "static")
 	}
 }

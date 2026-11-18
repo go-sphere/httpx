@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -92,10 +93,18 @@ func adversarialRequest(engine httpx.Engine, worker, i int, staticContent string
 	var check func(responseSnapshot) error
 	switch i % 5 {
 	case 0:
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://example.com/api/ping?q=w%d-i%d", worker, i), nil)
+		wantQuery := fmt.Sprintf("w%d-i%d", worker, i)
+		req = httptest.NewRequest(http.MethodGet, "http://example.com/api/ping?q="+wantQuery, nil)
 		check = func(resp responseSnapshot) error {
 			if resp.Status != http.StatusOK {
 				return fmt.Errorf("GET status: got %d, want 200", resp.Status)
+			}
+			var got map[string]string
+			if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
+				return fmt.Errorf("GET body json: %w; body=%q", err, resp.Body)
+			}
+			if got["message"] != "pong" || got["query"] != wantQuery {
+				return fmt.Errorf("GET body=%v, want message=pong query=%q", got, wantQuery)
 			}
 			return nil
 		}

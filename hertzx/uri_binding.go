@@ -1,18 +1,8 @@
 package hertzx
 
-import (
-	"net/url"
+import "net/url"
 
-	"github.com/go-playground/form/v4"
-)
-
-var uriDecoder = newURIDecoder()
-
-func newURIDecoder() *form.Decoder {
-	decoder := form.NewDecoder()
-	decoder.SetTagName("uri")
-	return decoder
-}
+var uriDecoder = newExplicitDecoder("uri", false)
 
 // bindURIWithForm decodes the matched route's parameters into dst, reading
 // the same values Param returns. hertz hands back a wildcard without a leading

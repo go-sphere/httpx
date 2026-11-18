@@ -31,7 +31,14 @@ func CheckServeFile(path string) error {
 	if err != nil {
 		return statError(err)
 	}
+	info, err = f.Stat()
 	_ = f.Close()
+	if err != nil {
+		return statError(err)
+	}
+	if err := regularFileError(info); err != nil {
+		return err
+	}
 	return nil
 }
 

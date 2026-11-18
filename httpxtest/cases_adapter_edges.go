@@ -72,11 +72,13 @@ func (h *hintCapturingWriter) WriteHeader(code int) {
 func casesAdapterEdges(t *testing.T, r runner) {
 	t.Run("SetCookieReplaceAndMultiCookieValues", func(t *testing.T) {
 		var beforeReplace, afterReplace []string
+		var hasEditor bool
 		got := r.serve(t, func(router httpx.Router) {
 			router.GET("/cookies", func(ctx httpx.Context) error {
 				ctx.SetCookie(&http.Cookie{Name: "a", Value: "1", Path: "/"})
 				ctx.SetCookie(&http.Cookie{Name: "b", Value: "2", Path: "/"})
 				editor, ok := httpx.AsResponseHeaderEditor(ctx)
+				hasEditor = ok
 				if ok {
 					beforeReplace = editor.ResponseHeaderValues("Set-Cookie")
 				}
@@ -88,6 +90,9 @@ func casesAdapterEdges(t *testing.T, r runner) {
 			})
 		}, httptest.NewRequest(http.MethodGet, "http://example.com/cookies", nil))
 
+		if !hasEditor {
+			r.skipf(t, "%s: Context does not implement ResponseHeaderEditor", r.suite.Name)
+		}
 		if len(beforeReplace) != 2 {
 			t.Fatalf("ResponseHeaderValues before SetHeader = %q, want 2 cookies", beforeReplace)
 		}
@@ -224,15 +229,13 @@ func casesAdapterEdges(t *testing.T, r runner) {
 			if got.Body != "flushed" {
 				t.Fatalf("body=%q, want %q", got.Body, "flushed")
 			}
-			// hertzx's in-process dispatch has no connection writer so Flush is a
-			// buffered no-op; live network flushing is verified in conformance.
-			if r.suite.Name != "hertzx" {
-				if got.Status != http.StatusAccepted {
-					t.Fatalf("status=%d, want 202", got.Status)
-				}
-				if fw == nil || fw.flushes == 0 {
-					t.Fatalf("flush did not reach wrapped writer through Unwrap: flushes=%v", fw)
-				}
+			if got.Status != http.StatusAccepted {
+				t.Fatalf("status=%d, want 202", got.Status)
+			}
+			// hertzx's in-process dispatch has no connection writer so Flush cannot
+			// reach an outer wrapped writer; live network flushing is verified in conformance.
+			if r.suite.Name != "hertzx" && (fw == nil || fw.flushes == 0) {
+				t.Fatalf("flush did not reach wrapped writer through Unwrap: flushes=%v", fw)
 			}
 		})
 
@@ -260,10 +263,12 @@ func casesAdapterEdges(t *testing.T, r runner) {
 
 		t.Run("Informational1xxDoesNotCommit", func(t *testing.T) {
 			var committedInHandler bool
+			var hw *hintCapturingWriter
 			got := r.serve(t, func(router httpx.Router) {
 				router.Use(r.suite.StdMiddleware(func(next http.Handler) http.Handler {
 					return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-						next.ServeHTTP(&hintCapturingWriter{ResponseWriter: w}, req)
+						hw = &hintCapturingWriter{ResponseWriter: w}
+						next.ServeHTTP(hw, req)
 					})
 				}))
 				router.Use(r.suite.StdMiddleware(func(next http.Handler) http.Handler {
@@ -279,6 +284,43 @@ func casesAdapterEdges(t *testing.T, r runner) {
 			}, httptest.NewRequest(http.MethodGet, "http://example.com/std-103", nil))
 			if committedInHandler {
 				t.Fatal("103 latched ctx.Committed() = true before handler ran")
+			}
+			if !strings.HasPrefix(r.suite.Name, "fiberx") && r.suite.Name != "hertzx" {
+				if hw == nil || !slices.Equal(hw.hints, []int{http.StatusEarlyHints}) {
+					t.Fatalf("captured 1xx hints = %v, want [103]", hw)
+				}
+			}
+			if got.Status != http.StatusOK || got.Body != "done" {
+				t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "done")
+			}
+		})
+
+		t.Run("Responder103Then200", func(t *testing.T) {
+			if strings.HasPrefix(r.suite.Name, "fiberx") || r.suite.Name == "hertzx" {
+				r.skipf(t, "%s: buffered response cannot emit separate 1xx then 200", r.suite.Name)
+			}
+			var committedAfter103 bool
+			var hw *hintCapturingWriter
+			got := r.serve(t, func(router httpx.Router) {
+				router.Use(r.suite.StdMiddleware(func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+						hw = &hintCapturingWriter{ResponseWriter: w}
+						next.ServeHTTP(hw, req)
+					})
+				}))
+				router.GET("/ctx-103", func(ctx httpx.Context) error {
+					if err := ctx.NoContent(http.StatusEarlyHints); err != nil {
+						return err
+					}
+					committedAfter103 = ctx.Committed()
+					return ctx.Text(http.StatusOK, "done")
+				})
+			}, httptest.NewRequest(http.MethodGet, "http://example.com/ctx-103", nil))
+			if committedAfter103 {
+				t.Fatal("NoContent(103) latched ctx.Committed() = true")
+			}
+			if hw == nil || !slices.Equal(hw.hints, []int{http.StatusEarlyHints}) {
+				t.Fatalf("captured 1xx hints = %v, want [103]", hw)
 			}
 			if got.Status != http.StatusOK || got.Body != "done" {
 				t.Fatalf("status=%d body=%q, want 200 %q", got.Status, got.Body, "done")
@@ -420,6 +462,49 @@ func casesAdapterEdges(t *testing.T, r runner) {
 		}()
 		if !panicked {
 			t.Fatal("Group(\"/files/*a\").GET(\"/more\", ...) did not panic")
+		}
+	})
+
+	t.Run("JoinedGroupWildcardTrailingSlashPanics", func(t *testing.T) {
+		engine := r.suite.NewEngine(t, Options{})
+		g := engine.Group("/files/*a/")
+		var panicked bool
+		func() {
+			defer func() {
+				if recover() != nil {
+					panicked = true
+				}
+			}()
+			g.GET("", func(ctx httpx.Context) error { return ctx.NoContent(http.StatusNoContent) })
+		}()
+		if !panicked {
+			t.Fatal("Group(\"/files/*a/\").GET(\"\", ...) did not panic")
+		}
+	})
+
+	t.Run("BindNilTargetReturns400", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			bind func(httpx.Context) error
+		}{
+			{"BindJSON", func(ctx httpx.Context) error { return ctx.BindJSON(nil) }},
+			{"BindQuery", func(ctx httpx.Context) error { return ctx.BindQuery(nil) }},
+			{"BindForm", func(ctx httpx.Context) error { return ctx.BindForm(nil) }},
+			{"BindURI", func(ctx httpx.Context) error { return ctx.BindURI(nil) }},
+			{"BindHeader", func(ctx httpx.Context) error { return ctx.BindHeader(nil) }},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, "http://example.com/bind-nil/1?a=1", strings.NewReader(`{"a":1}`))
+				req.Header.Set("Content-Type", "application/json")
+				got := r.serveWith(t, Options{ErrorHandler: statusTextErrorHandler}, func(router httpx.Router) {
+					router.POST("/bind-nil/:id", func(ctx httpx.Context) error {
+						return tc.bind(ctx)
+					})
+				}, req)
+				if got.Status != http.StatusBadRequest {
+					t.Fatalf("%s(nil): status=%d body=%q, want 400", tc.name, got.Status, got.Body)
+				}
+			})
 		}
 	})
 }

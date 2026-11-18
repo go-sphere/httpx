@@ -8,17 +8,40 @@ import random
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 GO = os.environ.get('GO', 'go')
 
 
+def resolve_vegeta(explicit: str | None) -> str:
+    candidates = []
+    if explicit:
+        candidates.append(explicit)
+    which = shutil.which('vegeta')
+    if which:
+        candidates.append(which)
+    if gobin := os.environ.get('GOBIN'):
+        candidates.append(str(Path(gobin) / 'vegeta'))
+    if gopath := os.environ.get('GOPATH'):
+        for entry in gopath.split(os.pathsep):
+            if entry:
+                candidates.append(str(Path(entry) / 'bin' / 'vegeta'))
+    candidates.append(str(Path.home() / 'go/bin/vegeta'))
+    for candidate in candidates:
+        p = Path(candidate).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    sys.exit('vegeta executable not found (checked --vegeta, PATH, GOBIN, GOPATH/bin, ~/go/bin/vegeta)')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--vegeta', default=shutil.which('vegeta') or str(Path.home() / 'go/bin/vegeta'))
+    parser.add_argument('--vegeta', help='path to vegeta executable')
     parser.add_argument('--binary', type=Path, help='precompiled conformance test binary')
     parser.add_argument('--rate', type=int, default=5000)
     parser.add_argument('--duration', default='3s')
@@ -28,7 +51,11 @@ def main():
     args = parser.parse_args()
     if args.rate <= 0 or args.repeat <= 0 or args.cpu <= 0:
         parser.error('rate, repeat and cpu must be positive')
+    vegeta_bin = resolve_vegeta(args.vegeta)
+    if args.binary:
+        args.binary = args.binary.resolve()
     env = dict(os.environ, GOMAXPROCS=str(args.cpu))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with tempfile.TemporaryDirectory(prefix='httpx-network-') as tmp:
         binary = args.binary or Path(tmp) / 'server.test'
         if not args.binary:
@@ -53,30 +80,32 @@ def main():
                     for _ in range(100):
                         if server.poll() is not None:
                             log.seek(0)
-                            raise RuntimeError(log.read().decode())
+                            raise RuntimeError(log.read().decode(errors='replace'))
                         try:
-                            with urllib.request.urlopen(target, timeout=.5) as response:
+                            with opener.open(target, timeout=.5) as response:
                                 body = response.read()
                                 if scenario == 'JSON1K':
-                                    assert response.status == 200
-                                    assert json.loads(body) == {'id': 42, 'name': 'benchmark', 'data': 'x' * 1024}
-                                else:
-                                    assert response.status == 204 and not body
+                                    if response.status != 200 or json.loads(body) != {'id': 42, 'name': 'benchmark', 'data': 'x' * 1024}:
+                                        raise RuntimeError(f'unexpected JSON1K readiness response: status={response.status}')
+                                elif response.status != 204 or body:
+                                    raise RuntimeError(f'unexpected Empty readiness response: status={response.status} len={len(body)}')
                             ready = True
                             break
+                        except urllib.error.HTTPError as exc:
+                            raise RuntimeError(f'readiness probe failed for {target}: HTTP {exc.code}') from exc
                         except (OSError, TimeoutError):
                             time.sleep(.05)
                     if not ready:
                         raise RuntimeError(f'server did not become ready: {cmd}')
                     for sample in range(args.repeat + 1):
-                        attack = [args.vegeta, 'attack', f'-rate={args.rate}/s',
+                        attack = [vegeta_bin, 'attack', f'-rate={args.rate}/s',
                                   f'-duration={"1s" if sample == 0 else args.duration}',
                                   '-workers=16', '-max-workers=16', '-connections=16',
                                   '-max-connections=16', '-http2=false', '-timeout=2s']
                         raw = subprocess.run(attack, input=f'GET {target}\n'.encode(),
                                              stdout=subprocess.PIPE, check=True, env=env).stdout
                         metrics = json.loads(subprocess.check_output(
-                            [args.vegeta, 'report', '-type=json'], input=raw, env=env))
+                            [vegeta_bin, 'report', '-type=json'], input=raw, env=env))
                         expected = '200' if scenario == 'JSON1K' else '204'
                         if metrics['success'] != 1 or set(metrics['status_codes']) != {expected}:
                             raise RuntimeError(f'failed requests: {metrics}')

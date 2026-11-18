@@ -130,10 +130,11 @@ func takeResponseHeader(native fiber.Ctx) http.Header {
 	explicitCT := len(explicitContentType(native)) > 0
 	for k, v := range resp.Header.All() {
 		key := string(k)
-		if key == fiber.HeaderContentType && !explicitCT {
+		if strings.EqualFold(key, fiber.HeaderContentType) && !explicitCT {
 			continue
 		}
-		taken[key] = append(taken[key], string(v))
+		canon := textproto.CanonicalMIMEHeaderKey(key)
+		taken[canon] = append(taken[canon], string(v))
 	}
 	resp.Header.Del(fiber.HeaderContentType)
 	for key := range taken {

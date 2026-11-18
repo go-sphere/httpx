@@ -21,13 +21,20 @@ import (
 //
 // It is shared by every Router of one Engine and, like route registration, is
 // not safe for concurrent use.
+type routeKey struct {
+	method string
+	shape  string
+}
+
 type routeOrder struct {
 	app     *fiber.App
 	methods []string
-	// caseSensitive is the app's CaseSensitive, read once: Config copies a
-	// large struct.
+	// caseSensitive and strictRouting are read from app.Config once: Config
+	// copies a large struct.
 	caseSensitive bool
+	strictRouting bool
 	shapes        map[*fiber.Route][]routeSegment
+	claimed       map[routeKey]string
 }
 
 func newRouteOrder(app *fiber.App) *routeOrder {
@@ -36,7 +43,42 @@ func newRouteOrder(app *fiber.App) *routeOrder {
 		app:           app,
 		methods:       conf.RequestMethods,
 		caseSensitive: conf.CaseSensitive,
+		strictRouting: conf.StrictRouting,
 		shapes:        make(map[*fiber.Route][]routeSegment),
+		claimed:       make(map[routeKey]string),
+	}
+}
+
+func canonicalFiberShape(pattern string, caseSensitive, strictRouting bool) string {
+	segs := parseRouteShape(pattern, strictRouting)
+	parts := make([]string, len(segs))
+	for i, seg := range segs {
+		switch seg.kind {
+		case segmentParam:
+			parts[i] = ":"
+		case segmentWildcard:
+			parts[i] = "*"
+		default:
+			if caseSensitive {
+				parts[i] = seg.value
+			} else {
+				parts[i] = strings.ToLower(seg.value)
+			}
+		}
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+func (o *routeOrder) claim(methods []string, pattern string) {
+	shape := canonicalFiberShape(pattern, o.caseSensitive, o.strictRouting)
+	for _, method := range methods {
+		key := routeKey{method: method, shape: shape}
+		if prev, exists := o.claimed[key]; exists {
+			panic(fmt.Sprintf("fiberx: duplicate route %s %s (conflicts with %s)", method, pattern, prev))
+		}
+	}
+	for _, method := range methods {
+		o.claimed[routeKey{method: method, shape: shape}] = pattern
 	}
 }
 
@@ -54,8 +96,14 @@ type routeSegment struct {
 	value string
 }
 
-func parseRouteShape(pattern string) []routeSegment {
-	parts := strings.Split(strings.Trim(pattern, "/"), "/")
+func parseRouteShape(pattern string, strictRouting bool) []routeSegment {
+	var trimmed string
+	if strictRouting {
+		trimmed = strings.TrimPrefix(pattern, "/")
+	} else {
+		trimmed = strings.Trim(pattern, "/")
+	}
+	parts := strings.Split(trimmed, "/")
 	shape := make([]routeSegment, 0, len(parts))
 	for _, part := range parts {
 		switch {
@@ -77,14 +125,20 @@ func parseRouteShape(pattern string) []routeSegment {
 // single path matches (/users/new/edit and /users/:id) can still be ordered:
 // harmless for routing, and it keeps the relation a consistent order, which
 // placing each new route before the first one it beats relies on.
-func beats(a, b []routeSegment) bool {
+func beats(a, b []routeSegment, caseSensitive bool) bool {
 	for i := range min(len(a), len(b)) {
 		sa, sb := a[i], b[i]
 		if sa.kind != sb.kind || sa.kind == segmentWildcard {
 			return sa.kind < sb.kind
 		}
-		if sa.kind == segmentStatic && sa.value != sb.value {
-			return false
+		if sa.kind == segmentStatic {
+			same := sa.value == sb.value
+			if !caseSensitive {
+				same = strings.EqualFold(sa.value, sb.value)
+			}
+			if !same {
+				return false
+			}
 		}
 	}
 	// A trailing wildcard can match the path its prefix names on its own.
@@ -96,8 +150,13 @@ func beats(a, b []routeSegment) bool {
 // kind (middleware, mount, route) is not visible, so its path is treated as a
 // prefix, and everything from its first non-static segment on as matching any
 // rest; the answer can be a false positive but never a false negative.
-func mayMatch(path string, shape []routeSegment, caseSensitive bool) bool {
-	trimmed := strings.Trim(path, "/")
+func mayMatch(path string, shape []routeSegment, caseSensitive, strictRouting bool) bool {
+	var trimmed string
+	if strictRouting {
+		trimmed = strings.TrimPrefix(path, "/")
+	} else {
+		trimmed = strings.Trim(path, "/")
+	}
 	if trimmed == "" {
 		return true
 	}
@@ -139,11 +198,11 @@ func (o *routeOrder) place(methods []string) {
 			// just before, so nothing new entered the stack.
 			continue
 		}
-		shape := parseRouteShape(added.Path)
+		shape := parseRouteShape(added.Path, o.strictRouting)
 		o.shapes[added] = shape
 		target := -1
 		for j, route := range routes[:len(routes)-1] {
-			if other, ok := o.shapes[route]; ok && beats(shape, other) {
+			if other, ok := o.shapes[route]; ok && beats(shape, other, o.caseSensitive) {
 				target = j
 				break
 			}
@@ -152,7 +211,7 @@ func (o *routeOrder) place(methods []string) {
 			continue
 		}
 		for _, route := range routes[target : len(routes)-1] {
-			if _, ok := o.shapes[route]; !ok && mayMatch(route.Path, shape, o.caseSensitive) {
+			if _, ok := o.shapes[route]; !ok && mayMatch(route.Path, shape, o.caseSensitive, o.strictRouting) {
 				panic(fmt.Sprintf("fiberx: %s %s must take precedence over %s, but a handler registered on the fiber app directly (UseNative, a mount, a native route) sits between them; register those before the routes",
 					method, added.Path, routes[target].Path))
 			}

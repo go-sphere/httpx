@@ -66,3 +66,82 @@ func TestTextAndBytesReturnWriteError(t *testing.T) {
 		})
 	}
 }
+
+func TestGinContextEdgeFixes(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	engine := New(WithEngine(gin.New()))
+	var queryBefore, queryInHandler string
+	var hints []int
+	engine.Use(func(next httpx.Handler) httpx.Handler {
+		return func(c httpx.Context) error {
+			// Populate Gin's queryCache before AdaptStdMiddleware runs.
+			queryBefore = c.Query("name")
+			return next(c)
+		}
+	})
+	engine.Use(AdaptStdMiddleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/q" {
+				r2 := r.Clone(r.Context())
+				u := *r2.URL
+				u.RawQuery = "name=rewritten"
+				r2.URL = &u
+				next.ServeHTTP(w, r2)
+				return
+			}
+			if r.URL.Path == "/103" {
+				next.ServeHTTP(&testHintWriter{ResponseWriter: w, hints: &hints}, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}))
+	r := engine.Group("")
+	r.GET("/q", func(c httpx.Context) error {
+		queryInHandler = c.Query("name")
+		return c.NoContent(http.StatusNoContent)
+	})
+	r.GET("/103", func(c httpx.Context) error {
+		if err := c.NoContent(http.StatusEarlyHints); err != nil {
+			return err
+		}
+		if c.Committed() {
+			return errors.New("103 committed")
+		}
+		return c.Text(http.StatusOK, "done")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/q?name=orig", nil)
+	resp, err := engine.(httpx.TestRequester).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if queryBefore != "orig" || queryInHandler != "rewritten" {
+		t.Fatalf("Query before=%q after rewrite=%q, want orig / rewritten", queryBefore, queryInHandler)
+	}
+
+	req103 := httptest.NewRequest(http.MethodGet, "/103", nil)
+	resp103, err := engine.(httpx.TestRequester).Do(req103)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body103, _ := io.ReadAll(resp103.Body)
+	_ = resp103.Body.Close()
+	if resp103.StatusCode != http.StatusOK || string(body103) != "done" || len(hints) != 1 || hints[0] != http.StatusEarlyHints {
+		t.Fatalf("/103 status=%d body=%q hints=%v, want 200 done [103]", resp103.StatusCode, string(body103), hints)
+	}
+}
+
+type testHintWriter struct {
+	http.ResponseWriter
+	hints *[]int
+}
+
+func (h *testHintWriter) WriteHeader(code int) {
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		*h.hints = append(*h.hints, code)
+		return
+	}
+	h.ResponseWriter.WriteHeader(code)
+}

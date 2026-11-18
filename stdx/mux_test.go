@@ -2,8 +2,11 @@ package stdx
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-sphere/httpx"
 )
 
 // The route tree is this adapter's only hand-written routing, so its rules are
@@ -135,6 +138,39 @@ func TestTreeRejectsConflictingParamNames(t *testing.T) {
 		}
 	}()
 	root.add(http.MethodGet, "/users/:name", &route{pattern: "/users/:name"})
+}
+
+func TestRouterAndMuxValidationEdges(t *testing.T) {
+	t.Run("UnnamedParamPanics", func(t *testing.T) {
+		root := &node{}
+		defer func() {
+			if recover() == nil {
+				t.Fatal("unnamed ':' param did not panic")
+			}
+		}()
+		root.add(http.MethodGet, "/users/:", &route{pattern: "/users/:"})
+	})
+
+	t.Run("EmptyMethodPanics", func(t *testing.T) {
+		_, r := newTestEngine(t)
+		defer func() {
+			if recover() == nil {
+				t.Fatal("empty method did not panic")
+			}
+		}()
+		r.Handle("", "/x", func(httpx.Context) error { return nil })
+	})
+
+	t.Run("EmptyURLPathMatchesRoot", func(t *testing.T) {
+		engine, r := newTestEngine(t)
+		r.GET("/", func(ctx httpx.Context) error { return ctx.Text(http.StatusOK, "root") })
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.URL.Path = ""
+		rec := serve(engine, req)
+		if rec.Code != http.StatusOK || rec.Body.String() != "root" {
+			t.Fatalf("empty URL.Path: status=%d body=%q", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func joinParams(names, values []string) string {

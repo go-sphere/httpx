@@ -361,8 +361,10 @@ func RunBenchmarks(b *testing.B, s Suite) {
 				b.Fatalf("%s: engine does not support httpx.TestRequester", s.Name)
 			}
 			b.ReportAllocs()
+			b.ResetTimer()
 			for b.Loop() {
-				resp, err := requester.Do(sc.NewRequest())
+				rewind()
+				resp, err := requester.Do(req)
 				if err != nil {
 					b.Fatalf("%s: serve %s: %v", s.Name, sc.Name, err)
 				}

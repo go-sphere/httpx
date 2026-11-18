@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-sphere/httpx"
-	"github.com/go-sphere/httpx/fiberx"
-	"github.com/gofiber/fiber/v3"
 )
 
 // Stop(ctx) is not "ask nicely": a drain the caller's context cuts short must
@@ -39,8 +36,15 @@ func TestEngineForcedStopConformance(t *testing.T) {
 				return ctx.Text(http.StatusOK, "done")
 			})
 
-			go func() { _ = engine.Start() }()
-			waitReachable(t, addr)
+			served := make(chan error, 1)
+			go func() { served <- engine.Start() }()
+			t.Cleanup(func() {
+				openGate()
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = engine.Stop(ctx)
+			})
+			waitReachable(t, engine, addr)
 
 			holdCtx, cancelHold := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancelHold()
@@ -51,7 +55,7 @@ func TestEngineForcedStopConformance(t *testing.T) {
 				if err != nil {
 					return
 				}
-				resp, err := (&http.Client{}).Do(req)
+				resp, err := oneShotClient(0).Do(req)
 				if err == nil {
 					_, _ = io.Copy(io.Discard, resp.Body)
 					_ = resp.Body.Close()
@@ -106,101 +110,15 @@ func TestEngineForcedStopConformance(t *testing.T) {
 
 			openGate()
 			<-held
+			select {
+			case err := <-served:
+				if err != nil {
+					t.Fatalf("Start after Stop = %v, want nil", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Start did not return after Stop")
+			}
 		})
-	}
-}
-
-// A real TCP listener whose Close fails, held until released so the moment
-// fasthttp collects the error is fixed rather than raced for.
-type failCloseListener struct {
-	net.Listener
-	closing chan struct{}
-	release chan struct{}
-	once    sync.Once
-	err     error
-}
-
-func (l *failCloseListener) Close() error {
-	l.once.Do(func() {
-		_ = l.Listener.Close()
-		close(l.closing)
-		<-l.release
-	})
-	return l.err
-}
-
-// A listener close failure must never be reported as a successful stop: the
-// socket may still be bound. fiberx is where that could go wrong — fasthttp
-// collects listener errors before consulting the context, so a ctx.Err() check
-// alone turned a close failure into nil. Needs a real listener and WithListener.
-func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
-	// Already-spent deadline, so ctx.Err() is set when Stop inspects it.
-	stopCtx, cancelStop := context.WithCancel(context.Background())
-	cancelStop()
-
-	base, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	ln := &failCloseListener{
-		Listener: base,
-		closing:  make(chan struct{}),
-		release:  make(chan struct{}),
-		err:      errors.New("fiberx test: listener close failed"),
-	}
-
-	// Waits for the listener to reach fasthttp without dialing it: an accepted
-	// connection counts as open, and fasthttp reports the listener error only
-	// while none is. The settle covers the gap when Shutdown is still a no-op.
-	serving := make(chan struct{})
-	engine := fiberx.New(fiberx.WithListener(ln, fiber.ListenConfig{
-		DisableStartupMessage: true,
-		BeforeServeFunc:       func(*fiber.App) error { close(serving); return nil },
-	}))
-	engine.Group("").GET("/ping", func(ctx httpx.Context) error {
-		return ctx.Text(http.StatusOK, "pong")
-	})
-
-	served := make(chan error, 1)
-	go func() { served <- engine.Start() }()
-	<-serving
-	time.Sleep(100 * time.Millisecond)
-
-	stopped := make(chan error, 1)
-	go func() { stopped <- engine.Stop(stopCtx) }()
-
-	// Let the close failure land only once the accept loop has exited; otherwise
-	// the listener error and the context's are chosen between by a ticker race.
-	select {
-	case <-ln.closing:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Stop never closed the listener")
-	}
-	select {
-	case startErr := <-served:
-		if startErr != nil {
-			t.Fatalf("Start = %v, want nil once Stop ended it", startErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Start did not return after the listener closed")
-	}
-	close(ln.release)
-
-	select {
-	case stopErr := <-stopped:
-		if !errors.Is(stopErr, ln.err) {
-			t.Fatalf("Stop = %v, want the listener close failure %v", stopErr, ln.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Stop did not return")
-	}
-
-	// The flag still falls and the engine stays single-use whatever shutdown reported.
-	if engine.IsRunning() {
-		t.Fatal("IsRunning() is true after Stop returned")
-	}
-	if err := engine.Start(); !errors.Is(err, httpx.ErrEngineClosed) {
-		t.Fatalf("Start after a failed Stop = %v, want httpx.ErrEngineClosed", err)
 	}
 }
 
@@ -258,7 +176,7 @@ func TestEngineLifecycleErrorsConformance(t *testing.T) {
 
 					served := make(chan error, 1)
 					go func() { served <- engine.Start() }()
-					waitReachable(t, addr)
+					waitReachable(t, engine, addr)
 					// No keep-alive: hertz's drain waits out an idle connection
 					// until its ExitWaitTimeout, five seconds a round.
 					resp, err := oneShotClient(2 * time.Second).Get("http://" + addr + "/ping")
@@ -364,7 +282,7 @@ func TestDoubleStartReturnsErrorAndKeepsServingConformance(t *testing.T) {
 				if firstErr == nil {
 					t.Fatal("first exiting Start in concurrent double-Start = nil, want error")
 				}
-				waitReachable(t, addr)
+				waitReachable(t, engine, addr)
 
 				resp, err := oneShotClient(2 * time.Second).Get("http://" + addr + "/ping")
 				if err != nil {

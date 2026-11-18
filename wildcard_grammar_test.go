@@ -30,6 +30,7 @@ func loadGrammarCases(t *testing.T) []grammarCase {
 	}
 	var cases []grammarCase
 	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimRight(line, "\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}

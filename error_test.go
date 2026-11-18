@@ -56,6 +56,29 @@ func TestWrapBindError(t *testing.T) {
 	if he.GetStatus() != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", he.GetStatus())
 	}
+
+	partial := partialStatusWrapper{
+		status: http.StatusTeapot,
+		err: partialCodeWrapper{
+			code: 4041,
+			err:  partialMsgWrapper{err: raw, msg: "bad field"},
+		},
+	}
+	wrappedPartial := WrapBindError(partial)
+	code, status, msg := ParseError(wrappedPartial)
+	if status != http.StatusTeapot || code != 4041 || msg != "bad field" {
+		t.Fatalf("ParseError(WrapBindError(partial)) = (%d, %d, %q), want (4041, 418, %q)", code, status, msg, "bad field")
+	}
+
+	if _, st, _ := ParseError(WrapBindError(statusOnlyError{raw})); st != http.StatusTeapot {
+		t.Fatalf("WrapBindError(statusOnly) status = %d, want 418", st)
+	}
+	if cd, st, _ := ParseError(WrapBindError(codeOnlyError{raw})); cd != 4041 || st != http.StatusBadRequest {
+		t.Fatalf("WrapBindError(codeOnly) = (%d, %d), want (4041, 400)", cd, st)
+	}
+	if _, st, m := ParseError(WrapBindError(messageOnlyError{raw, "bad input"})); st != http.StatusBadRequest || m != "bad input" {
+		t.Fatalf("WrapBindError(messageOnly) = (%d, %q), want (400, %q)", st, m, "bad input")
+	}
 }
 
 func TestClassifyError(t *testing.T) {

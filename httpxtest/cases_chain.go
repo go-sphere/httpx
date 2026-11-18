@@ -1,9 +1,11 @@
 package httpxtest
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -218,6 +220,133 @@ func casesChain(t *testing.T, r runner) {
 		}
 		if outerErr == nil {
 			t.Fatal("the outer layer got nil from next after the inner failure")
+		}
+	})
+
+	t.Run("NativeMiddlewareOnEngineWrapsLayers", func(t *testing.T) {
+		if r.suite.NativeMiddleware == nil {
+			r.skipf(t, "%s: no NativeMiddleware hook declared", r.suite.Name)
+		}
+		rec := &orderRecorder{}
+		want := "native-pre,a-pre,b-pre,handler,b-post,a-post,native-post"
+		got := r.serveEngine(t, Options{}, func(engine httpx.Engine) {
+			engine.Use(rec.middleware("a"))
+			r.suite.NativeMiddleware(engine, rec.mark)
+			router := engine.Group("")
+			router.Use(rec.middleware("b"))
+			router.GET(chainPath, rec.handler)
+		}, httptest.NewRequest(http.MethodGet, "http://example.com"+chainPath, nil))
+		if got.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", got.Status)
+		}
+		if joined := rec.joined(); joined != want {
+			t.Fatalf("order mismatch\n got: %s\nwant: %s", joined, want)
+		}
+	})
+
+	// A Context retained by an inner handler must stay usable from outer middleware
+	// after next returns, including with a native layer around the chain where
+	// the adapter has one.
+	t.Run("ContextWrappersSurviveUnwind", func(t *testing.T) {
+		var inner, leaf httpx.Context
+		var order []string
+		engine := r.suite.NewEngine(t, Options{})
+		router := engine.Group("")
+		router.Use(func(next httpx.Handler) httpx.Handler {
+			return func(c httpx.Context) error {
+				defer func() { inner, leaf = nil, nil }()
+				order = append(order, "outer-before")
+				err := next(c)
+				if inner == nil || leaf == nil {
+					t.Error("downstream did not execute")
+					return err
+				}
+				for _, retained := range []httpx.Context{inner, leaf} {
+					if retained.Param("id") != "42" {
+						t.Error("retained context lost route parameters")
+					}
+					if retained.StatusCode() != http.StatusNoContent {
+						t.Error("retained context lost response status")
+					}
+					a, aok := httpx.AsNativeContext[any](c)
+					b, bok := httpx.AsNativeContext[any](retained)
+					if !aok || !bok || a != b {
+						t.Error("native context identity changed")
+					}
+					retained.Set("after", "still-valid")
+					if v, ok := c.Get("after"); !ok || v != "still-valid" {
+						t.Error("retained context lost shared state")
+					}
+				}
+				order = append(order, "outer-after")
+				return err
+			}
+		})
+		expected := []string{"outer-before", "inner-before", "leaf", "inner-after", "outer-after"}
+		if r.suite.NativeMiddleware != nil {
+			r.suite.NativeMiddleware(router, func(mark string) { order = append(order, mark) })
+			expected = append(append([]string{"native-pre"}, expected...), "native-post")
+		}
+		router.Use(func(next httpx.Handler) httpx.Handler {
+			return func(c httpx.Context) error {
+				inner = c
+				order = append(order, "inner-before")
+				err := next(c)
+				order = append(order, "inner-after")
+				return err
+			}
+		})
+		router.GET("/unwind/:id", func(c httpx.Context) error {
+			leaf = c
+			order = append(order, "leaf")
+			return c.NoContent(http.StatusNoContent)
+		})
+		requester, ok := httpx.AsTestRequester(engine)
+		if !ok {
+			t.Fatalf("%s: engine does not support TestRequester", r.suite.Name)
+		}
+		for range 3 {
+			order = nil
+			resp, err := requester.Do(httptest.NewRequest(http.MethodGet, "http://example.com/unwind/42", nil))
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", resp.StatusCode)
+			}
+			if !reflect.DeepEqual(order, expected) {
+				t.Fatalf("order = %v, want %v", order, expected)
+			}
+		}
+	})
+
+	// A value-backed wrapper copied into an interface must keep request access
+	// shared, and SetContext must update the native request.
+	t.Run("WrapperSetContextAfterNext", func(t *testing.T) {
+		type contextKey struct{}
+		got := r.serveEngine(t, Options{}, func(engine httpx.Engine) {
+			router := engine.Group("")
+			router.Use(func(next httpx.Handler) httpx.Handler {
+				return func(c httpx.Context) error {
+					c.SetContext(context.WithValue(c.Context(), contextKey{}, "outer"))
+					err := next(c)
+					if c.Context().Value(contextKey{}) != "handler" {
+						t.Error("SetContext below was not visible to the layer above")
+					}
+					return err
+				}
+			})
+			router.GET("/context", func(c httpx.Context) error {
+				if c.Context().Value(contextKey{}) != "outer" {
+					t.Error("handler did not receive middleware context")
+				}
+				c.SetContext(context.WithValue(c.Context(), contextKey{}, "handler"))
+				return c.NoContent(http.StatusNoContent)
+			})
+		}, httptest.NewRequest(http.MethodGet, "http://example.com/context", nil))
+		if got.Status != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", got.Status)
 		}
 	})
 }

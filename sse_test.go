@@ -1,6 +1,8 @@
 package httpx
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -92,12 +94,59 @@ func TestSSEWriterSendInvalid(t *testing.T) {
 
 func TestSSEWriterSendData(t *testing.T) {
 	t.Parallel()
-	var sb strings.Builder
-	if err := NewSSEWriter(&sb).SendData("ping"); err != nil {
-		t.Fatalf("SendData() = %v, want nil", err)
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "non-empty", data: "ping", want: "data: ping\n\n"},
+		{name: "empty", data: "", want: "data: \n\n"},
 	}
-	if got := sb.String(); got != "data: ping\n\n" {
-		t.Fatalf("SendData() wrote %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var sb strings.Builder
+			if err := NewSSEWriter(&sb).SendData(tc.data); err != nil {
+				t.Fatalf("SendData(%q) = %v, want nil", tc.data, err)
+			}
+			if got := sb.String(); got != tc.want {
+				t.Fatalf("SendData(%q) wrote %q, want %q", tc.data, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSSEWriterSendEvent(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		event string
+		data  string
+		want  string
+	}{
+		{name: "empty event and data", event: "", data: "", want: "data: \n\n"},
+		{name: "named event empty data", event: "ping", data: "", want: "event: ping\ndata: \n\n"},
+		{name: "named event multiline data", event: "update", data: "a\nb", want: "event: update\ndata: a\ndata: b\n\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var sb strings.Builder
+			if err := NewSSEWriter(&sb).SendEvent(tc.event, tc.data); err != nil {
+				t.Fatalf("SendEvent(%q, %q) = %v, want nil", tc.event, tc.data, err)
+			}
+			if got := sb.String(); got != tc.want {
+				t.Fatalf("SendEvent(%q, %q) wrote %q, want %q", tc.event, tc.data, got, tc.want)
+			}
+		})
+	}
+
+	var sb strings.Builder
+	if err := NewSSEWriter(&sb).SendEvent("bad\nevent", "x"); err == nil {
+		t.Fatal("SendEvent with newline in event = nil, want error")
+	}
+	if sb.Len() != 0 {
+		t.Fatalf("invalid SendEvent wrote %q, want nothing", sb.String())
 	}
 }
 
@@ -151,5 +200,24 @@ func TestSSEWriterSequentialEvents(t *testing.T) {
 	want := "data: one\n\nid: 2\ndata: two\n\n"
 	if got := sb.String(); got != want {
 		t.Fatalf("stream = %q, want %q", got, want)
+	}
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) {
+	if len(p) > 1 {
+		return len(p) - 1, nil
+	}
+	return len(p), nil
+}
+
+func TestSSEWriterNilAndShortWrite(t *testing.T) {
+	t.Parallel()
+	if err := NewSSEWriter(nil).SendData("ping"); err == nil {
+		t.Fatal("NewSSEWriter(nil).SendData = nil, want error")
+	}
+	if err := NewSSEWriter(shortWriter{}).SendData("ping"); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write err = %v, want io.ErrShortWrite", err)
 	}
 }

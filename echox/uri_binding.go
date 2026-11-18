@@ -4,31 +4,115 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/textproto"
 	"net/url"
+	"reflect"
+	"strings"
 
 	"github.com/go-playground/form/v4"
 	"github.com/labstack/echo/v4"
 )
 
 var (
-	uriDecoder  = newDecoder("uri")
-	formDecoder = newDecoder("form")
+	uriDecoder    = newExplicitDecoder("uri", false)
+	formDecoder   = newExplicitDecoder("form", false)
+	queryDecoder  = newExplicitDecoder("query", false)
+	headerDecoder = newExplicitDecoder("header", true)
 )
 
-func newDecoder(tag string) *form.Decoder {
+func newExplicitDecoder(tag string, canonicalHeader bool) *form.Decoder {
 	decoder := form.NewDecoder()
 	decoder.SetTagName(tag)
+	decoder.RegisterTagNameFunc(func(f reflect.StructField) string {
+		raw, ok := f.Tag.Lookup(tag)
+		if !ok {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if f.Anonymous && ft.Kind() == reflect.Struct {
+				return ""
+			}
+			return "-"
+		}
+		if raw == "-" || raw == "" {
+			return "-"
+		}
+		name, opts, hasOpts := strings.Cut(raw, ",")
+		if name == "-" {
+			return "-"
+		}
+		if name == "" {
+			name = f.Name
+		}
+		if canonicalHeader {
+			name = textproto.CanonicalMIMEHeaderKey(name)
+		}
+		if hasOpts {
+			return name + "," + opts
+		}
+		return name
+	})
 	return decoder
 }
 
+func checkBindTarget(dst any) error {
+	v := reflect.ValueOf(dst)
+	if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {
+		return errors.New("echox: bind target must be a non-nil pointer")
+	}
+	return nil
+}
+
+func withoutRawQuery(req *http.Request) *http.Request {
+	if req == nil || req.URL == nil || req.URL.RawQuery == "" {
+		return req
+	}
+	copyReq := *req
+	u := *copyReq.URL
+	u.RawQuery = ""
+	copyReq.URL = &u
+	return &copyReq
+}
+
+func isMultipart(req *http.Request) bool {
+	ct := req.Header.Get(echo.HeaderContentType)
+	mediaType, _, _ := strings.Cut(strings.TrimSpace(ct), ";")
+	return strings.EqualFold(strings.TrimSpace(mediaType), "multipart/form-data")
+}
+
 func bindForm(dst any, ctx echo.Context) error {
-	// net/http rather than echo's FormParams, which recognizes a multipart body
-	// only by a case-sensitive Content-Type prefix; media types are
-	// case-insensitive. The memory limit is echo's. PostForm holds the body's
-	// fields only, multipart ones included, never the URL query.
 	req := ctx.Request()
-	if err := req.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
-		return err
+	if isMultipart(req) {
+		if req.MultipartForm == nil {
+			iso := withoutRawQuery(req)
+			err := iso.ParseMultipartForm(32 << 20)
+			if iso != req {
+				req.PostForm = iso.PostForm
+				req.MultipartForm = iso.MultipartForm
+			}
+			if err != nil {
+				return err
+			}
+		}
+		values := req.PostForm
+		if req.MultipartForm != nil && len(req.MultipartForm.Value) > 0 {
+			values = url.Values(req.MultipartForm.Value)
+		}
+		return decodeFormValues(formDecoder, dst, values)
+	}
+	if req.PostForm == nil {
+		iso := withoutRawQuery(req)
+		if iso == req {
+			copyReq := *req
+			iso = &copyReq
+		}
+		iso.Method = http.MethodPost
+		err := iso.ParseForm()
+		req.PostForm = iso.PostForm
+		if err != nil {
+			return err
+		}
 	}
 	return decodeFormValues(formDecoder, dst, req.PostForm)
 }

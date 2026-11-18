@@ -1,6 +1,7 @@
 package stdx
 
 import (
+	"errors"
 	"fmt"
 	"net/textproto"
 	"net/url"
@@ -10,39 +11,61 @@ import (
 	"github.com/go-playground/form/v4"
 )
 
+func checkBindTarget(dst any) error {
+	v := reflect.ValueOf(dst)
+	if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {
+		return errors.New("stdx: bind target must be a non-nil pointer")
+	}
+	return nil
+}
+
 // One decoder per source, each reading its own struct tag, so a DTO can carry
 // `query`, `form`, `uri` and `header` tags side by side — the shape generated
 // handlers bind.
 var (
-	queryDecoder  = newDecoder("query")
-	formDecoder   = newDecoder("form")
-	uriDecoder    = newDecoder("uri")
-	headerDecoder = newHeaderDecoder()
+	queryDecoder  = newExplicitDecoder("query", false)
+	formDecoder   = newExplicitDecoder("form", false)
+	uriDecoder    = newExplicitDecoder("uri", false)
+	headerDecoder = newExplicitDecoder("header", true)
 )
 
-func newDecoder(tag string) *form.Decoder {
+func newExplicitDecoder(tag string, canonicalHeader bool) *form.Decoder {
 	decoder := form.NewDecoder()
 	decoder.SetTagName(tag)
-	// An unknown key is data the caller sent, not a programming error: binding
-	// must not fail because a client added a query parameter.
-	decoder.SetMode(form.ModeImplicit)
-	return decoder
-}
-
-func newHeaderDecoder() *form.Decoder {
-	d := newDecoder("header")
-	d.RegisterTagNameFunc(func(f reflect.StructField) string {
-		name, options, hasOptions := strings.Cut(f.Tag.Get("header"), ",")
+	// Explicit tag lookup without falling back to Go field names prevents
+	// cross-source overwriting (e.g. a json-only field filled from query/header),
+	// while still recursing into embedded anonymous structs.
+	decoder.RegisterTagNameFunc(func(f reflect.StructField) string {
+		raw, ok := f.Tag.Lookup(tag)
+		if !ok {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if f.Anonymous && ft.Kind() == reflect.Struct {
+				return ""
+			}
+			return "-"
+		}
+		if raw == "-" || raw == "" {
+			return "-"
+		}
+		name, opts, hasOpts := strings.Cut(raw, ",")
+		if name == "-" {
+			return "-"
+		}
 		if name == "" {
 			name = f.Name
 		}
-		name = textproto.CanonicalMIMEHeaderKey(name)
-		if hasOptions {
-			return name + "," + options
+		if canonicalHeader {
+			name = textproto.CanonicalMIMEHeaderKey(name)
+		}
+		if hasOpts {
+			return name + "," + opts
 		}
 		return name
 	})
-	return d
+	return decoder
 }
 
 func validateFormKeys(values url.Values) error {

@@ -54,8 +54,9 @@ type ResponseWrite struct {
 	// committed cannot change it. Compare with Context.StatusCode.
 	Code int
 
-	// ContentType is the type the call asked for, before any sniffing. It is
-	// empty for the methods that do not take one.
+	// ContentType is the type the call used (after sniffing on Bytes, or
+	// preserving a pre-commit Content-Type on JSON). It is empty for methods
+	// that do not set one.
 	ContentType string
 
 	// Value is the value handed to JSON, unencoded. It is nil for every
@@ -95,15 +96,15 @@ func (c *Context) Status(code int) {
 	}
 }
 
-// SetHeader sets a response header. It has no observable effect once the
-// response has committed: the header map is still mutated, exactly as
-// net/http's is, but the response was snapshotted at commit and ResponseHeaders
-// reports the snapshot.
+// SetHeader sets a response header. It is dropped once the response has
+// committed.
 func (c *Context) SetHeader(key, value string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("SetHeader")
-	c.res.Header().Set(key, value)
+	if !c.res.committed {
+		c.res.Header().Set(key, value)
+	}
 }
 
 // AddHeader appends value to a response header, keeping the values already
@@ -126,13 +127,13 @@ func (c *Context) ResponseHeaderValues(key string) []string {
 	return slices.Clone(c.res.sentHeader().Values(key))
 }
 
-// SetCookie appends a Set-Cookie header. A nil cookie is ignored. Like
-// SetHeader it has no observable effect after the response commits.
+// SetCookie appends a Set-Cookie header. A nil cookie is ignored, and calls
+// after the response commits are dropped.
 func (c *Context) SetCookie(cookie *http.Cookie) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("SetCookie")
-	if cookie != nil {
+	if cookie != nil && !c.res.committed {
 		http.SetCookie(&c.res, cookie)
 	}
 }
@@ -151,10 +152,13 @@ func (c *Context) JSON(code int, v any) error {
 	if err != nil {
 		return err
 	}
-	setDefaultContentType(c.res.Header(), contentTypeJSON)
 	ct := contentTypeJSON
-	if preset := c.res.Header().Get("Content-Type"); preset != "" {
-		ct = preset
+	if !c.res.committed {
+		if _, hasCT := c.res.Header()["Content-Type"]; hasCT {
+			ct = c.res.Header().Get("Content-Type")
+		} else {
+			c.res.Header().Set("Content-Type", contentTypeJSON)
+		}
 	}
 	write := ResponseWrite{Kind: KindJSON, Code: code, ContentType: ct, Value: v}
 	bodyless := c.commitsBodyless(code)
@@ -223,14 +227,15 @@ func (c *Context) DataFromReader(code int, contentType string, r io.Reader, size
 	c.mu.Lock()
 	c.note("DataFromReader")
 	bodyless := c.commitsBodyless(code)
-	if contentType != "" {
-		c.res.Header().Set("Content-Type", contentType)
-	}
-	if !bodyless && size >= 0 {
-		c.res.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	if !c.res.committed {
+		if contentType != "" {
+			c.res.Header().Set("Content-Type", contentType)
+		}
+		if !bodyless && r != nil && size >= 0 {
+			c.res.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		}
 	}
 	c.res.WriteHeader(code)
-	start := c.res.body.Len()
 	c.mu.Unlock()
 
 	if rc, ok := r.(io.Closer); ok {
@@ -242,8 +247,9 @@ func (c *Context) DataFromReader(code int, contentType string, r io.Reader, size
 	// response is already committed, so nothing the reader does can change
 	// the status out from under it.
 	var err error
+	var written bytes.Buffer
 	if !bodyless && r != nil {
-		_, err = io.Copy(lockedWriter{c: c}, r)
+		_, err = io.Copy(lockedWriter{c: c, buf: &written}, r)
 	}
 
 	c.mu.Lock()
@@ -252,7 +258,7 @@ func (c *Context) DataFromReader(code int, contentType string, r io.Reader, size
 		Kind:        KindDataFromReader,
 		Code:        code,
 		ContentType: contentType,
-		Body:        c.bodySince(start),
+		Body:        bytes.Clone(written.Bytes()),
 	})
 	return err
 }
@@ -262,12 +268,6 @@ func (c *Context) commitsBodyless(code int) bool {
 		return !bodyAllowed(c.res.status)
 	}
 	return !bodyAllowed(code)
-}
-
-func setDefaultContentType(h http.Header, ct string) {
-	if _, ok := h["Content-Type"]; !ok {
-		h.Set("Content-Type", ct)
-	}
 }
 
 // File serves the named file through httpx.ServeFile, so Range
@@ -300,6 +300,14 @@ func (c *Context) Redirect(code int, location string) error {
 	c.note("Redirect")
 	if !httpx.ValidRedirectCode(code) {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
+	}
+	if c.res.committed {
+		c.writes = append(c.writes, ResponseWrite{
+			Kind:     KindRedirect,
+			Code:     code,
+			Location: location,
+		})
+		return nil
 	}
 	start := c.res.body.Len()
 	http.Redirect(&c.res, c.req, location, code)
@@ -374,7 +382,9 @@ func (c *Context) ResponseHeader(key string) string {
 // ResponseCookies returns the cookies the response sets, parsed from its
 // Set-Cookie headers.
 func (c *Context) ResponseCookies() []*http.Cookie {
-	return c.Result().Cookies()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return (&http.Response{Header: c.res.sentHeader()}).Cookies()
 }
 
 // Result assembles the response as an *http.Response, in the spirit of
@@ -387,15 +397,24 @@ func (c *Context) Result() *http.Response {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	body := bytes.Clone(c.res.body.Bytes())
+	hdr := c.res.sentHeader().Clone()
+	contentLength := int64(len(body))
+	if contentLength == 0 {
+		if raw := hdr.Get("Content-Length"); raw != "" {
+			if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n >= 0 {
+				contentLength = n
+			}
+		}
+	}
 	return &http.Response{
 		Status:        fmt.Sprintf("%03d %s", c.res.status, http.StatusText(c.res.status)),
 		StatusCode:    c.res.status,
 		Proto:         "HTTP/1.1",
 		ProtoMajor:    1,
 		ProtoMinor:    1,
-		Header:        c.res.sentHeader().Clone(),
+		Header:        hdr,
 		Body:          io.NopCloser(bytes.NewReader(body)),
-		ContentLength: int64(len(body)),
+		ContentLength: contentLength,
 	}
 }
 
@@ -406,7 +425,12 @@ func (c *Context) Writes() []ResponseWrite {
 	if len(c.writes) == 0 {
 		return nil
 	}
-	return append([]ResponseWrite(nil), c.writes...)
+	out := make([]ResponseWrite, len(c.writes))
+	for i, w := range c.writes {
+		w.Body = bytes.Clone(w.Body)
+		out[i] = w
+	}
+	return out
 }
 
 // LastJSON returns the value most recently handed to JSON, unencoded, and
@@ -445,12 +469,19 @@ func (c *Context) bodySince(start int) []byte {
 // what the Context hands to code that may run arbitrary callbacks — the
 // io.Copy in DataFromReader, the callback in Stream — so those never hold the
 // lock across code they do not control.
-type lockedWriter struct{ c *Context }
+type lockedWriter struct {
+	c   *Context
+	buf *bytes.Buffer
+}
 
 func (w lockedWriter) Write(p []byte) (int, error) {
 	w.c.mu.Lock()
 	defer w.c.mu.Unlock()
-	return w.c.res.Write(p)
+	n, err := w.c.res.Write(p)
+	if err == nil && w.buf != nil && n > 0 && bodyAllowed(w.c.res.status) {
+		w.buf.Write(p[:n])
+	}
+	return n, err
 }
 
 // recorder is the response under construction. It is an http.ResponseWriter
@@ -520,6 +551,9 @@ func (r *recorder) Write(p []byte) (int, error) {
 func (r *recorder) Flush() {
 	if !r.committed {
 		r.WriteHeader(r.status)
+	}
+	if !r.committed {
+		r.WriteHeader(http.StatusOK)
 	}
 	r.flushes = append(r.flushes, r.body.Len())
 }

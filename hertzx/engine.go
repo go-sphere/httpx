@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -245,6 +246,9 @@ func New(opts ...Option) httpx.Engine {
 // hertzx.New wins, because hertz's setters replace rather than append.
 func (e *Engine) installRouteFallback() {
 	e.engine.GetOptions().HandleMethodNotAllowed = true
+	// Disable hertz's automatic trailing-slash redirect so a mismatched
+	// trailing slash returns 404 like the other adapters.
+	e.engine.GetOptions().RedirectTrailingSlash = false
 	e.notFound = httpx.NewMiddlewareFallback(e.chain,
 		staticLeaf(httpx.NewNotFoundError(http.StatusText(http.StatusNotFound))))
 	// Unlike gin, hertz does not write the Allow header RFC 7231 requires, and it
@@ -347,7 +351,14 @@ func (e *Engine) Start() error {
 	}
 	e.running.Store(true)
 	defer e.running.Store(false)
-	return e.engine.Run()
+	return func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("hertzx: server panic: %v", r)
+			}
+		}()
+		return e.engine.Run()
+	}()
 }
 
 var errAlreadyStarted = errors.New("hertzx: engine already started")
@@ -461,6 +472,7 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	hctx := e.engine.NewContext()
+	defer hctx.Request.RemoveMultipartFormFiles()
 	if e.clientIP != nil {
 		// Pooled contexts get this in allocateContext; NewContext does not.
 		hctx.SetClientIPFunc(e.clientIP)
@@ -469,6 +481,8 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	hctx.Request.SetRequestURI(urlStr)
 	if req.Host != "" {
 		hctx.Request.Header.SetHost(req.Host)
+	} else if req.URL == nil || !req.URL.IsAbs() {
+		hctx.Request.Header.SetHostBytes(nil)
 	}
 	if req.Body != nil {
 		body, err := io.ReadAll(req.Body)
@@ -499,6 +513,15 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	// non-empty body only.
 	visitResponseHeader(&hctx.Response, header.Add)
 
+	contentLength := int64(len(body))
+	if contentLength == 0 {
+		if clStr := header.Get("Content-Length"); clStr != "" {
+			if n, err := strconv.ParseInt(clStr, 10, 64); err == nil && n >= 0 {
+				contentLength = n
+			}
+		}
+	}
+
 	return &http.Response{
 		Status:        strconv.Itoa(hctx.Response.StatusCode()) + " " + http.StatusText(hctx.Response.StatusCode()),
 		StatusCode:    hctx.Response.StatusCode(),
@@ -507,7 +530,7 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 		ProtoMinor:    1,
 		Header:        header,
 		Body:          io.NopCloser(bytes.NewReader(body)),
-		ContentLength: int64(len(body)),
+		ContentLength: contentLength,
 		Request:       req,
 	}, nil
 }

@@ -62,26 +62,26 @@ type methodRoutes struct {
 	rare   map[string]*route
 }
 
-var methodNames = [...]string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"}
+var methodNames = [...]string{"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}
 
 // methodIndex maps a canonical method name to its slot, or -1 for the rest.
 func methodIndex(method string) int {
 	switch method {
-	case "GET":
-		return 0
-	case "POST":
-		return 1
-	case "PUT":
-		return 2
-	case "PATCH":
-		return 3
-	case "DELETE":
-		return 4
-	case "HEAD":
-		return 5
-	case "OPTIONS":
-		return 6
 	case "CONNECT":
+		return 0
+	case "DELETE":
+		return 1
+	case "GET":
+		return 2
+	case "HEAD":
+		return 3
+	case "OPTIONS":
+		return 4
+	case "PATCH":
+		return 5
+	case "POST":
+		return 6
+	case "PUT":
 		return 7
 	case "TRACE":
 		return 8
@@ -189,6 +189,9 @@ func (n *node) add(method, pattern string, r *route) {
 			current = current.wildcard
 		case strings.HasPrefix(seg, ":"):
 			name := seg[1:]
+			if name == "" {
+				panic("stdx: parameter must be named in " + pattern)
+			}
 			if current.param == nil {
 				current.param = &node{}
 				current.paramName = name

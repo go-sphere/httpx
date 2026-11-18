@@ -107,13 +107,14 @@ func (c *stdContext) recycle() {
 	c.rw = responseWriter{}
 	c.route = nil
 	clear(c.values)
-	clear(c.valueBuf[:])
 	c.values = c.valueBuf[:0]
-	clear(c.uriBuf[:])
-	if len(c.uriValues) > maxRetainedKeys {
-		c.uriValues = nil
-	} else {
-		clear(c.uriValues)
+	if len(c.uriValues) > 0 {
+		clear(c.uriBuf[:])
+		if len(c.uriValues) > maxRetainedKeys {
+			c.uriValues = nil
+		} else {
+			clear(c.uriValues)
+		}
 	}
 	if len(c.query) > maxRetainedKeys || len(c.queryRaw) > maxRetainedScratch {
 		c.query = nil
@@ -305,9 +306,26 @@ func (c *stdContext) Cookies() map[string]string {
 
 func (c *stdContext) FormValue(key string) string { return c.req.FormValue(key) }
 
+func withoutRawQuery(req *http.Request) *http.Request {
+	if req.URL == nil || req.URL.RawQuery == "" {
+		return req
+	}
+	copyReq := *req
+	u := *copyReq.URL
+	u.RawQuery = ""
+	copyReq.URL = &u
+	return &copyReq
+}
+
 func (c *stdContext) MultipartForm() (*multipart.Form, error) {
 	if c.req.MultipartForm == nil {
-		if err := c.req.ParseMultipartForm(defaultMultipartMemory); err != nil {
+		iso := withoutRawQuery(c.req)
+		err := iso.ParseMultipartForm(defaultMultipartMemory)
+		if iso != c.req {
+			c.req.PostForm = iso.PostForm
+			c.req.MultipartForm = iso.MultipartForm
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -315,10 +333,8 @@ func (c *stdContext) MultipartForm() (*multipart.Form, error) {
 }
 
 func (c *stdContext) FormFile(name string) (*multipart.FileHeader, error) {
-	if c.req.MultipartForm == nil {
-		if err := c.req.ParseMultipartForm(defaultMultipartMemory); err != nil {
-			return nil, err
-		}
+	if _, err := c.MultipartForm(); err != nil {
+		return nil, err
 	}
 	file, header, err := c.req.FormFile(name)
 	if err != nil {
@@ -383,6 +399,9 @@ func (c *stdContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *stdContext) BindJSON(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	if c.req.Body == nil {
 		return httpx.WrapBindError(io.EOF)
 	}
@@ -400,6 +419,9 @@ func (c *stdContext) BindJSON(dst any) error {
 }
 
 func (c *stdContext) BindQuery(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	values := c.queryValues()
 	if len(values) == 0 {
 		// Nothing to decode. The decoder would still walk every field of dst
@@ -414,32 +436,19 @@ func (c *stdContext) BindQuery(dst any) error {
 }
 
 func (c *stdContext) BindForm(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	if isMultipart(c.req) {
-		if c.req.MultipartForm == nil {
-			// Parse using a shallow copy with empty RawQuery so malformed URL
-			// query escapes do not fail binding of a valid multipart body.
-			req := *c.req
-			if req.URL != nil && req.URL.RawQuery != "" {
-				u := *req.URL
-				u.RawQuery = ""
-				req.URL = &u
-			}
-			err := req.ParseMultipartForm(defaultMultipartMemory)
-			c.req.PostForm = req.PostForm
-			c.req.MultipartForm = req.MultipartForm
-			if err != nil {
-				return httpx.WrapBindError(err)
-			}
+		if _, err := c.MultipartForm(); err != nil {
+			return httpx.WrapBindError(err)
 		}
 	} else if c.req.PostForm == nil {
-		req := *c.req
-		if req.URL != nil && req.URL.RawQuery != "" {
-			u := *req.URL
-			u.RawQuery = ""
-			req.URL = &u
+		iso := withoutRawQuery(c.req)
+		err := iso.ParseForm()
+		if iso != c.req {
+			c.req.PostForm = iso.PostForm
 		}
-		err := req.ParseForm()
-		c.req.PostForm = req.PostForm
 		if err != nil {
 			return httpx.WrapBindError(err)
 		}
@@ -452,6 +461,9 @@ func (c *stdContext) BindForm(dst any) error {
 }
 
 func (c *stdContext) BindURI(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	if c.route != nil && len(c.route.params) > 0 {
 		values := c.uriValues
 		if values == nil {
@@ -477,6 +489,9 @@ func (c *stdContext) BindURI(dst any) error {
 }
 
 func (c *stdContext) BindHeader(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	// The live header map goes straight to the decoder, which only reads it,
 	// so binding allocates no copy of the headers. Both agree on canonical
 	// keys: net/http canonicalizes on parse and in Header.Set, which is the
@@ -619,11 +634,13 @@ func (c *stdContext) NoContent(code int) error {
 }
 
 func (c *stdContext) Bytes(code int, b []byte, contentType string) error {
-	if contentType == "" {
-		contentType = http.DetectContentType(b)
-	}
-	c.setContentType([]string{contentType}, false)
 	bl := c.commitsBodyless(code)
+	if !c.rw.written {
+		if contentType == "" {
+			contentType = http.DetectContentType(b)
+		}
+		c.setContentType([]string{contentType}, false)
+	}
 	c.rw.WriteHeader(code)
 	if bl {
 		return nil
@@ -643,7 +660,7 @@ func (c *stdContext) DataFromReader(code int, contentType string, r io.Reader, s
 		c.rw.WriteHeader(code)
 		return nil
 	}
-	if size >= 0 && !c.rw.written {
+	if r != nil && size >= 0 && !c.rw.written {
 		c.rw.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	c.rw.WriteHeader(code)
@@ -661,6 +678,9 @@ func (c *stdContext) File(path string) error {
 func (c *stdContext) Redirect(code int, location string) error {
 	if !httpx.ValidRedirectCode(code) {
 		return httpx.NewInternalServerError(fmt.Sprintf("cannot redirect with status code %d", code))
+	}
+	if c.rw.written {
+		return nil
 	}
 	http.Redirect(&c.rw, c.req, location, code)
 	return nil
@@ -770,6 +790,7 @@ func flush(w http.ResponseWriter) error {
 // Stream implements httpx.Streamer: the response is committed before fn runs
 // and every write inside fn reaches the client immediately.
 func (c *stdContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+	bl := c.commitsBodyless(code)
 	if contentType != "" {
 		c.setContentType([]string{contentType}, false)
 	}
@@ -779,6 +800,9 @@ func (c *stdContext) Stream(code int, contentType string, fn func(w io.Writer) e
 	}
 	if fn == nil {
 		return nil
+	}
+	if bl {
+		return fn(discardFlushWriter{c: c})
 	}
 	return fn(flushWriter{c: c})
 }
@@ -791,6 +815,15 @@ func (w flushWriter) Write(p []byte) (int, error) {
 		return n, err
 	}
 	return n, w.c.Flush()
+}
+
+type discardFlushWriter struct{ c *stdContext }
+
+func (w discardFlushWriter) Write(p []byte) (int, error) {
+	if err := w.c.Flush(); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // responseWriter records whether a response was produced, which is what keeps

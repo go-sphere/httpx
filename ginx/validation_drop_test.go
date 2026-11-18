@@ -62,6 +62,16 @@ func TestBindDropsGinValidationVerdict(t *testing.T) {
 			t.Fatalf("dst = %+v", dst)
 		}
 	})
+
+	t.Run("pointer-to-pointer target with null json: validator panics without recover", func(t *testing.T) {
+		var dst *dropItem
+		if err := bindJSON(t, `null`, &dst); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dst != nil {
+			t.Fatalf("dst = %+v, want nil", dst)
+		}
+	})
 }
 
 func TestBindKeepsDecodeError(t *testing.T) {

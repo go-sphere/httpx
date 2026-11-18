@@ -2,11 +2,15 @@ package ginx
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/httpx"
 )
+
+const queryOverrideKey = "httpx.ginx.queryOverride"
 
 // AdaptStdMiddleware wraps a plain net/http middleware
 // (func(http.Handler) http.Handler) as httpx.Middleware, giving access to the
@@ -29,21 +33,65 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 			if !ok {
 				return errors.New("AdaptStdMiddleware: gin context type error")
 			}
-			var nextErr error
-			sw := http.ResponseWriter(stdResponseWriter{gc.Writer})
+			var (
+				mu       sync.Mutex
+				timedOut bool
+				nextErr  error
+			)
+			origReq := gc.Request
+			origWriter := gc.Writer
+			sw := http.ResponseWriter(stdResponseWriter{origWriter})
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gc.Request = r
-				if w != sw {
-					old := gc.Writer
-					gc.Writer = newStdWriterBridge(old, w)
-					defer func() { gc.Writer = old }()
+				mu.Lock()
+				if timedOut {
+					mu.Unlock()
+					return
 				}
-				nextErr = next(ctx)
+				gc.Request = r
+				if queryChanged(origReq, r) {
+					gc.Set(queryOverrideKey, true)
+				}
+				swapped := w != sw
+				if swapped {
+					gc.Writer = newStdWriterBridge(origWriter, w)
+				}
+				mu.Unlock()
+				defer func() {
+					mu.Lock()
+					to := timedOut
+					if !to && swapped {
+						gc.Writer = origWriter
+					}
+					mu.Unlock()
+					if to {
+						removeReplacedMultipartForm(origReq, r)
+					}
+				}()
+				err := next(ctx)
+				mu.Lock()
+				if !timedOut {
+					nextErr = err
+				}
+				mu.Unlock()
 			})
-			middleware(inner).ServeHTTP(sw, gc.Request)
-			return nextErr
+			middleware(inner).ServeHTTP(sw, origReq)
+			mu.Lock()
+			timedOut = true
+			err := nextErr
+			mu.Unlock()
+			return err
 		}
 	}
+}
+
+func queryChanged(orig, cur *http.Request) bool {
+	if orig == cur {
+		return false
+	}
+	if orig == nil || cur == nil || orig.URL == nil || cur.URL == nil {
+		return (orig == nil || orig.URL == nil) != (cur == nil || cur.URL == nil)
+	}
+	return orig.URL.RawQuery != cur.URL.RawQuery
 }
 
 // stdResponseWriter is gin's writer as net/http code expects it: WriteHeader
@@ -138,7 +186,10 @@ func (b *stdWriterBridge) Write(p []byte) (int, error) {
 }
 
 func (b *stdWriterBridge) WriteString(s string) (int, error) {
-	return b.Write([]byte(s))
+	b.WriteHeaderNow()
+	n, err := io.WriteString(b.target, s)
+	b.size += n
+	return n, err
 }
 
 func (b *stdWriterBridge) Status() int {
@@ -154,12 +205,8 @@ func (b *stdWriterBridge) Written() bool {
 }
 
 func (b *stdWriterBridge) Flush() {
-	_ = b.flush()
-}
-
-func (b *stdWriterBridge) flush() error {
 	b.WriteHeaderNow()
-	return flushHTTPWriter(b.target)
+	_ = flushHTTPWriter(b.target)
 }
 
 func flushHTTPWriter(w http.ResponseWriter) error {

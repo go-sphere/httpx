@@ -120,18 +120,19 @@ func assertStreamIncremental(t *testing.T, a adapter, mw httpx.Middleware) http.
 func TestFlushSendsHeadersBeforeBodyConformance(t *testing.T) {
 	for _, a := range adapters() {
 		t.Run(a.Name, func(t *testing.T) {
+			if !a.Caps.Flusher {
+				t.Skip("the context does not implement httpx.Flusher")
+			}
 			engine, addr := a.serve(t, serveConfig{})
 			gate := make(chan struct{})
 			var once sync.Once
 			openGate := func() { once.Do(func() { close(gate) }) }
 			defer openGate()
 
-			flushable := true
 			engine.Group("").GET("/early", func(ctx httpx.Context) error {
 				f, ok := httpx.AsFlusher(ctx)
 				if !ok {
-					flushable = false
-					return ctx.Text(http.StatusOK, "no flusher")
+					return httpx.NewInternalServerError("the context does not implement httpx.Flusher")
 				}
 				ctx.SetHeader("X-Early", "1")
 				if err := f.Flush(); err != nil {
@@ -153,9 +154,6 @@ func TestFlushSendsHeadersBeforeBodyConformance(t *testing.T) {
 				t.Fatalf("headers did not arrive before the body: %v", err)
 			}
 			defer func() { _ = resp.Body.Close() }()
-			if !flushable {
-				t.Skip("the context does not implement httpx.Flusher")
-			}
 			if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Early") != "1" {
 				t.Fatalf("status=%d X-Early=%q, want 200 %q", resp.StatusCode, resp.Header.Get("X-Early"), "1")
 			}

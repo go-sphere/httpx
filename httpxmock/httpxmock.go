@@ -159,6 +159,9 @@ func WithHeader(key, value string) Option {
 			c.req.Host = value
 			return
 		}
+		if c.req.Header == nil {
+			c.req.Header = make(http.Header)
+		}
 		c.req.Header.Add(key, value)
 	}
 }
@@ -167,6 +170,9 @@ func WithHeader(key, value string) Option {
 func WithCookie(cookie *http.Cookie) Option {
 	return func(c *Context) {
 		if cookie != nil {
+			if c.req.Header == nil {
+				c.req.Header = make(http.Header)
+			}
 			c.req.AddCookie(cookie)
 		}
 	}

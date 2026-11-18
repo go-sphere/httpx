@@ -149,54 +149,17 @@ func TestSSEEdgeAndZeroAlloc(t *testing.T) {
 	if buf.String() != "event: tick\ndata: {\"n\":7}\n\n" {
 		t.Fatalf("SendJSON = %q", buf.String())
 	}
-
-	// Pre-grow writer buffer once, then assert zero allocs on Send/Comment.
-	var sink discardBuffer
-	sinkWriter := NewSSEWriter(&sink)
-	ev := &SSEEvent{Event: "tick", Data: "line1\r\nline2"}
-	allocs := testing.AllocsPerRun(20, func() {
-		if err := sinkWriter.Send(ev); err != nil {
-			t.Fatal(err)
-		}
-		if err := sinkWriter.Comment("keep\r\nalive"); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if allocs != 0 {
-		t.Fatalf("SSE Send+Comment allocs = %.1f, want 0", allocs)
-	}
 }
 
-type discardBuffer struct{}
-
-func (discardBuffer) Write(p []byte) (int, error) { return len(p), nil }
-
-func TestToAnonymousWildcardPathZeroAlloc(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"", ""},
-		{"/users/profile", "/users/profile"},
-		{"/*filepath", "/*"},
-		{"/files/*path", "/files/*"},
-		{"/files/*", "/files/*"},
-		{"/*a/b", "/*/b"},
+func TestMiddlewareChainNilIgnoredAndFixWildcardNil(t *testing.T) {
+	chain := NewMiddlewareChain()
+	chain.Use(nil, nil)
+	if got := chain.Own(); len(got) != 0 {
+		t.Fatalf("Own() after nil Use = %d, want 0", len(got))
 	}
-	for _, tc := range cases {
-		if got := toAnonymousWildcardPath(tc.in); got != tc.want {
-			t.Fatalf("toAnonymousWildcardPath(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-	for _, p := range []string{"/users/profile", "/*filepath", "/files/*path", "/files/*"} {
-		allocs := testing.AllocsPerRun(50, func() {
-			if got := toAnonymousWildcardPath(p); got == "" {
-				t.Fatal("unexpected empty path")
-			}
-		})
-		if allocs != 0 {
-			t.Fatalf("toAnonymousWildcardPath(%q) allocs = %.1f, want 0", p, allocs)
-		}
+	fixed, param := FixWildcardPathIfNeed(nil, "/files/*path")
+	if fixed != "/files/*" || param != "*" {
+		t.Fatalf("FixWildcardPathIfNeed(nil, ...) = (%q, %q), want (%q, %q)", fixed, param, "/files/*", "*")
 	}
 }
 

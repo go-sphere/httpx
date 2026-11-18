@@ -24,8 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 GO = os.environ.get('GO', 'go')
 # Generated output goes in its own directory. results/ also holds older raw
 # data from past experiments, and a generator writing into the same namespace
-# would eventually overwrite one of them. None of results/ is tracked: benchmarks/ has no go.mod, so anything committed here
-# ships in the root module's zip to every consumer of the library.
+# would eventually overwrite one of them. None of results/ is tracked:
+# benchmarks/ has its own unpublished go.mod (excluded from the root module zip)
+# and raw results remain gitignored.
 RESULTS = ROOT / 'benchmarks/results/latest'
 # Compiled test binaries are tens of megabytes; they are kept so a run can be
 # repeated from the exact same build, and live outside results/ so a stray
@@ -66,6 +67,10 @@ def main():
         render_only(args)
         return
 
+    if not (ROOT / 'go.work').exists():
+        log('initializing go.work')
+        run(['make', 'work'])
+
     RESULTS.mkdir(parents=True, exist_ok=True)
     BIN.mkdir(parents=True, exist_ok=True)
     env = environment(args)
@@ -88,26 +93,30 @@ def main():
         tables[key] = parse_bench(raw.read_text())
 
     gin_depth = None
-    if not args.skip_gin_depth:
+    depth_out = RESULTS / 'gin-depth.txt'
+    if args.skip_gin_depth:
+        depth_out.unlink(missing_ok=True)
+    else:
         ginbin = BIN / 'ginx.test'
         log(f'compiling the ginx diagnostic binary -> {rel(ginbin)}')
         run([GO, 'test', '-c', './ginx', '-o', str(ginbin)])
-        raw = RESULTS / 'gin-depth.txt'
-        log(f'measuring the gin deep-chain curves -> {rel(raw)}')
-        raw.write_text(bench_binary(ginbin, '^(BenchmarkGinCallDepth|BenchmarkGinDepthCurve|BenchmarkNestedScopes)$', args))
-        gin_depth = parse_bench(raw.read_text())
+        log(f'measuring the gin deep-chain curves -> {rel(depth_out)}')
+        depth_out.write_text(bench_binary(ginbin, '^(BenchmarkGinCallDepth|BenchmarkGinDepthCurve|BenchmarkNestedScopes)$', args))
+        gin_depth = parse_bench(depth_out.read_text())
 
     network = None
-    if not args.skip_network:
-        out = RESULTS / 'network.json'
-        log(f'running the fixed-rate network comparison at {args.rate}/s -> {rel(out)}')
-        try:
-            run([sys.executable, str(ROOT / 'benchmarks/network.py'),
-                 '--binary', str(conformance), '--rate', str(args.rate),
-                 '--cpu', str(args.cpu), '--output', str(out)])
-            network = json.loads(out.read_text())
-        except subprocess.CalledProcessError:
-            log('network comparison failed (is vegeta installed?); the section is omitted')
+    net_out = RESULTS / 'network.json'
+    if args.skip_network:
+        net_out.unlink(missing_ok=True)
+    elif find_vegeta() is None:
+        net_out.unlink(missing_ok=True)
+        log('vegeta is not installed; skipping the network section')
+    else:
+        log(f'running the fixed-rate network comparison at {args.rate}/s -> {rel(net_out)}')
+        run([sys.executable, str(ROOT / 'benchmarks/network.py'),
+             '--binary', str(conformance), '--rate', str(args.rate),
+             '--cpu', str(args.cpu), '--output', str(net_out)])
+        network = json.loads(net_out.read_text())
 
     env['duration_seconds'] = round(time.monotonic() - started, 1)
     (RESULTS / 'environment.json').write_text(json.dumps(env, indent=2) + '\n')
@@ -309,6 +318,8 @@ def _findings_adapter_ranking(table) -> str:
             wins[min(timings, key=timings.get)].append(scenario)
     order = sorted(adapters, key=lambda a: -len(wins[a]))
     total = len(scenarios)
+    if not order:
+        return ''
 
     md = ['### Which adapter is fastest\n']
     best = order[0]
@@ -341,11 +352,13 @@ def _findings_wrapping_cost(table) -> str:
     rows, crossovers, ahead = [], {}, []
     for framework in frameworks:
         cells = []
-        empty = (pick(table, framework=framework, scenario='Empty', mode='native'),
-                 pick(table, framework=framework, scenario='Empty', mode='httpx'))
-        # A framework httpx already beats on an empty request has no crossover
-        # to report -- it never trails in the first place.
-        if all(empty) and empty[1]['ns/op'] < empty[0]['ns/op']:
+        pairs = [(pick(table, framework=framework, scenario=scenario, mode='native'),
+                  pick(table, framework=framework, scenario=scenario, mode='httpx'))
+                 for scenario in ['Empty'] + depths]
+        # A framework httpx already beats at every measured depth has no
+        # crossover to report -- it never trails.
+        if pairs and all(n and h and n.get('ns/op') is not None and h.get('ns/op') is not None and h['ns/op'] < n['ns/op']
+                         for n, h in pairs):
             ahead.append(ADAPTER_BY_FRAMEWORK.get(framework, framework))
         for scenario in ['Empty'] + depths:
             n = pick(table, framework=framework, scenario=scenario, mode='native')
@@ -353,9 +366,11 @@ def _findings_wrapping_cost(table) -> str:
             if not n or not h:
                 cells.append('—')
                 continue
-            cells.append(delta(n.get('ns/op'), h.get('ns/op')))
+            cell = delta(n.get('ns/op'), h.get('ns/op'))
+            cells.append(cell)
             if (scenario in depths and framework not in crossovers
                     and ADAPTER_BY_FRAMEWORK.get(framework, framework) not in ahead
+                    and cell != '≈0%'
                     and h.get('ns/op', 0) < n.get('ns/op', 0)):
                 crossovers[framework] = int(scenario[len('Middleware'):])
         rows.append((framework, cells))
@@ -551,7 +566,7 @@ def render_native(table) -> str:
           'A scenario with no honest counterpart is absent rather than approximated: hertz\'s '
           'native static file serving reads from disk only, which is not what the in-memory FS '
           'in the scenario does, so `hertzx` has no `StaticFile` row.\n']
-    for framework in values(table, 'framework'):
+    for framework in [a for a in ADAPTERS if a in values(table, 'framework')]:
         md.append(f'### {framework} (native = {ADAPTERS.get(framework, framework)})\n')
         md.append('| Scenario | native ns/op | httpx ns/op | Δ | native allocs | httpx allocs |')
         md.append('| --- | ---: | ---: | ---: | ---: | ---: |')
@@ -624,6 +639,7 @@ def network_summary(data) -> dict:
         success.append(r['metrics']['success'])
     medians = {k: statistics.median(v) for k, v in p50.items()}
     worst = (0.0, 0.0, '—')
+    max_abs_pct = 0.0
     for (framework, scenario, mode), native in medians.items():
         if mode != 'native':
             continue
@@ -631,8 +647,10 @@ def network_summary(data) -> dict:
         if wrapped is None or native <= 0:
             continue
         diff = wrapped - native
+        pct = diff / native * 100
+        max_abs_pct = max(max_abs_pct, abs(pct))
         if abs(diff) > abs(worst[0]):
-            worst = (diff, diff / native * 100, f'{framework} {scenario}')
+            worst = (diff, pct, f'{framework} {scenario}')
     min_success = min(success) if success else 0.0
     return {
         'p50_min': min(medians.values()) if medians else 0.0,
@@ -641,7 +659,7 @@ def network_summary(data) -> dict:
         'worst_delta_pct': worst[1],
         'worst_row': worst[2],
         'min_success': min_success,
-        'indistinguishable': abs(worst[1]) <= NETWORK_NOISE * 100 and min_success >= 1.0,
+        'indistinguishable': max_abs_pct <= NETWORK_NOISE * 100 and min_success >= 1.0,
     }
 
 
@@ -697,12 +715,11 @@ def render_appendix() -> str:
         '```\n',
         'This run\'s raw output and `environment.json` are in `benchmarks/results/latest/`, and '
         'the compiled test binaries are in `benchmarks/bin/` so a run can be repeated from the '
-        'exact same build. **None of it is tracked.** `benchmarks/` has no `go.mod`, so it is '
-        'part of the root module, and anything committed there ships in the module zip every '
-        'consumer of `github.com/go-sphere/httpx` downloads — benchmark samples do not belong '
-        'in a library\'s module zip. This file carries the medians and the environment, which '
-        'is what the numbers are for; to compare against another machine, re-run there rather '
-        'than reaching for its samples.\n',
+        'exact same build. **None of it is tracked.** `benchmarks/` has its own unpublished '
+        '`go.mod`, so it is excluded from the root module zip every consumer of '
+        '`github.com/go-sphere/httpx` downloads, and raw results stay out of git. This file '
+        'carries the medians and the environment, which is what the numbers are for; to compare '
+        'against another machine, re-run there rather than reaching for its samples.\n',
         '### Not covered\n',
         'Databases and RPC, HTTP/2, TLS, real network round trips, sustained throughput on long-lived '
         'streaming responses, and peak QPS under load from a separate machine. Every one of those '
@@ -733,17 +750,21 @@ def delta(base, other) -> str:
 
 def environment(args) -> dict:
     head = capture(['git', 'rev-parse', 'HEAD'])
-    dirty = capture(['git', 'status', '--porcelain'])
+    dirty = try_capture(['git', 'status', '--porcelain'])
+    if dirty is None:
+        git_state = 'unknown'
+    elif not dirty:
+        git_state = 'clean'
+    else:
+        git_state = 'uncommitted changes: ' + ', '.join(
+            line.split(maxsplit=1)[-1] for line in dirty.splitlines())
     return {
         'date_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         'go': capture([GO, 'version']),
         'platform': platform.platform(),
         'cpu': cpu_model(),
         'git_head': head,
-        # Split rather than slice a fixed offset: capture() strips the output, so
-        # the first porcelain line has already lost its leading status space.
-        'git_state': 'clean' if not dirty else 'uncommitted changes: ' + ', '.join(
-            line.split(maxsplit=1)[-1] for line in dirty.splitlines()),
+        'git_state': git_state,
         'gomaxprocs': args.cpu,
         'samples': args.count,
         'benchtime': args.benchtime,
@@ -777,11 +798,34 @@ def cpu_model() -> str:
     return platform.processor() or 'unknown'
 
 
-def capture(cmd) -> str:
+def try_capture(cmd) -> str | None:
     try:
         return subprocess.check_output(cmd, cwd=ROOT, text=True).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return 'unknown'
+        return None
+
+
+def capture(cmd) -> str:
+    out = try_capture(cmd)
+    return out if out is not None else 'unknown'
+
+
+def find_vegeta() -> str | None:
+    candidates = []
+    if which := shutil.which('vegeta'):
+        candidates.append(which)
+    if gobin := os.environ.get('GOBIN'):
+        candidates.append(str(Path(gobin) / 'vegeta'))
+    if gopath := os.environ.get('GOPATH'):
+        for entry in gopath.split(os.pathsep):
+            if entry:
+                candidates.append(str(Path(entry) / 'bin' / 'vegeta'))
+    candidates.append(str(Path.home() / 'go/bin/vegeta'))
+    for candidate in candidates:
+        p = Path(candidate).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return None
 
 
 def run(cmd):

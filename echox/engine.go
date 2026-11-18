@@ -1,12 +1,14 @@
 package echox
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +18,7 @@ import (
 )
 
 var _ httpx.Engine = (*Engine)(nil)
+var _ http.Handler = (*Engine)(nil)
 
 // Config is the resolved configuration [New] builds an [Engine] from. Its
 // fields are unexported; set them with [Option] values.
@@ -130,15 +133,15 @@ func WithServer(server *http.Server) Option {
 
 // The timeouts of a server the adapter creates; see [WithAddr].
 const (
-	defaultReadHeaderTimeout = 10 * time.Second
-	defaultIdleTimeout       = 120 * time.Second
+	DefaultReadHeaderTimeout = 10 * time.Second
+	DefaultIdleTimeout       = 120 * time.Second
 )
 
 func newServer(addr string) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		ReadHeaderTimeout: defaultReadHeaderTimeout,
-		IdleTimeout:       defaultIdleTimeout,
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		IdleTimeout:       DefaultIdleTimeout,
 	}
 }
 
@@ -147,11 +150,11 @@ func newServer(addr string) *http.Server {
 // default is ":8080"; an empty address listens on ":http".
 //
 // A server the adapter creates limits how long a client may take to send its
-// request headers (10s) and how long an idle keep-alive connection stays open
-// (120s), so slow or idle clients cannot hold connections forever. It sets no
-// read or write timeout for the whole request, which would cut uploads and
-// streamed responses; supply a server with [WithServer] to choose other
-// limits.
+// request headers ([DefaultReadHeaderTimeout]) and how long an idle keep-alive
+// connection stays open ([DefaultIdleTimeout]), so slow or idle clients cannot
+// hold connections forever. It sets no read or write timeout for the whole
+// request, which would cut uploads and streamed responses; supply a server
+// with [WithServer] to choose other limits.
 func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		if conf.server == nil {
@@ -246,6 +249,7 @@ type Engine struct {
 	wildcards   *wildcardTable
 	maxBodySize int64
 	lifecycleMu sync.Mutex
+	ln          net.Listener
 	started     atomic.Bool
 	running     atomic.Bool
 	closed      atomic.Bool
@@ -259,11 +263,37 @@ func New(opts ...Option) httpx.Engine {
 	wildcards := &wildcardTable{}
 	conf.engine.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			err := next(c)
-			if err == nil && !c.Response().Committed {
-				c.Response().WriteHeader(c.Response().Status)
+			// Echo treats an unregistered OPTIONS request on a known path as
+			// an automatic 204 No Content via an internal optionsMethodHandler
+			// (setting ContextKeyHeaderAllow). Intercept that router fallback so
+			// httpx matches the other four adapters (engine.Use + 405) while still
+			// letting UseNative middleware (such as CORS) run and answer first.
+			if c.Request().Method == http.MethodOptions {
+				if allow, ok := c.Get(echo.ContextKeyHeaderAllow).(string); ok && allow != "" {
+					return handleUnregisteredOptions(c, next, allow)
+				}
 			}
-			return err
+			err := next(c)
+			if err != nil {
+				if errors.Is(err, echo.ErrMethodNotAllowed) {
+					if allow, ok := c.Get(echo.ContextKeyHeaderAllow).(string); ok && allow != "" && !hasOptionsRoute(conf.engine, c.Path()) {
+						if stripped := stripSyntheticOptionsAllow(allow); stripped != "" {
+							c.Response().Header().Set(echo.HeaderAllow, stripped)
+						} else {
+							c.Response().Header().Del(echo.HeaderAllow)
+						}
+					}
+				}
+				return err
+			}
+			if !c.Response().Committed {
+				status := c.Response().Status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				c.Response().WriteHeader(status)
+			}
+			return nil
 		}
 	})
 	if conf.ipExtractor != nil {
@@ -344,12 +374,13 @@ func (e *Engine) installErrorHandler() {
 		if c.Response().Committed {
 			return
 		}
+		ec := newEchoContext(c, e.wildcards)
 		if fb := e.unmatchedFallback(c, err); fb != nil {
 			// Marked before the chain runs, because the layers inside it read
 			// FullPath and must not be told a route accepted the request; see
 			// unmatchedRouteKey.
 			c.Set(unmatchedRouteKey, true)
-			chained := fb.Handler()(newEchoContext(c, e.wildcards))
+			chained := fb.Handler()(ec)
 			if chained == nil {
 				// A layer answered the unmatched path itself. It still owes a
 				// status if all it did was set one.
@@ -364,7 +395,7 @@ func (e *Engine) installErrorHandler() {
 			err = chained
 		}
 		if e.errHandler != nil {
-			e.errHandler(newEchoContext(c, e.wildcards), normalizeEchoError(err))
+			e.errHandler(ec, normalizeEchoError(err))
 			// The handler may have rendered nothing; commit here, since nothing
 			// runs below and echo does not commit on its own. This is the path
 			// an unmatched route takes, where Response.Status is still 200 —
@@ -458,9 +489,15 @@ func (e *Engine) Start() error {
 		e.lifecycleMu.Unlock()
 		return err
 	}
+	e.ln = ln
 	e.running.Store(true)
 	e.lifecycleMu.Unlock()
-	defer e.running.Store(false)
+	defer func() {
+		e.lifecycleMu.Lock()
+		e.ln = nil
+		e.lifecycleMu.Unlock()
+		e.running.Store(false)
+	}()
 	if err := e.server.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -475,18 +512,30 @@ func (e *Engine) Start() error {
 func (e *Engine) Stop(ctx context.Context) error {
 	e.lifecycleMu.Lock()
 	e.closed.Store(true)
+	ln := e.ln
 	e.lifecycleMu.Unlock()
 	// httpx.Close force-closes when the graceful drain fails, so the server is
 	// down whatever it returns — the running flag has to fall with it. Storing
 	// it only on a nil error left IsRunning reporting true for the rest of the
 	// process after a stop the caller's deadline cut short.
 	defer e.running.Store(false)
-	return httpx.Close(ctx, e.server)
+	err := httpx.Close(ctx, e.server)
+	if ln != nil {
+		if closeErr := ln.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
+		}
+	}
+	return err
 }
 
 // IsRunning returns true if the server is currently running.
 func (e *Engine) IsRunning() bool {
 	return e.running.Load()
+}
+
+// ServeHTTP implements [http.Handler] by delegating to the underlying Echo instance.
+func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	e.engine.ServeHTTP(w, req)
 }
 
 // Do serves req in-process through the echo engine and returns the buffered
@@ -495,4 +544,101 @@ func (e *Engine) Do(req *http.Request) (*http.Response, error) {
 	rr := httptest.NewRecorder()
 	e.engine.ServeHTTP(rr, req)
 	return rr.Result(), nil
+}
+
+type optionsInterceptWriter struct {
+	header      http.Header
+	code        int
+	wroteHeader bool
+	body        bytes.Buffer
+}
+
+func (w *optionsInterceptWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *optionsInterceptWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
+	w.code = code
+	w.wroteHeader = true
+}
+
+func (w *optionsInterceptWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.body.Write(p)
+}
+
+func handleUnregisteredOptions(c echo.Context, next echo.HandlerFunc, allow string) error {
+	resp := c.Response()
+	origWriter := resp.Writer
+	prevAllows := append([]string(nil), origWriter.Header().Values(echo.HeaderAllow)...)
+	probe := &optionsInterceptWriter{header: origWriter.Header()}
+	resp.Writer = probe
+
+	err := next(c)
+	resp.Writer = origWriter
+
+	if isEchoOptionsFallback(err, probe, origWriter.Header(), len(prevAllows), allow) {
+		resp.Committed = false
+		resp.Status = http.StatusOK
+		resp.Size = 0
+		restoreOrStripAllow(origWriter.Header(), prevAllows, allow)
+		return echo.ErrMethodNotAllowed
+	}
+	if err == nil && !probe.wroteHeader {
+		status := resp.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		resp.Committed = false
+		resp.WriteHeader(status)
+		return nil
+	}
+	if probe.wroteHeader {
+		origWriter.WriteHeader(probe.code)
+	}
+	if probe.body.Len() > 0 {
+		_, _ = origWriter.Write(probe.body.Bytes())
+	}
+	return err
+}
+
+func isEchoOptionsFallback(err error, probe *optionsInterceptWriter, h http.Header, prevLen int, allow string) bool {
+	if err != nil || !probe.wroteHeader || probe.code != http.StatusNoContent || probe.body.Len() != 0 {
+		return false
+	}
+	vals := h.Values(echo.HeaderAllow)
+	return len(vals) == prevLen+1 && vals[prevLen] == allow
+}
+
+func restoreOrStripAllow(h http.Header, prevAllows []string, allow string) {
+	if len(prevAllows) > 0 {
+		h[echo.HeaderAllow] = prevAllows
+		return
+	}
+	if stripped := stripSyntheticOptionsAllow(allow); stripped != "" {
+		h.Set(echo.HeaderAllow, stripped)
+	} else {
+		h.Del(echo.HeaderAllow)
+	}
+}
+
+func stripSyntheticOptionsAllow(allow string) string {
+	if allow == http.MethodOptions {
+		return ""
+	}
+	return strings.TrimPrefix(allow, http.MethodOptions+", ")
+}
+
+func hasOptionsRoute(e *echo.Echo, pattern string) bool {
+	for _, r := range e.Routes() {
+		if r.Method == http.MethodOptions && r.Path == pattern {
+			return true
+		}
+	}
+	return false
 }

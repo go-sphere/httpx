@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -242,15 +243,30 @@ func casesWithJSON(t *testing.T, r runner) {
 	// drops the bytes, without an error.
 	t.Run("BodylessStatusDropsBody", func(t *testing.T) {
 		for _, tc := range []struct {
-			name  string
-			write func(httpx.Context) error
+			name   string
+			status int
+			write  func(httpx.Context) error
 		}{
-			{"Text", func(ctx httpx.Context) error { return ctx.Text(http.StatusNoContent, "dropped") }},
-			{"Bytes", func(ctx httpx.Context) error { return ctx.Bytes(http.StatusNoContent, []byte("dropped"), "text/plain") }},
-			{"JSON", func(ctx httpx.Context) error { return ctx.JSON(http.StatusNoContent, "dropped") }},
-			{"DataFromReader", func(ctx httpx.Context) error {
+			{"Text/204", http.StatusNoContent, func(ctx httpx.Context) error { return ctx.Text(http.StatusNoContent, "dropped") }},
+			{"Bytes/204", http.StatusNoContent, func(ctx httpx.Context) error {
+				return ctx.Bytes(http.StatusNoContent, []byte("dropped"), "text/plain")
+			}},
+			{"JSON/204", http.StatusNoContent, func(ctx httpx.Context) error { return ctx.JSON(http.StatusNoContent, "dropped") }},
+			{"DataFromReader/204", http.StatusNoContent, func(ctx httpx.Context) error {
 				return ctx.DataFromReader(http.StatusNoContent, "text/plain", strings.NewReader("dropped"), 7)
 			}},
+			{"Stream/204", http.StatusNoContent, func(ctx httpx.Context) error {
+				s, ok := httpx.AsStreamer(ctx)
+				if !ok {
+					return ctx.NoContent(http.StatusNoContent)
+				}
+				return s.Stream(http.StatusNoContent, "text/plain", func(w io.Writer) error {
+					_, _ = w.Write([]byte("dropped"))
+					return nil
+				})
+			}},
+			{"Text/304", http.StatusNotModified, func(ctx httpx.Context) error { return ctx.Text(http.StatusNotModified, "dropped") }},
+			{"JSON/304", http.StatusNotModified, func(ctx httpx.Context) error { return ctx.JSON(http.StatusNotModified, "dropped") }},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				var writeErr error
@@ -263,8 +279,8 @@ func casesWithJSON(t *testing.T, r runner) {
 				if writeErr != nil {
 					t.Fatalf("write returned %v, want nil", writeErr)
 				}
-				if got.Status != http.StatusNoContent || got.Body != "" {
-					t.Fatalf("status=%d body=%q, want 204 and no body", got.Status, got.Body)
+				if got.Status != tc.status || got.Body != "" {
+					t.Fatalf("status=%d body=%q, want %d and no body", got.Status, got.Body, tc.status)
 				}
 			})
 		}

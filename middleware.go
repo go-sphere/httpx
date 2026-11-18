@@ -64,9 +64,9 @@ type MiddlewareScope interface {
 // makes a registered route immutable.
 //
 // Rule 2 — Compose walks to the root, so an outer scope's layers end up outside
-// an inner scope's whatever order the calls came in, while ComposeOwn stops at
-// this scope. An unmatched-path fallback must use ComposeOwn on the engine's
-// chain: a 404 belongs to no group.
+// an inner scope's whatever order the calls came in, while NewMiddlewareFallback
+// wraps only this scope's own layers: an unmatched-path fallback uses it on the
+// engine's chain because a 404 belongs to no group.
 //
 // Concurrent Use is not supported — registration happens before serving — but a
 // Use concurrent with a request is race-free rather than merely unlikely: the
@@ -89,15 +89,26 @@ func (c *MiddlewareChain) Sub() *MiddlewareChain {
 	return &MiddlewareChain{parent: c}
 }
 
-// Use appends middleware to this scope, in registration order.
+// Use appends middleware to this scope, in registration order. Nil layers are
+// ignored.
 func (c *MiddlewareChain) Use(m ...Middleware) {
-	if len(m) == 0 {
+	nonNil := 0
+	for _, mw := range m {
+		if mw != nil {
+			nonNil++
+		}
+	}
+	if nonNil == 0 {
 		return
 	}
 	cur := c.Own()
-	next := make([]Middleware, 0, len(cur)+len(m))
+	next := make([]Middleware, 0, len(cur)+nonNil)
 	next = append(next, cur...)
-	next = append(next, m...)
+	for _, mw := range m {
+		if mw != nil {
+			next = append(next, mw)
+		}
+	}
 	c.own.Store(&next)
 }
 
@@ -129,6 +140,8 @@ func (c *MiddlewareChain) Compose(h Handler) Handler {
 }
 
 // ComposeOwn wraps h in this scope's own layers only.
+//
+// Deprecated: Use [NewMiddlewareFallback] or [ComposeMiddleware] with [MiddlewareChain.Own].
 func (c *MiddlewareChain) ComposeOwn(h Handler) Handler {
 	return ComposeMiddleware(h, c.Own())
 }
@@ -171,14 +184,15 @@ func NewMiddlewareFallback(chain *MiddlewareChain, leaf Handler) *MiddlewareFall
 // it only when the chain has changed since the last call.
 func (f *MiddlewareFallback) Handler() Handler {
 	own := f.chain.own.Load()
-	if cur := f.cur.Load(); cur != nil && cur.own == own {
+	cur := f.cur.Load()
+	if cur != nil && cur.own == own {
 		return cur.h
 	}
 	h := f.leaf
 	if own != nil {
 		h = ComposeMiddleware(f.leaf, *own)
 	}
-	f.cur.Store(&composedFallback{own: own, h: h})
+	f.cur.CompareAndSwap(cur, &composedFallback{own: own, h: h})
 	return h
 }
 

@@ -26,6 +26,7 @@ measured on its own: a different commit, different sampling, a different compile
 `BENCHMARK.md` is internally comparable only because the whole file comes from one run.
 
 Both reports name the raw sample files they were built from, under the `fusion-*` and
-`gin-depth-*` prefixes, but **those files are not in the repository**. `benchmarks/` is part of
-the root Go module, so anything tracked here would ship in the module zip every consumer of
-`github.com/go-sphere/httpx` downloads. The tables inside each report are the record.
+`gin-depth-*` prefixes, but **those files are not in the repository**.
+`benchmarks/` has its own unpublished `go.mod` so it is excluded from the root
+Go module zip, and raw sample outputs are not tracked in git. The tables inside
+each report are the record.

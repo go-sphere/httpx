@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,13 +23,19 @@ type tempfileCtxKey struct{}
 func TestMultipartTempFilesRemovedAfterSetContext(t *testing.T) {
 	const fileSize = 33 << 20 // above the 32 MiB kept in memory
 	var body bytes.Buffer
+	body.Grow(fileSize + 1024)
 	mw := multipart.NewWriter(&body)
 	part, err := mw.CreateFormFile("file", "big.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := part.Write(bytes.Repeat([]byte{'x'}, fileSize)); err != nil {
-		t.Fatal(err)
+	chunk := bytes.Repeat([]byte{'x'}, 64<<10)
+	for remaining := fileSize; remaining > 0; {
+		n := min(remaining, len(chunk))
+		if _, err := part.Write(chunk[:n]); err != nil {
+			t.Fatal(err)
+		}
+		remaining -= n
 	}
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
@@ -39,6 +46,7 @@ func TestMultipartTempFilesRemovedAfterSetContext(t *testing.T) {
 			tmp := t.TempDir()
 			t.Setenv("TMPDIR", tmp)
 			engine, addr := a.serve(t, serveConfig{maxBodySize: 64 << 20})
+			var spilled atomic.Bool
 			engine.Use(func(next httpx.Handler) httpx.Handler {
 				return func(ctx httpx.Context) error {
 					ctx.SetContext(context.WithValue(ctx.Context(), tempfileCtxKey{}, "trace"))
@@ -49,6 +57,9 @@ func TestMultipartTempFilesRemovedAfterSetContext(t *testing.T) {
 				fh, err := ctx.FormFile("file")
 				if err != nil {
 					return err
+				}
+				if entries, err := os.ReadDir(tmp); err == nil && len(entries) > 0 {
+					spilled.Store(true)
 				}
 				return ctx.Text(http.StatusOK, fh.Filename)
 			})
@@ -66,6 +77,9 @@ func TestMultipartTempFilesRemovedAfterSetContext(t *testing.T) {
 			_ = resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			if !spilled.Load() {
+				t.Fatal("expected multipart upload >32 MiB to spill temporary file into TMPDIR during handling")
 			}
 
 			// The server removes the files after the response is out; give it a

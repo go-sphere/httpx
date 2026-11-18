@@ -50,7 +50,7 @@ setup code is portable across all five:
 
 Two related names are *not* portable, on purpose:
 
-- `Default<X>ErrorHandler` — each adapter exports `DefaultErrorHandler`, which
+- `<adapter>.DefaultErrorHandler` — each adapter exports `DefaultErrorHandler`, which
   is **that adapter's default handler in its native shape**: the value it
   installs on the framework when you configure nothing. The five signatures
   therefore differ (`func(*gin.Context, error)`, `echo.HTTPErrorHandler`,
@@ -74,7 +74,11 @@ func TestConformance(t *testing.T) {
         Name: "ginx",
         Caps: httpxtest.Caps{NamedWildcard: true, Flusher: true},
         NewEngine: func(tb testing.TB, opts httpxtest.Options) httpx.Engine {
-            return ginx.New(ginx.WithEngine(gin.New()))
+            return ginx.New(
+                ginx.WithEngine(gin.New()),
+                ginx.WithErrorHandler(opts.ErrorHandler),
+                ginx.WithMaxBodySize(opts.MaxBodySize),
+            )
         },
     })
 }
@@ -98,7 +102,7 @@ make golden        # rewrite and verify the shared response contracts
 (cd ginx && go test -run TestConformance -v .)
 
 # The same scenario table, measured per adapter through its own dispatcher.
-go test ./conformance -run '^$' -bench '^BenchmarkHTTPXTestSuite$/ginx' -benchmem
+go test ./conformance -run '^$' -bench '^BenchmarkHTTPXTestSuite/adapter=ginx$' -benchmem
 ```
 
 `conformance/` remains for what genuinely needs all five adapters in one
@@ -167,7 +171,7 @@ router.GET("/events", func(ctx httpx.Context) error {
 })
 ```
 
-`SSEWriter` supports `Send`, `SendData`, `SendJSON`, and `Comment`. Each event
+`SSEWriter` supports `Send`, `SendEvent`, `SendData`, `SendJSON`, and `Comment`. Each event
 is encoded and flushed as one unit. `ServerSentEvents` sets
 `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and
 `X-Accel-Buffering: no`; stop producing as soon as a send fails or the request
@@ -206,11 +210,6 @@ needAuth := api.Group("/", auth)   // group scope, in one call
 
 `Use` is on both `httpx.Engine` and `httpx.Router` (through
 `httpx.MiddlewareScope`), and `Group`'s variadic takes the same type.
-
-Until v0.0.5 there were two forms: this one, then called `Interceptor`, and a
-`func(httpx.Context) error` that drove the chain with `ctx.Next()`. The
-Next-driven form is gone, `Context.Next()` with it, and the composed form took
-the `Middleware` name. See the CHANGELOG for the migration.
 
 Five things to know about:
 

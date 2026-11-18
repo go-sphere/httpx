@@ -266,7 +266,13 @@ func buildNativeEcho(tb testing.TB, scenario string, req *http.Request) (func(),
 
 func buildNativeFiber(tb testing.TB, scenario string, req *http.Request) (func(), bool) {
 	tb.Helper()
-	f := fiber.New()
+	f := fiber.New(fiber.Config{
+		CaseSensitive:             true,
+		StrictRouting:             true,
+		DisableHeadAutoRegister:   true,
+		DisableDefaultContentType: true,
+		UnescapePath:              true,
+	})
 	for range middlewareLayers(scenario) {
 		f.Use(func(c fiber.Ctx) error { return c.Next() })
 	}

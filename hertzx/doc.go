@@ -9,7 +9,8 @@
 // Use it to run httpx handlers and middleware on a Hertz server, either one
 // the adapter creates or an existing *server.Hertz passed with [WithEngine].
 // [New] builds the engine; [WithAddr], [WithErrorHandler],
-// [WithTrustedProxies] and [WithMaxBodySize] configure it. Hertz's own middleware is mounted with
+// [WithNativeErrorHandler], [WithTrustedProxies] and [WithMaxBodySize]
+// configure it. Hertz's own middleware is mounted with
 // [Engine.UseNative] or [Router.UseNative], plain net/http middleware with
 // [AdaptStdMiddleware], and [FromHertz] wraps a hertz request context as an
 // httpx.Context.

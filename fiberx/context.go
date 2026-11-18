@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -11,6 +12,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/go-sphere/httpx"
@@ -37,7 +39,7 @@ func newFiberContext(ctx fiber.Ctx) httpx.Context {
 	if native, ok := ctx.(*fiber.DefaultCtx); ok {
 		return fiberContext[*fiber.DefaultCtx]{ctx: native}
 	}
-	return &fiberContext[fiber.Ctx]{ctx: ctx}
+	return fiberContext[fiber.Ctx]{ctx: ctx}
 }
 
 // FromFiber wraps a fiber.Ctx as httpx.Context. Use it from a fiber
@@ -307,8 +309,48 @@ func (c fiberContext[T]) BodyReader() io.ReadCloser {
 
 // Binder (httpx.Binder)
 
+func checkBindTarget(dst any) error {
+	v := reflect.ValueOf(dst)
+	if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {
+		return errors.New("fiberx: bind target must be a non-nil pointer")
+	}
+	return nil
+}
+
+// cloneBoundStrings detaches map keys and values from pooled fasthttp buffers
+// when Fiber's binder fills a string map directly.
+func cloneBoundStrings(dst any) {
+	switch m := dst.(type) {
+	case *map[string]string:
+		if m == nil || *m == nil {
+			return
+		}
+		cloned := make(map[string]string, len(*m))
+		for k, v := range *m {
+			cloned[strings.Clone(k)] = strings.Clone(v)
+		}
+		*m = cloned
+	case *map[string][]string:
+		if m == nil || *m == nil {
+			return
+		}
+		cloned := make(map[string][]string, len(*m))
+		for k, vals := range *m {
+			cp := make([]string, len(vals))
+			for i, v := range vals {
+				cp[i] = strings.Clone(v)
+			}
+			cloned[strings.Clone(k)] = cp
+		}
+		*m = cloned
+	}
+}
+
 // BindJSON decodes the raw body (see BodyReader) with the app's JSONDecoder.
 func (c fiberContext[T]) BindJSON(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	body := c.ctx.BodyRaw()
 	if len(body) == 0 {
 		return httpx.WrapBindError(io.EOF)
@@ -325,14 +367,76 @@ func (c fiberContext[T]) withBind(fn func(*fiber.Bind) error) error {
 }
 
 func (c fiberContext[T]) BindQuery(dst any) error {
-	return httpx.WrapBindError(c.withBind(func(b *fiber.Bind) error { return b.Query(dst) }))
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	plan := structBindPlan(dst, "query")
+	if plan != nil && !plan.hasExplicit {
+		return nil
+	}
+	if plan != nil && plan.hasUntagged {
+		saved := plan.snapshot(dst)
+		var req fasthttp.Request
+		filterFasthttpQueryArgs(c.ctx.Request().URI().QueryArgs(), plan, req.URI().QueryArgs())
+		if err := (&binder.QueryBinding{}).Bind(&req, dst); err != nil {
+			return httpx.WrapBindError(err)
+		}
+		restoreUntagged(dst, saved)
+		return nil
+	}
+	if err := c.withBind(func(b *fiber.Bind) error { return b.Query(dst) }); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	cloneBoundStrings(dst)
+	return nil
 }
 
 func (c fiberContext[T]) BindForm(dst any) error {
-	return httpx.WrapBindError(c.withBind(func(b *fiber.Bind) error { return b.Form(dst) }))
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	plan := structBindPlan(dst, "form")
+	if plan != nil && !plan.hasExplicit {
+		return nil
+	}
+	if plan != nil && plan.hasUntagged {
+		saved := plan.snapshot(dst)
+		if isMultipartContentType(c.ctx.Request().Header.ContentType()) {
+			mf, err := c.ctx.MultipartForm()
+			if err != nil {
+				return httpx.WrapBindError(err)
+			}
+			origVal, origFile := mf.Value, mf.File
+			mf.Value = plan.filterValues(origVal)
+			mf.File = plan.filterFiles(origFile)
+			bindErr := c.withBind(func(b *fiber.Bind) error { return b.Form(dst) })
+			mf.Value, mf.File = origVal, origFile
+			if bindErr != nil {
+				return httpx.WrapBindError(bindErr)
+			}
+			restoreUntagged(dst, saved)
+			return nil
+		}
+		var req fasthttp.Request
+		req.Header.SetContentType("application/x-www-form-urlencoded")
+		filterFasthttpQueryArgs(c.ctx.Request().PostArgs(), plan, req.PostArgs())
+		if err := (&binder.FormBinding{}).Bind(&req, dst); err != nil {
+			return httpx.WrapBindError(err)
+		}
+		restoreUntagged(dst, saved)
+		return nil
+	}
+	if err := c.withBind(func(b *fiber.Bind) error { return b.Form(dst) }); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	cloneBoundStrings(dst)
+	return nil
 }
 
 func (c fiberContext[T]) BindURI(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	return httpx.WrapBindError(c.bindURI(dst))
 }
 
@@ -353,24 +457,31 @@ func (c fiberContext[T]) bindURI(dst any) error {
 	if route == nil || len(route.Params) == 0 {
 		return nil
 	}
+	plan := structBindPlan(dst, "uri")
+	if plan != nil && !plan.hasExplicit {
+		return nil
+	}
 	wildcard := c.wildcardParamName()
-	if wildcard == "" && !c.decodesParams() {
+	if wildcard == "" && !c.decodesParams() && (plan == nil || !plan.hasUntagged) {
 		return c.withBind(func(b *fiber.Bind) error { return b.URI(dst) })
 	}
-	names := route.Params
-	if wildcard != "" {
-		// Route().Params belongs to the route, not the request: rename into a
-		// copy.
-		names = make([]string, len(route.Params))
-		copy(names, route.Params)
-		for i, name := range names {
-			if name == "*" || name == "*1" {
-				names[i] = wildcard
-			}
+	var saved []savedField
+	if plan != nil && plan.hasUntagged {
+		saved = plan.snapshot(dst)
+	}
+	names := make([]string, 0, len(route.Params))
+	for _, rawName := range route.Params {
+		name := rawName
+		if wildcard != "" && (name == "*" || name == "*1") {
+			name = wildcard
 		}
+		if plan != nil && plan.hasUntagged && !plan.allows(name) {
+			continue
+		}
+		names = append(names, name)
 	}
 	// URIBinding is stateless, so it needs neither fiber's pool nor a reset.
-	return (&binder.URIBinding{}).Bind(names, func(key string, defaultValue ...string) string {
+	err := (&binder.URIBinding{}).Bind(names, func(key string, defaultValue ...string) string {
 		if wildcard != "" && key == wildcard {
 			key = "*"
 		}
@@ -382,10 +493,43 @@ func (c fiberContext[T]) bindURI(dst any) error {
 		}
 		return ""
 	}, dst)
+	if err == nil && len(saved) > 0 {
+		restoreUntagged(dst, saved)
+	}
+	return err
 }
 
 func (c fiberContext[T]) BindHeader(dst any) error {
-	return httpx.WrapBindError(c.bindHeader(dst))
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	plan := structBindPlan(dst, "header")
+	if plan != nil && !plan.hasExplicit {
+		return nil
+	}
+	if plan != nil && plan.hasUntagged {
+		saved := plan.snapshot(dst)
+		var req fasthttp.Request
+		for k, v := range c.ctx.Request().Header.All() {
+			key := string(k)
+			if strings.EqualFold(key, fiber.HeaderHost) {
+				continue
+			}
+			if plan.allows(key) {
+				req.Header.AddBytesKV(k, v)
+			}
+		}
+		if err := (&binder.HeaderBinding{}).Bind(&req, dst); err != nil {
+			return httpx.WrapBindError(err)
+		}
+		restoreUntagged(dst, saved)
+		return nil
+	}
+	if err := c.bindHeader(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	cloneBoundStrings(dst)
+	return nil
 }
 
 // bindHeader runs fiber's own header binder, but over this adapter's view of
@@ -543,13 +687,15 @@ func (c fiberContext[T]) NoContent(code int) error {
 }
 
 func (c fiberContext[T]) Bytes(code int, b []byte, contentType string) error {
-	if contentType == "" {
+	if contentType == "" && !c.Committed() {
 		contentType = http.DetectContentType(b)
 	}
 	bl := commitsBodyless(c.ctx, code)
 	return c.writeBody(func() error {
-		c.ctx.Set(fiber.HeaderContentType, contentType)
-		c.ctx.Status(code)
+		if !c.Committed() {
+			c.ctx.Set(fiber.HeaderContentType, contentType)
+			c.ctx.Status(code)
+		}
 		if bl {
 			c.ctx.Response().ResetBody()
 			return nil
@@ -616,20 +762,47 @@ func (c fiberContext[T]) File(path string) error {
 			saved := string(enc)
 			defer header.Set(fiber.HeaderAcceptEncoding, saved)
 		}
+		var prevStatus int
+		if !c.Committed() {
+			prevStatus = c.ctx.Response().StatusCode()
+			c.ctx.Status(fiber.StatusOK)
+		}
 		// fiber serves the file through a request URI set to its path, so the
 		// path is escaped for a name holding '#', '?' or '%' to survive.
-		return c.ctx.SendFile(escapeFilePath(abs), fiber.SendFile{ByteRange: true})
+		err := c.ctx.SendFile(escapeFilePath(abs), fiber.SendFile{
+			ByteRange:     true,
+			CacheDuration: -1,
+		})
+		if err != nil && !c.Committed() && prevStatus != 0 {
+			c.ctx.Status(prevStatus)
+		}
+		return err
 	})
 }
 
 // escapeFilePath percent-escapes each segment of an absolute file path for use
 // as a request URI.
 func escapeFilePath(path string) string {
-	segments := strings.Split(filepath.ToSlash(path), "/")
+	slash := filepath.ToSlash(path)
+	if isUnescapedPathASCII(slash) {
+		return slash
+	}
+	segments := strings.Split(slash, "/")
 	for i, s := range segments {
 		segments[i] = url.PathEscape(s)
 	}
 	return strings.Join(segments, "/")
+}
+
+func isUnescapedPathASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		isAlphaNum := (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+		if !isAlphaNum && b != '/' && b != '-' && b != '.' && b != '_' && b != '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c fiberContext[T]) Redirect(code int, location string) error {
@@ -666,20 +839,17 @@ func (c fiberContext[T]) ResponseHeaderValues(key string) []string {
 		}
 		return cookies
 	}
-	var raw [][]byte
 	if strings.EqualFold(key, fiber.HeaderContentType) {
 		if ct := explicitContentType(c.ctx); len(ct) > 0 {
-			raw = [][]byte{ct}
+			return []string{string(ct)}
 		}
-	} else {
-		raw = c.ctx.Response().Header.PeekAll(key)
-	}
-	if len(raw) == 0 {
 		return nil
 	}
-	values := make([]string, len(raw))
-	for i, v := range raw {
-		values[i] = string(v)
+	var values []string
+	for k, v := range c.ctx.Response().Header.All() {
+		if strings.EqualFold(string(k), key) {
+			values = append(values, string(v))
+		}
 	}
 	return values
 }
@@ -772,6 +942,24 @@ func (c fiberContext[T]) NativeContext() any {
 // fiberContext intentionally does not implement httpx.Flusher: fiber cannot
 // flush mid-handler; probe with httpx.AsFlusher and fall back, or use Stream.
 func (c fiberContext[T]) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+	if commitsBodyless(c.ctx, code) {
+		if err := c.writeBody(func() error {
+			if !c.Committed() {
+				if contentType != "" {
+					c.ctx.Set(fiber.HeaderContentType, contentType)
+				}
+				c.ctx.Status(code)
+			}
+			c.ctx.Response().ResetBody()
+			return nil
+		}); err != nil {
+			return err
+		}
+		if fn != nil {
+			return fn(io.Discard)
+		}
+		return nil
+	}
 	var sent []byte
 	if c.Committed() {
 		resp := c.ctx.Response()

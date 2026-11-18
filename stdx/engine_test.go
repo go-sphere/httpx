@@ -347,6 +347,33 @@ func TestClientIP(t *testing.T) {
 		}()
 		New(WithTrustedProxies("not-an-ip-or-cidr"))
 	})
+
+	t.Run("MultiHeaderXForwardedFor", func(t *testing.T) {
+		engine, r := newTestEngine(t, WithTrustedProxies("10.0.0.0/8"))
+		var got string
+		r.GET("/ip", func(ctx httpx.Context) error {
+			got = ctx.ClientIP()
+			return nil
+		})
+		req := getReq("/ip")
+		req.RemoteAddr = "10.0.0.1:1234"
+		req.Header.Add("X-Forwarded-For", "6.6.6.6")
+		req.Header.Add("X-Forwarded-For", "1.2.3.4, 10.0.0.2")
+		serve(engine, req)
+		if got != "1.2.3.4" {
+			t.Fatalf("multi-header ClientIP = %q, want 1.2.3.4", got)
+		}
+
+		// All hops trusted across two headers returns leftmost of first header.
+		req2 := getReq("/ip")
+		req2.RemoteAddr = "10.0.0.1:1234"
+		req2.Header.Add("X-Forwarded-For", "10.0.0.8")
+		req2.Header.Add("X-Forwarded-For", "10.0.0.9")
+		serve(engine, req2)
+		if got != "10.0.0.8" {
+			t.Fatalf("multi-header all-trusted ClientIP = %q, want 10.0.0.8", got)
+		}
+	})
 }
 
 // A nil handler is ignored rather than resetting the one configured before it.

@@ -73,7 +73,7 @@ for entry in "${MODULES[@]}"; do
 	(
 		cd "$baseline_dir"
 		GOWORK=off "$GO_BIN" mod init httpx-api-baseline >/dev/null
-		GOWORK=off "$GO_BIN" get "$module_path@$baseline_version" >/dev/null
+		GOPRIVATE="github.com/go-sphere/*" GOWORK=off "$GO_BIN" get "$module_path@$baseline_version" >/dev/null
 		GOWORK=off "$apidiff_bin" -m -w "$old_api" "$module_path"
 	)
 
@@ -96,7 +96,7 @@ for entry in "${MODULES[@]}"; do
 	: >"$unexpected_file"
 	while IFS= read -r change; do
 		[[ -z "$change" ]] && continue
-		if ! grep -Fqx -- "$change" "$ALLOWLIST"; then
+		if ! grep -Fqx -- "$change" "$ALLOWLIST" && ! grep -Fqx -- "$module_dir: $change" "$ALLOWLIST"; then
 			printf '%s\n' "$change" >>"$unexpected_file"
 		fi
 	done <"$changes_file"

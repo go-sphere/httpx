@@ -115,7 +115,7 @@ func (r *Router) mustValidWildcard(relPath string) {
 	if err := httpx.ValidateWildcardPath(relPath); err != nil {
 		panic(err)
 	}
-	if err := httpx.ValidateWildcardPath(path.Join(r.group.BasePath(), relPath)); err != nil {
+	if err := httpx.ValidateWildcardPath(joinPaths(r.group.BasePath(), relPath)); err != nil {
 		panic(err)
 	}
 }
@@ -137,7 +137,7 @@ func (r *Router) Static(prefix, root string) {
 // ordinary route, so middleware on this scope wraps static requests too.
 func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 	pattern := httpx.StaticRoutePattern(prefix)
-	leaf := stdLeaf(httpx.StaticFileHandler(path.Join(r.group.BasePath(), prefix), fsys))
+	leaf := stdLeaf(httpx.StaticFileHandler(joinPaths(r.group.BasePath(), prefix), fsys))
 	r.Handle(http.MethodGet, pattern, leaf)
 	r.Handle(http.MethodHead, pattern, leaf)
 }
@@ -221,7 +221,18 @@ func (r *Router) toGinHandler(h httpx.Handler) gin.HandlerFunc {
 // net/http middleware). net/http removes them only for the request it served,
 // so without this an upload spilled to disk would stay there.
 func removeReplacedMultipartForm(orig, cur *http.Request) {
-	if cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
+	if orig != nil && cur != nil && cur != orig && cur.MultipartForm != nil && cur.MultipartForm != orig.MultipartForm {
 		_ = cur.MultipartForm.RemoveAll()
 	}
+}
+
+func joinPaths(absolutePath, relativePath string) string {
+	if relativePath == "" {
+		return absolutePath
+	}
+	finalPath := path.Join(absolutePath, relativePath)
+	if len(relativePath) > 0 && relativePath[len(relativePath)-1] == '/' && (len(finalPath) == 0 || finalPath[len(finalPath)-1] != '/') {
+		return finalPath + "/"
+	}
+	return finalPath
 }

@@ -167,15 +167,22 @@ func startServing(tb testing.TB, engine httpx.Engine, addr string) {
 			tb.Error("Start did not return after Stop")
 		}
 	})
-	waitReachable(tb, addr)
+	waitReachable(tb, engine, addr)
 }
 
-func waitReachable(tb testing.TB, addr string) {
+func waitReachable(tb testing.TB, engine httpx.Engine, addr string) {
 	tb.Helper()
+	client := oneShotClient(200 * time.Millisecond)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if dialable(addr) {
-			return
+		if engine.IsRunning() {
+			resp, err := client.Get("http://" + addr + "/__httpx_ready__")
+			if err == nil {
+				if resp != nil {
+					_ = resp.Body.Close()
+				}
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

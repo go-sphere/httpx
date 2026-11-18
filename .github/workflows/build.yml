@@ -32,6 +32,18 @@ jobs:
       # for local use; CI needs no external linter toolchain.
       - name: Check dependencies
         run: make tidy-check
+      - name: Format and Vet
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted Go files:"
+            echo "$unformatted"
+            exit 1
+          fi
+          for dir in . ginx fiberx echox hertzx stdx conformance; do
+            echo "==> vetting $dir"
+            (cd "$dir" && go vet ./...)
+          done
       - name: Build
         run: make build
       - name: Test

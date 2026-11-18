@@ -3,11 +3,13 @@ package conformance
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,12 +49,24 @@ func TestMaxBodySizeRaisesFrameworkLimit(t *testing.T) {
 				t.Fatalf("under the limit: status=%d body=%q err=%v, want 200 %d", status, body, err, under)
 			}
 			// The server may answer and close before the client has finished
-			// sending, which the client reports as a write error instead.
-			if status, _, err := post(limit + 1<<10); err == nil && status != http.StatusRequestEntityTooLarge {
+			// sending, which the client reports as an early write reset/EOF.
+			if status, _, err := post(limit + 1<<10); err != nil {
+				if !isEarlyCloseWriteErr(err) {
+					t.Fatalf("over the limit: unexpected request error = %v", err)
+				}
+			} else if status != http.StatusRequestEntityTooLarge {
 				t.Fatalf("over the limit: status=%d, want 413", status)
 			}
 		})
 	}
+}
+
+func isEarlyCloseWriteErr(err error) bool {
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset")
 }
 
 // A client declaring Content-Length > limit that stalls instead of sending the

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/go-sphere/httpx"
 	"github.com/labstack/echo/v4"
@@ -26,21 +27,52 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 			if !ok {
 				return errors.New("AdaptStdMiddleware: invalid context type")
 			}
+			var (
+				mu       sync.Mutex
+				timedOut bool
+				nextErr  error
+			)
 			resp := ec.Response()
 			origWriter := resp.Writer
+			origReq := ec.Request()
 			// Track writes that bypass echo.Response, including short circuits.
 			writer := &commitRecorder{ResponseWriter: origWriter, resp: resp}
-			var nextErr error
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				ec.SetRequest(r)
-				if w != http.ResponseWriter(writer) {
-					resp.Writer = w
-					defer func() { resp.Writer = origWriter }()
+				mu.Lock()
+				if timedOut {
+					mu.Unlock()
+					return
 				}
-				nextErr = next(ctx)
+				ec.SetRequest(r)
+				swapped := w != http.ResponseWriter(writer)
+				if swapped {
+					resp.Writer = w
+				}
+				mu.Unlock()
+				defer func() {
+					mu.Lock()
+					to := timedOut
+					if !to && swapped {
+						resp.Writer = origWriter
+					}
+					mu.Unlock()
+					if to {
+						removeReplacedMultipartForm(origReq, r)
+					}
+				}()
+				err := next(ctx)
+				mu.Lock()
+				if !timedOut {
+					nextErr = err
+				}
+				mu.Unlock()
 			})
-			middleware(inner).ServeHTTP(writer, ec.Request())
-			return nextErr
+			middleware(inner).ServeHTTP(writer, origReq)
+			mu.Lock()
+			timedOut = true
+			err := nextErr
+			mu.Unlock()
+			return err
 		}
 	}
 }

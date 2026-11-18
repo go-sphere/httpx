@@ -13,10 +13,15 @@ go_bin=${GO:-go}
 # suspect: a proxy can still be holding a negative or pre-re-push response
 # (goproxy.cn 404s a tag that exists on GitHub), and a version that was
 # deleted and pushed again under the same name leaves a copy in the local
-# module cache that `go` would reuse without going to the network. Resolve the
-# root module straight from GitHub, from a cache entry cleared first. Set
-# RELEASE_GOPROXY to a proxy list if GitHub is not reachable from here.
-export GOPROXY="${RELEASE_GOPROXY:-direct}"
+# module cache that `go` would reuse without going to the network. Bypass the
+# proxy for github.com/go-sphere/* via GOPRIVATE while leaving third-party
+# transitive dependencies on the configured GOPROXY, and clear the local module
+# cache first. Set RELEASE_GOPROXY to override GOPROXY explicitly instead.
+if [[ -n "${RELEASE_GOPROXY:-}" ]]; then
+  export GOPROXY="$RELEASE_GOPROXY"
+else
+  export GOPRIVATE="github.com/go-sphere/*"
+fi
 export GOWORK=off
 mod_cache=$("$go_bin" env GOMODCACHE)
 mod_download=$mod_cache/cache/download/github.com/go-sphere/httpx/@v
@@ -37,4 +42,15 @@ for adapter in ginx fiberx echox hertzx stdx; do
     "$go_bin" mod tidy
   )
 done
+(
+  cd "$repo_dir/conformance"
+  "$go_bin" mod edit \
+    "-require=github.com/go-sphere/httpx@$version" \
+    "-require=github.com/go-sphere/httpx/echox@$version" \
+    "-require=github.com/go-sphere/httpx/fiberx@$version" \
+    "-require=github.com/go-sphere/httpx/ginx@$version" \
+    "-require=github.com/go-sphere/httpx/hertzx@$version" \
+    "-require=github.com/go-sphere/httpx/stdx@$version"
+  "$go_bin" mod tidy
+)
 printf 'Dependencies updated to %s. Review and commit go.mod/go.sum, then run make release-check TAG=%s.\n' "$version" "$version"

@@ -6,11 +6,11 @@
 
 - **Breaking** `stdx`, `ginx`, `echox`: a server the adapter creates (the
   default, or `WithAddr`) now has `ReadHeaderTimeout` (10 s; exported as
-  `DefaultReadHeaderTimeout` in `stdx`) and `IdleTimeout` (120 s; exported as
-  `DefaultIdleTimeout` in `stdx`), so a client that sends its headers slowly or
-  leaves a keep-alive connection idle no longer holds it forever. No
-  whole-request read or write timeout is set. A server supplied with
-  `WithServer` is unchanged.
+  `DefaultReadHeaderTimeout` in `stdx`, `ginx`, and `echox`) and `IdleTimeout`
+  (120 s; exported as `DefaultIdleTimeout` in `stdx`, `ginx`, and `echox`), so
+  a client that sends its headers slowly or leaves a keep-alive connection idle
+  no longer holds it forever. No whole-request read or write timeout is set. A
+  server supplied with `WithServer` is unchanged.
 
 - **Breaking** behaviour on every adapter, aligning them on one contract:
   - `BindForm` binds the form body only (urlencoded and multipart fields);
@@ -33,12 +33,28 @@
   - `Stream` sends the status line and headers before its callback runs.
   - `WithErrorHandler(nil)` is ignored on every adapter: the handler
     configured before it stays (echox and stdx used to reset to the
-    default). ginx's `WithNativeErrorHandler(nil)` is ignored too.
+    default). ginx's and hertzx's `WithNativeErrorHandler(nil)` are ignored too.
+  - `BindQuery`, `BindForm`, `BindURI`, and `BindHeader` bind only struct
+    fields carrying an explicit matching tag (`query`, `form`, `uri`,
+    `header`), recursing into embedded anonymous structs and preserving
+    `*map[string]string` and `*map[string][]string`; untagged or `json`-only
+    fields are left untouched.
+  - Trailing-slash variants of registered routes now return `404` on `ginx`
+    and `hertzx` too (`RedirectTrailingSlash = false`), matching `stdx`,
+    `echox`, and `fiberx` and preventing `Location` reflection of
+    `X-Forwarded-Prefix`.
+  - Duplicate route registrations for the same method and equivalent path shape
+    now panic on `echox` and `fiberx` too, matching `stdx`, `ginx`, and
+    `hertzx`.
 - **Breaking** `echox`:
   - Upgraded `github.com/labstack/echo/v4` to `v4.16.5`, which defaults to
     using the connection peer IP when `Echo.IPExtractor` is nil instead of
     trusting forwarding headers from every peer; configure
     `WithTrustedProxies` when running behind a reverse proxy.
+  - Unregistered `OPTIONS` requests on matched paths now pass through
+    engine-scope `Use` middleware and render `405` via the configured error
+    handler instead of Echo's automatic `204` (`UseNative` middleware such as
+    CORS still runs and may intercept first).
   - Route errors are always rendered inside the route, at the end of the
     composed chain, as on ginx and with `WithErrorHandler`. With the default
     configuration an echo middleware registered with `UseNative` now gets nil
@@ -68,11 +84,20 @@
   `ContextBoundary/ValueReachesErrorHandler`,
   `Response/FileUnreadableIsForbidden`, `Response/FileKeepsRequestURL`,
   `Response/BodylessStatusDropsBody`, `Response/SetHeaderEmptyValueIsSent`,
-  `Response/RedirectKeepsEveryValidCode`, `Request/BindFormIgnoresQuery`, the
-  `Headers` group (Content-Type precedence, unset and post-commit headers) and
-  the `StdBridge` group (HandleStd and `AdaptStdMiddleware` against the
-  response the chain built). Every `TestRequester` response must also carry a
-  net/http status line ("200 OK").
+  `Response/RedirectKeepsEveryValidCode`, `Request/BindFormIgnoresQuery`,
+  `Request/BindExplicitTagsOnlyAndNoCrossSourceOverwrite`,
+  `RouteFallback/OptionsWithoutRouteIsNotAllowed`,
+  `Router/DuplicateRoutePanics`, the `Headers` group (Content-Type precedence,
+  unset and post-commit headers) and the `StdBridge` group (HandleStd and
+  `AdaptStdMiddleware` against the response the chain built). Every
+  `TestRequester` response must also carry a net/http status line ("200 OK").
+- `(*SSEWriter).SendEvent` for emitting named or default SSE events with a
+  guaranteed `data:` line (even when the payload is empty).
+- `(*ginx.Engine).ServeHTTP` and `(*echox.Engine).ServeHTTP`, implementing
+  `http.Handler`, along with exported `DefaultReadHeaderTimeout` and
+  `DefaultIdleTimeout` constants matching `stdx`.
+- Unpublished `benchmarks/go.mod` excluding `benchmarks/` from published root
+  module archives.
 - Each adapter runs the shared suite from its own module
   (`<adapter>/conformance_test.go`); `make golden` records and verifies there.
 - `LICENSE` (MIT), which the README already referred to.
@@ -95,10 +120,18 @@
   with a `GoldenFilesInUse` check that fails on a golden file no case uses.
   The `StandardContext` contract no longer pins `Done`/`Deadline`, which
   depend on how the request was built.
-- `conformance`: every real-listener, stress and `BenchmarkFramework` test runs
-  on all five adapters (stdx was missing from several); weak lifecycle tests
-  covered by `TestEngineLifecycleErrorsConformance` are removed; stdx-only
-  regressions moved to `stdx`.
+- `(*SSEWriter).SendData("")` now emits `"data: \n\n"` (delegating to
+  `SendEvent("", data)`) so `EventSource` clients dispatch empty-data messages;
+  `Send(&SSEEvent{...})` is unchanged.
+- Deprecated `(*MiddlewareChain).ComposeOwn` in favor of
+  `NewMiddlewareFallback` or `ComposeMiddleware` with `MiddlewareChain.Own`.
+- `conformance`: every real-listener and stress test runs on all five
+  adapters (stdx was missing from several); legacy
+  `conformance/performance_benchmark_test.go` (`make bench` / `make bench-5x`)
+  is removed in favor of `BenchmarkAdapter`, `BenchmarkSuite`, and
+  `BenchmarkNative`; weak lifecycle tests covered by
+  `TestEngineLifecycleErrorsConformance` are removed; stdx-only regressions
+  moved to `stdx`.
 - `make api-compat` compares against the latest released tag (override with
   `API_BASELINE`), includes `stdx`, and checks against
   `compat/api-incompatibilities.txt`.
@@ -146,6 +179,24 @@
   gin's error list.
 - ginx and hertzx: `SetHeader(key, "")` sends an empty header instead of
   deleting it.
+- Core & `httpxmock`: `StaticFileHandler` guards `fsys == nil`, enforces
+  exact prefix boundaries (`/assets/*` no longer matches `/assets` or
+  `/assets2/`), and verifies regular files on open (`CheckServeFile`);
+  `LimitRequestBody` only sends `Connection: close` on HTTP/1.x (`ProtoMajor < 2`);
+  `WrapBindError` preserves partial `StatusError`/`CodeError`/`MessageError`;
+  `Close` reports listener close failures even after shutdown context expiry;
+  `MiddlewareFallback.Handler` initialization is lock-free race-safe; `SSEWriter`
+  reuses its encoder and checks short writes; `httpxmock` initializes nil request
+  headers cleanly and isolates multipart/body/stream captures.
+- Adapter parity & safety: `stdx`, `ginx`, `echox`, `fiberx`, and `hertzx`
+  reject nil/non-pointer `Bind*` targets with 400 and isolate `BindForm`/multipart
+  parsing from malformed query strings; `ginx.WithTrustedProxies` normalizes
+  IPv4-mapped IPv6 CIDRs via `cidr.String()`; `ginx` recovers gin's validator
+  panics on nil pointer fields; `fiberx` clones fasthttp-backed map bindings
+  (`BindQuery`/`BindForm`/`BindHeader`) and honors `StrictRouting`/`CaseSensitive`
+  in `routeOrder`; `hertzx.File` delegates to `httpx.ServeFile` (eliminating
+  `.hertz.gz` sidecar writes and file caching), `Start()` converts netpoll bind
+  panics into errors, and `Flush`/`Stream` align on 1xx/204/304.
 
 ## v0.0.6 (2026-10-08)
 

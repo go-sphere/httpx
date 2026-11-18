@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-sphere/httpx"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -138,5 +141,88 @@ func TestStopRightAfterStartEndsStart(t *testing.T) {
 		if engine.IsRunning() {
 			t.Fatalf("iteration %d: IsRunning after Stop returned", i)
 		}
+	}
+}
+
+type failCloseListener struct {
+	net.Listener
+	closing chan struct{}
+	release chan struct{}
+	once    sync.Once
+	err     error
+}
+
+func (l *failCloseListener) Close() error {
+	l.once.Do(func() {
+		_ = l.Listener.Close()
+		close(l.closing)
+		<-l.release
+	})
+	return l.err
+}
+
+// TestFiberxStopReportsListenerCloseFailure verifies a listener Close error is
+// returned even when Stop's context deadline has already elapsed.
+func TestFiberxStopReportsListenerCloseFailure(t *testing.T) {
+	stopCtx, cancelStop := context.WithCancel(context.Background())
+	cancelStop()
+
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ln := &failCloseListener{
+		Listener: base,
+		closing:  make(chan struct{}),
+		release:  make(chan struct{}),
+		err:      errors.New("fiberx test: listener close failed"),
+	}
+
+	serving := make(chan struct{})
+	engine := New(WithListener(ln, fiber.ListenConfig{
+		DisableStartupMessage: true,
+		BeforeServeFunc:       func(*fiber.App) error { close(serving); return nil },
+	}))
+	engine.Group("").GET("/ping", func(ctx httpx.Context) error {
+		return ctx.Text(http.StatusOK, "pong")
+	})
+
+	served := make(chan error, 1)
+	go func() { served <- engine.Start() }()
+	<-serving
+	time.Sleep(100 * time.Millisecond)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- engine.Stop(stopCtx) }()
+
+	select {
+	case <-ln.closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop never closed the listener")
+	}
+	select {
+	case startErr := <-served:
+		if startErr != nil {
+			t.Fatalf("Start = %v, want nil once Stop ended it", startErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after the listener closed")
+	}
+	close(ln.release)
+
+	select {
+	case stopErr := <-stopped:
+		if !errors.Is(stopErr, ln.err) {
+			t.Fatalf("Stop = %v, want the listener close failure %v", stopErr, ln.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop did not return")
+	}
+
+	if engine.IsRunning() {
+		t.Fatal("IsRunning() is true after Stop returned")
+	}
+	if err := engine.Start(); !errors.Is(err, httpx.ErrEngineClosed) {
+		t.Fatalf("Start after a failed Stop = %v, want httpx.ErrEngineClosed", err)
 	}
 }

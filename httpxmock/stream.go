@@ -1,6 +1,9 @@
 package httpxmock
 
-import "io"
+import (
+	"bytes"
+	"io"
+)
 
 // Flush implements httpx.Flusher. The first flush commits the response.
 //
@@ -30,14 +33,15 @@ func (c *Context) Flush() error {
 func (c *Context) Stream(code int, contentType string, fn func(w io.Writer) error) error {
 	c.mu.Lock()
 	c.note("Stream")
-	if contentType != "" {
+	bodyless := c.commitsBodyless(code)
+	if !c.res.committed && contentType != "" {
 		c.res.Header().Set("Content-Type", contentType)
 	}
 	c.res.WriteHeader(code)
 	c.res.Flush()
-	start := c.res.body.Len()
 	c.mu.Unlock()
 
+	var written bytes.Buffer
 	// The record is deferred so a callback that panics — which a recovery
 	// middleware test will make one do — still leaves the write behind.
 	defer func() {
@@ -47,7 +51,7 @@ func (c *Context) Stream(code int, contentType string, fn func(w io.Writer) erro
 			Kind:        KindStream,
 			Code:        code,
 			ContentType: contentType,
-			Body:        c.bodySince(start),
+			Body:        bytes.Clone(written.Bytes()),
 		})
 	}()
 
@@ -57,7 +61,7 @@ func (c *Context) Stream(code int, contentType string, fn func(w io.Writer) erro
 	// The lock is released for the duration of fn: it is caller code, it may
 	// call back into this Context, and holding the lock across it would
 	// deadlock. streamWriter retakes the lock per write.
-	return fn(streamWriter{c: c})
+	return fn(streamWriter{c: c, buf: &written, drop: bodyless})
 }
 
 // FlushOffsets returns the response body length at each flush, in order.
@@ -85,7 +89,11 @@ func (c *Context) Flushes() int {
 // streamWriter is the writer Stream hands to its callback: each write appends
 // to the response and flushes, which is the delivery guarantee
 // httpx.Streamer makes.
-type streamWriter struct{ c *Context }
+type streamWriter struct {
+	c    *Context
+	buf  *bytes.Buffer
+	drop bool
+}
 
 func (w streamWriter) Write(p []byte) (int, error) {
 	w.c.mu.Lock()
@@ -93,6 +101,9 @@ func (w streamWriter) Write(p []byte) (int, error) {
 	n, err := w.c.res.Write(p)
 	if err != nil {
 		return n, err
+	}
+	if !w.drop && w.buf != nil && n > 0 {
+		w.buf.Write(p[:n])
 	}
 	w.c.res.Flush()
 	return n, nil

@@ -160,7 +160,8 @@ func NewInternalServerError(message string) Error {
 
 // WrapBindError marks a binder failure as HTTP 400, or as 413 when err's chain
 // holds a *http.MaxBytesError (the request body exceeded its limit). Already
-// classified httpx.Error values are returned unchanged. A nil err stays nil.
+// classified httpx.Error values are returned unchanged, and partial StatusError,
+// CodeError, or MessageError wrappers on err are preserved. A nil err stays nil.
 func WrapBindError(err error) error {
 	if err == nil {
 		return nil
@@ -168,10 +169,21 @@ func WrapBindError(err error) error {
 	if _, ok := errors.AsType[Error](err); ok {
 		return err
 	}
-	if isBodyTooLarge(err) {
-		return WithStatus(http.StatusRequestEntityTooLarge, err)
+	status := int32(http.StatusBadRequest)
+	if se, ok := errors.AsType[StatusError](err); ok {
+		status = se.GetStatus()
+	} else if isBodyTooLarge(err) {
+		status = http.StatusRequestEntityTooLarge
 	}
-	return BadRequestError(err)
+	var code int32
+	if ce, ok := errors.AsType[CodeError](err); ok {
+		code = ce.GetCode()
+	}
+	var msg string
+	if me, ok := errors.AsType[MessageError](err); ok {
+		msg = me.GetMessage()
+	}
+	return NewError(status, code, msg, err)
 }
 
 func isBodyTooLarge(err error) bool {

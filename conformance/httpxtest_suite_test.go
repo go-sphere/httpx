@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/cloudwego/hertz/pkg/protocol"
@@ -41,52 +40,23 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
-			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
+			NewEngine: func(_ testing.TB, _ httpxtest.Options) httpx.Engine {
 				gin.SetMode(gin.ReleaseMode)
-				engineOpts := []ginx.Option{ginx.WithEngine(gin.New())}
-				if opts.ErrorHandler != nil {
-					engineOpts = append(engineOpts, ginx.WithErrorHandler(opts.ErrorHandler))
-				}
-				if opts.MaxBodySize > 0 {
-					engineOpts = append(engineOpts, ginx.WithMaxBodySize(opts.MaxBodySize))
-				}
-				return ginx.New(engineOpts...)
+				return ginx.New(ginx.WithEngine(gin.New()))
 			},
 			StdMiddleware: ginx.AdaptStdMiddleware,
 			Dispatch:      ginDispatch,
-			NativeMiddleware: func(scope any, mark func(string)) {
-				useNative[gin.HandlerFunc](scope, func(c *gin.Context) {
-					mark("native-pre")
-					c.Next()
-					mark("native-post")
-				})
-			},
 		},
 		{
 			Name: "fiberx",
 			Caps: httpxtest.Caps{
 				ForcedStopCutsConnections: false,
 			},
-			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
-				var engineOpts []fiberx.Option
-				if opts.ErrorHandler != nil {
-					engineOpts = append(engineOpts, fiberx.WithErrorHandler(opts.ErrorHandler))
-				}
-				if opts.MaxBodySize > 0 {
-					engineOpts = append(engineOpts, fiberx.WithMaxBodySize(opts.MaxBodySize))
-				}
-				return fiberx.New(engineOpts...)
+			NewEngine: func(_ testing.TB, _ httpxtest.Options) httpx.Engine {
+				return fiberx.New()
 			},
 			StdMiddleware: fiberx.AdaptStdMiddleware,
 			Dispatch:      fiberDispatch,
-			NativeMiddleware: func(scope any, mark func(string)) {
-				useNative[fiber.Handler](scope, func(c fiber.Ctx) error {
-					mark("native-pre")
-					err := c.Next()
-					mark("native-post")
-					return err
-				})
-			},
 		},
 		{
 			Name: "echox",
@@ -95,28 +65,11 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
-			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
-				engineOpts := []echox.Option{echox.WithEngine(echo.New())}
-				if opts.ErrorHandler != nil {
-					engineOpts = append(engineOpts, echox.WithErrorHandler(opts.ErrorHandler))
-				}
-				if opts.MaxBodySize > 0 {
-					engineOpts = append(engineOpts, echox.WithMaxBodySize(opts.MaxBodySize))
-				}
-				return echox.New(engineOpts...)
+			NewEngine: func(_ testing.TB, _ httpxtest.Options) httpx.Engine {
+				return echox.New(echox.WithEngine(echo.New()))
 			},
 			StdMiddleware: echox.AdaptStdMiddleware,
 			Dispatch:      echoDispatch,
-			NativeMiddleware: func(scope any, mark func(string)) {
-				useNative[echo.MiddlewareFunc](scope, func(next echo.HandlerFunc) echo.HandlerFunc {
-					return func(c echo.Context) error {
-						mark("native-pre")
-						err := next(c)
-						mark("native-post")
-						return err
-					}
-				})
-			},
 		},
 		{
 			Name: "hertzx",
@@ -126,27 +79,13 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  false,
 			},
-			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
+			NewEngine: func(_ testing.TB, _ httpxtest.Options) httpx.Engine {
 				hlog.SetSilentMode(true)
 				hlog.SetOutput(io.Discard)
-				var engineOpts []hertzx.Option
-				if opts.ErrorHandler != nil {
-					engineOpts = append(engineOpts, hertzx.WithErrorHandler(opts.ErrorHandler))
-				}
-				if opts.MaxBodySize > 0 {
-					engineOpts = append(engineOpts, hertzx.WithMaxBodySize(opts.MaxBodySize))
-				}
-				return hertzx.New(engineOpts...)
+				return hertzx.New()
 			},
 			StdMiddleware: hertzx.AdaptStdMiddleware,
 			Dispatch:      hertzDispatch,
-			NativeMiddleware: func(scope any, mark func(string)) {
-				useNative[app.HandlerFunc](scope, func(ctx context.Context, rc *app.RequestContext) {
-					mark("native-pre")
-					rc.Next(ctx)
-					mark("native-post")
-				})
-			},
 		},
 		{
 			Name: "stdx",
@@ -156,30 +95,13 @@ func httpxtestSuites() []httpxtest.Suite {
 				InProcessUnknownLengthBody: true,
 				ForcedStopCutsConnections:  true,
 			},
-			NewEngine: func(_ testing.TB, opts httpxtest.Options) httpx.Engine {
-				var engineOpts []stdx.Option
-				if opts.ErrorHandler != nil {
-					engineOpts = append(engineOpts, stdx.WithErrorHandler(opts.ErrorHandler))
-				}
-				if opts.MaxBodySize > 0 {
-					engineOpts = append(engineOpts, stdx.WithMaxBodySize(opts.MaxBodySize))
-				}
-				return stdx.New(engineOpts...)
+			NewEngine: func(_ testing.TB, _ httpxtest.Options) httpx.Engine {
+				return stdx.New()
 			},
 			StdMiddleware: stdx.AdaptStdMiddleware,
 			Dispatch:      stdDispatch,
 		},
 	}
-}
-
-// useNative is a type assertion because each adapter's UseNative takes its own
-// framework's middleware type.
-func useNative[T any](scope any, middleware T) {
-	user, ok := scope.(interface{ UseNative(...T) })
-	if !ok {
-		panic("conformance: scope does not have UseNative for this framework")
-	}
-	user.UseNative(middleware)
 }
 
 func BenchmarkHTTPXTestSuite(b *testing.B) {

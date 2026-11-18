@@ -45,6 +45,7 @@ func BenchmarkAdapter(b *testing.B) {
 						})
 					} else {
 						run := factory()
+						b.ResetTimer()
 						for b.Loop() {
 							run()
 						}
@@ -189,7 +190,13 @@ func adapterBenchmarkFactory(tb testing.TB, framework, scenario string, adapted 
 		}
 		return netHTTPBenchmarkFactory(e, check)
 	case "fiber":
-		e := fiber.New()
+		e := fiber.New(fiber.Config{
+			CaseSensitive:             true,
+			StrictRouting:             true,
+			DisableHeadAutoRegister:   true,
+			DisableDefaultContentType: true,
+			UnescapePath:              true,
+		})
 		if adapted {
 			register(fiberx.New(fiberx.WithEngine(e)))
 		} else {

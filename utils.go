@@ -19,5 +19,8 @@ func (rc readCloser) Close() error {
 // returns nil. Close does not guard against repeated calls; closeFn runs each
 // time.
 func NewReadCloser(r io.Reader, closeFn func() error) io.ReadCloser {
+	if closeFn == nil {
+		return io.NopCloser(r)
+	}
 	return readCloser{r, closeFn}
 }

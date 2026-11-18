@@ -25,8 +25,7 @@ var (
 )
 
 type echoContext struct {
-	ctx    echo.Context
-	binder echo.DefaultBinder
+	ctx echo.Context
 	// wildcards is the engine's named-wildcard table, or nil for a context
 	// built by FromEcho. Carrying the pointer here is what scopes the mapping
 	// to one engine; the context is heap-allocated per request either way, so
@@ -264,10 +263,25 @@ func (c *echoContext) FormValue(key string) string {
 }
 
 func (c *echoContext) MultipartForm() (*multipart.Form, error) {
-	return c.ctx.MultipartForm()
+	req := c.ctx.Request()
+	if req.MultipartForm == nil {
+		iso := withoutRawQuery(req)
+		err := iso.ParseMultipartForm(32 << 20)
+		if iso != req {
+			req.PostForm = iso.PostForm
+			req.MultipartForm = iso.MultipartForm
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return req.MultipartForm, nil
 }
 
 func (c *echoContext) FormFile(name string) (*multipart.FileHeader, error) {
+	if _, err := c.MultipartForm(); err != nil {
+		return nil, err
+	}
 	return c.ctx.FormFile(name)
 }
 
@@ -318,6 +332,9 @@ func (c *echoContext) BodyReader() io.ReadCloser {
 // Binder (httpx.Binder)
 
 func (c *echoContext) BindJSON(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	body := c.ctx.Request().Body
 	if body == nil {
 		return httpx.WrapBindError(io.EOF)
@@ -326,19 +343,39 @@ func (c *echoContext) BindJSON(dst any) error {
 }
 
 func (c *echoContext) BindQuery(dst any) error {
-	return httpx.WrapBindError(c.binder.BindQueryParams(c.ctx, dst))
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	req := c.ctx.Request()
+	if req == nil || req.URL == nil || req.URL.RawQuery == "" {
+		return nil
+	}
+	return httpx.WrapBindError(decodeFormValues(queryDecoder, dst, c.ctx.QueryParams()))
 }
 
 func (c *echoContext) BindForm(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	return httpx.WrapBindError(bindForm(dst, c.ctx))
 }
 
 func (c *echoContext) BindURI(dst any) error {
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
 	return httpx.WrapBindError(c.bindURIWithForm(dst))
 }
 
 func (c *echoContext) BindHeader(dst any) error {
-	return httpx.WrapBindError(c.binder.BindHeaders(c.ctx, dst))
+	if err := checkBindTarget(dst); err != nil {
+		return httpx.WrapBindError(err)
+	}
+	req := c.ctx.Request()
+	if req == nil || len(req.Header) == 0 {
+		return nil
+	}
+	return httpx.WrapBindError(decodeFormValues(headerDecoder, dst, url.Values(req.Header)))
 }
 
 // Responder (httpx.Responder)
@@ -359,29 +396,25 @@ func (c *echoContext) commitsBodyless(code int) bool {
 func (c *echoContext) JSON(code int, v any) error {
 	resp := c.ctx.Response()
 	committed := resp.Committed
+	_, hadType := resp.Header()[echo.HeaderContentType]
 	if c.commitsBodyless(code) {
 		if _, err := json.Marshal(v); err != nil {
 			return err
 		}
-		if !committed && resp.Header().Get(echo.HeaderContentType) == "" {
+		if !committed && !hadType {
 			c.setContentType("application/json; charset=utf-8")
 		}
 		c.commit(code)
 		return nil
 	}
 	// echo labels JSON "application/json" where the other four adapters add
-	// "; charset=utf-8". echo only fills the header when it is still empty, so
-	// writing it first aligns the label while leaving a Content-Type the
-	// handler chose itself (a "+json" media type, say) alone.
-	hadType := resp.Header().Get(echo.HeaderContentType) != ""
-	if !hadType {
+	// "; charset=utf-8". Write it first when unset so a preset header (including
+	// an explicit empty value) or "+json" media type is preserved.
+	if !committed && !hadType {
 		c.setContentType("application/json; charset=utf-8")
 	}
-	// echo records code before encoding, and on a committed response still
-	// labels an unlabelled header map; neither may outlive the call when the
-	// response was committed or the encode failed.
 	prev := resp.Status
-	err := c.ctx.JSON(code, v)
+	err := c.ctx.JSONPretty(code, v, "")
 	if committed || !resp.Committed {
 		resp.Status = prev
 	}
@@ -394,8 +427,14 @@ func (c *echoContext) JSON(code int, v any) error {
 func (c *echoContext) Text(code int, s string) error {
 	// The lowercase charset used by the other adapters; echo's String writes
 	// "charset=UTF-8".
+	bl := c.commitsBodyless(code)
 	c.setContentType("text/plain; charset=utf-8")
-	return c.writeBody(code, []byte(s))
+	c.commit(code)
+	if bl {
+		return nil
+	}
+	_, err := io.WriteString(c.ctx.Response(), s)
+	return err
 }
 
 func (c *echoContext) NoContent(code int) error {
@@ -404,11 +443,13 @@ func (c *echoContext) NoContent(code int) error {
 }
 
 func (c *echoContext) Bytes(code int, b []byte, contentType string) error {
-	if contentType == "" {
-		contentType = http.DetectContentType(b)
+	if !c.ctx.Response().Committed {
+		if contentType == "" {
+			contentType = http.DetectContentType(b)
+		}
+		// Not echo's Blob, which only labels a response nothing labelled yet.
+		c.setContentType(contentType)
 	}
-	// Not echo's Blob, which only labels a response nothing labelled yet.
-	c.setContentType(contentType)
 	return c.writeBody(code, b)
 }
 
@@ -426,7 +467,7 @@ func (c *echoContext) DataFromReader(code int, contentType string, r io.Reader, 
 		c.commit(code)
 		return nil
 	}
-	if size >= 0 {
+	if r != nil && size >= 0 {
 		c.SetHeader(echo.HeaderContentLength, strconv.FormatInt(size, 10))
 	}
 	// Not echo's Stream, which labels an unlabelled response with whatever
@@ -452,10 +493,20 @@ func (c *echoContext) setContentType(v string) {
 
 // commit sends the header with code unless the response is already committed,
 // where echo's WriteHeader would log a warning for a write net/http ignores.
+// Informational 1xx statuses (other than 101 Switching Protocols) are forwarded
+// straight to the underlying writer so Committed and Status stay untouched.
 func (c *echoContext) commit(code int) {
-	if resp := c.ctx.Response(); !resp.Committed {
-		resp.WriteHeader(code)
+	resp := c.ctx.Response()
+	if resp.Committed {
+		return
 	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		if resp.Writer != nil {
+			resp.Writer.WriteHeader(code)
+		}
+		return
+	}
+	resp.WriteHeader(code)
 }
 
 // writeBody commits the response with code and appends b; a status that
@@ -538,7 +589,11 @@ func (c *echoContext) SetContext(ctx context.Context) {
 }
 
 func (c *echoContext) StatusCode() int {
-	return c.ctx.Response().Status
+	resp := c.ctx.Response()
+	if resp.Status == 0 && !resp.Committed {
+		return http.StatusOK
+	}
+	return resp.Status
 }
 
 // Committed reports whether the response header has been written. echo sets
@@ -575,6 +630,7 @@ func (c *echoContext) Flush() error {
 // Stream implements httpx.Streamer: status and headers are flushed to the
 // client before fn runs, and each write inside fn is flushed immediately.
 func (c *echoContext) Stream(code int, contentType string, fn func(w io.Writer) error) error {
+	bl := c.commitsBodyless(code)
 	if contentType != "" {
 		c.setContentType(contentType)
 	}
@@ -586,7 +642,11 @@ func (c *echoContext) Stream(code int, contentType string, fn func(w io.Writer) 
 		return nil
 	}
 	resp := c.ctx.Response()
-	return fn(echoFlushWriter{resp: resp, rc: http.NewResponseController(resp.Writer)})
+	rc := http.NewResponseController(resp.Writer)
+	if bl {
+		return fn(echoDiscardFlushWriter{rc: rc})
+	}
+	return fn(echoFlushWriter{resp: resp, rc: rc})
 }
 
 type echoFlushWriter struct {
@@ -603,4 +663,15 @@ func (fw echoFlushWriter) Write(p []byte) (int, error) {
 		return n, err
 	}
 	return n, nil
+}
+
+type echoDiscardFlushWriter struct {
+	rc *http.ResponseController
+}
+
+func (fw echoDiscardFlushWriter) Write(p []byte) (int, error) {
+	if err := fw.rc.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return 0, err
+	}
+	return len(p), nil
 }

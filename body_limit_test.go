@@ -36,4 +36,22 @@ func TestLimitRequestBody(t *testing.T) {
 			t.Fatalf("err = %v, body replaced = %v; n <= 0 must leave the request alone", err, req.Body != body)
 		}
 	})
+	t.Run("NilRequest", func(t *testing.T) {
+		if err := LimitRequestBody(httptest.NewRecorder(), nil, 4); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	t.Run("HTTP2DoesNotSetConnectionClose", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("0123456789"))
+		req.ProtoMajor = 2
+		req.ProtoMinor = 0
+		rec := httptest.NewRecorder()
+		var mbe *http.MaxBytesError
+		if err := LimitRequestBody(rec, req, 4); !errors.As(err, &mbe) {
+			t.Fatalf("err = %v, want *http.MaxBytesError", err)
+		}
+		if got := rec.Header().Get("Connection"); got != "" {
+			t.Fatalf("HTTP/2 Connection header = %q, want empty", got)
+		}
+	})
 }

@@ -170,6 +170,7 @@ func (r *Router) normalizeWildcardPath(path string) (string, *wildcardRoute) {
 func (r *Router) Handle(method, path string, h httpx.Handler) {
 	methods := []string{strings.ToUpper(method)}
 	fixed, wildcard := r.normalizeWildcardPath(path)
+	r.order.claim(methods, joinPaths(r.BasePath(), path))
 	r.group.Add(methods, fixed, r.adaptHandler(h, wildcard))
 	r.order.place(methods)
 }
@@ -184,6 +185,7 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 // standard ones is fiber's. Precedence is as for Handle.
 func (r *Router) Any(path string, h httpx.Handler) {
 	fixed, wildcard := r.normalizeWildcardPath(path)
+	r.order.claim(r.order.methods, joinPaths(r.BasePath(), path))
 	r.group.All(fixed, r.adaptHandler(h, wildcard))
 	r.order.place(r.order.methods)
 }

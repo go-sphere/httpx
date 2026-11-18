@@ -132,43 +132,48 @@ func TestClientIPFrameworkDifferences(t *testing.T) {
 		},
 	}
 	for _, a := range adapters() {
-		for _, tc := range cases {
-			t.Run(a.Name+"/"+tc.name, func(t *testing.T) {
-				want, ok := tc.want[a.Name]
-				if !ok {
-					t.Fatalf("%s/%s has no expectation", a.Name, tc.name)
-				}
-				engine, addr := a.serve(t, serveConfig{trustProxies: tc.configure, proxies: proxies})
-				engine.Group("").GET("/ip", func(ctx httpx.Context) error {
-					return ctx.JSON(http.StatusOK, map[string]string{"ip": ctx.ClientIP()})
-				})
-				startServing(t, engine, addr)
-
-				req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/ip", nil)
-				if err != nil {
-					t.Fatalf("build request: %v", err)
-				}
-				if tc.xff != "" {
-					req.Header.Set("X-Forwarded-For", tc.xff)
-				}
-				if tc.xRealIP != "" {
-					req.Header.Set("X-Real-IP", tc.xRealIP)
-				}
-				client := oneShotClient(2 * time.Second)
-				resp, err := client.Do(req)
-				if err != nil {
-					t.Fatalf("request failed: %v", err)
-				}
-				defer func() { _ = resp.Body.Close() }()
-				body, _ := io.ReadAll(resp.Body)
-				var payload map[string]string
-				if err := json.Unmarshal(body, &payload); err != nil {
-					t.Fatalf("parse body: %v; body=%q", err, body)
-				}
-				if payload["ip"] != want {
-					t.Fatalf("ClientIP = %q, want %q", payload["ip"], want)
-				}
+		for _, configure := range []bool{true, false} {
+			engine, addr := a.serve(t, serveConfig{trustProxies: configure, proxies: proxies})
+			engine.Group("").GET("/ip", func(ctx httpx.Context) error {
+				return ctx.JSON(http.StatusOK, map[string]string{"ip": ctx.ClientIP()})
 			})
+			startServing(t, engine, addr)
+			client := oneShotClient(2 * time.Second)
+
+			for _, tc := range cases {
+				if tc.configure != configure {
+					continue
+				}
+				t.Run(a.Name+"/"+tc.name, func(t *testing.T) {
+					want, ok := tc.want[a.Name]
+					if !ok {
+						t.Fatalf("%s/%s has no expectation", a.Name, tc.name)
+					}
+					req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/ip", nil)
+					if err != nil {
+						t.Fatalf("build request: %v", err)
+					}
+					if tc.xff != "" {
+						req.Header.Set("X-Forwarded-For", tc.xff)
+					}
+					if tc.xRealIP != "" {
+						req.Header.Set("X-Real-IP", tc.xRealIP)
+					}
+					resp, err := client.Do(req)
+					if err != nil {
+						t.Fatalf("request failed: %v", err)
+					}
+					defer func() { _ = resp.Body.Close() }()
+					body, _ := io.ReadAll(resp.Body)
+					var payload map[string]string
+					if err := json.Unmarshal(body, &payload); err != nil {
+						t.Fatalf("parse body: %v; body=%q", err, body)
+					}
+					if payload["ip"] != want {
+						t.Fatalf("ClientIP = %q, want %q", payload["ip"], want)
+					}
+				})
+			}
 		}
 	}
 }

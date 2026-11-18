@@ -92,3 +92,84 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func TestStaticFileHandlerEdgeCases(t *testing.T) {
+	t.Run("NilFSReturnsNotFound", func(t *testing.T) {
+		h := httpx.StaticFileHandler("/assets", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://example.com/assets/main.css", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("RootIndexStillRefusesBarePrefixAndSiblings", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "index.html"), "<h1>root</h1>")
+		writeFile(t, filepath.Join(dir, "main.css"), "css")
+		h := httpx.StaticFileHandler("/assets", os.DirFS(dir))
+
+		for _, tc := range []struct {
+			path   string
+			status int
+			body   string
+		}{
+			{path: "/assets", status: http.StatusNotFound},
+			{path: "/assets2/main.css", status: http.StatusNotFound},
+			{path: "/assets/", status: http.StatusOK, body: "<h1>root</h1>"},
+		} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://example.com"+tc.path, nil))
+			if rec.Code != tc.status {
+				t.Fatalf("%s: status = %d, want %d (loc=%q body=%q)", tc.path, rec.Code, tc.status, rec.Header().Get("Location"), rec.Body.String())
+			}
+			if tc.body != "" && rec.Body.String() != tc.body {
+				t.Fatalf("%s: body = %q, want %q", tc.path, rec.Body.String(), tc.body)
+			}
+		}
+	})
+
+	t.Run("IndexDirectoryNeverLists", func(t *testing.T) {
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "sub")
+		if err := os.MkdirAll(filepath.Join(sub, "index.html"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(sub, "secret.txt"), "top-secret")
+
+		h := httpx.StaticFileHandler("/assets", os.DirFS(dir))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://example.com/assets/sub/", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "secret.txt") {
+			t.Fatalf("404 body leaked directory listing: %q", rec.Body.String())
+		}
+	})
+
+	t.Run("UnreadableIndexNeverLists", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("file permissions do not apply to root")
+		}
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "sub")
+		if err := os.Mkdir(sub, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "index.html"), []byte("<h1>hidden</h1>"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(sub, "secret.txt"), "top-secret")
+
+		h := httpx.StaticFileHandler("/assets", os.DirFS(dir))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://example.com/assets/sub/", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "secret.txt") {
+			t.Fatalf("404 body leaked directory listing: %q", rec.Body.String())
+		}
+	})
+}

@@ -15,6 +15,7 @@ import (
 )
 
 var _ httpx.Engine = (*Engine)(nil)
+var _ http.Handler = (*Engine)(nil)
 
 // ErrorHandler is gin's native error-handler shape, accepted by
 // [WithNativeErrorHandler]. It is called with the gin context and the error a
@@ -61,8 +62,12 @@ func NewConfig(opts ...Option) *Config {
 // DefaultErrorHandler is the native error handler installed when no custom
 // handler is configured. It renders the standard httpx error body.
 func DefaultErrorHandler(ctx *gin.Context, err error) {
+	if ctx.Writer.Written() {
+		ctx.Abort()
+		return
+	}
 	status, body := httpx.RenderError(err)
-	ctx.JSON(status, body)
+	_ = FromGin(ctx).JSON(status, body)
 	ctx.Abort()
 }
 
@@ -130,15 +135,15 @@ func WithNativeErrorHandler(errHandler ErrorHandler) Option {
 
 // The timeouts of a server the adapter creates; see [WithAddr].
 const (
-	defaultReadHeaderTimeout = 10 * time.Second
-	defaultIdleTimeout       = 120 * time.Second
+	DefaultReadHeaderTimeout = 10 * time.Second
+	DefaultIdleTimeout       = 120 * time.Second
 )
 
 func newServer(addr string) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		ReadHeaderTimeout: defaultReadHeaderTimeout,
-		IdleTimeout:       defaultIdleTimeout,
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		IdleTimeout:       DefaultIdleTimeout,
 	}
 }
 
@@ -147,11 +152,11 @@ func newServer(addr string) *http.Server {
 // default is ":8080"; an empty address listens on ":http".
 //
 // A server the adapter creates limits how long a client may take to send its
-// request headers (10s) and how long an idle keep-alive connection stays open
-// (120s), so slow or idle clients cannot hold connections forever. It sets no
-// read or write timeout for the whole request, which would cut uploads and
-// streamed responses; supply a server with [WithServer] to choose other
-// limits.
+// request headers ([DefaultReadHeaderTimeout]) and how long an idle keep-alive
+// connection stays open ([DefaultIdleTimeout]), so slow or idle clients cannot
+// hold connections forever. It sets no read or write timeout for the whole
+// request, which would cut uploads and streamed responses; supply a server
+// with [WithServer] to choose other limits.
 func WithAddr(addr string) Option {
 	return func(conf *Config) {
 		if conf.server == nil {
@@ -192,10 +197,15 @@ func WithDefaultMiddleware() Option {
 // entries panic at construction time.
 func WithTrustedProxies(proxies ...string) Option {
 	return func(conf *Config) {
-		if _, err := httpx.ParseCIDRs(proxies); err != nil {
+		cidrs, err := httpx.ParseCIDRs(proxies)
+		if err != nil {
 			panic(err)
 		}
-		conf.trustedProxies = proxies
+		normalized := make([]string, len(cidrs))
+		for i, cidr := range cidrs {
+			normalized[i] = cidr.String()
+		}
+		conf.trustedProxies = normalized
 		conf.setTrustedProxies = true
 	}
 }
@@ -217,6 +227,7 @@ type Engine struct {
 	notFound    *httpx.MiddlewareFallback
 	notAllowed  *httpx.MiddlewareFallback
 	lifecycleMu sync.Mutex
+	ln          net.Listener
 	started     atomic.Bool
 	running     atomic.Bool
 	closed      atomic.Bool
@@ -239,7 +250,7 @@ func New(opts ...Option) httpx.Engine {
 			panic(err)
 		}
 	}
-	conf.server.Handler = conf.engine
+	conf.server.Handler = conf.engine.Handler()
 	engine := &Engine{
 		engine:      conf.engine,
 		server:      conf.server,
@@ -268,6 +279,10 @@ func New(opts ...Option) httpx.Engine {
 // rather than append; that is the supported way to keep a custom fallback.
 func (e *Engine) installRouteFallback() {
 	e.engine.HandleMethodNotAllowed = true
+	// Disable gin's automatic trailing-slash redirect so a mismatched
+	// trailing slash returns 404 like the other adapters and never reflects
+	// an untrusted X-Forwarded-Prefix header in Location.
+	e.engine.RedirectTrailingSlash = false
 	e.notFound = httpx.NewMiddlewareFallback(e.chain,
 		staticLeaf(httpx.NewNotFoundError(http.StatusText(http.StatusNotFound))))
 	// gin has already written the Allow header required by RFC 7231.
@@ -314,6 +329,7 @@ func (e *Engine) fallbackHandler(fb *httpx.MiddlewareFallback) gin.HandlerFunc {
 		}
 		e.errHandler(gc, err)
 		commitErrorStatus(gc, err)
+		gc.Abort()
 	}
 }
 
@@ -373,9 +389,15 @@ func (e *Engine) Start() error {
 		e.lifecycleMu.Unlock()
 		return err
 	}
+	e.ln = ln
 	e.running.Store(true)
 	e.lifecycleMu.Unlock()
-	defer e.running.Store(false)
+	defer func() {
+		e.lifecycleMu.Lock()
+		e.ln = nil
+		e.lifecycleMu.Unlock()
+		e.running.Store(false)
+	}()
 	if err := e.server.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -390,13 +412,20 @@ func (e *Engine) Start() error {
 func (e *Engine) Stop(ctx context.Context) error {
 	e.lifecycleMu.Lock()
 	e.closed.Store(true)
+	ln := e.ln
 	e.lifecycleMu.Unlock()
 	// httpx.Close force-closes when the graceful drain fails, so the server is
 	// down whatever it returns — the running flag has to fall with it. Storing
 	// it only on a nil error left IsRunning reporting true for the rest of the
 	// process after a stop the caller's deadline cut short.
 	defer e.running.Store(false)
-	return httpx.Close(ctx, e.server)
+	err := httpx.Close(ctx, e.server)
+	if ln != nil {
+		if closeErr := ln.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
+		}
+	}
+	return err
 }
 
 // IsRunning returns true if the server is currently running.
@@ -419,6 +448,11 @@ type closeNotifyRecorder struct {
 }
 
 func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return neverClosedCloseNotify }
+
+// ServeHTTP implements [http.Handler] by delegating to the underlying Gin engine.
+func (e *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	e.engine.ServeHTTP(w, req)
+}
 
 // Do serves req in-process through the gin engine and returns the buffered
 // response. It implements httpx.TestRequester.

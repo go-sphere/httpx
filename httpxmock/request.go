@@ -29,6 +29,9 @@ func (c *Context) Path() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("Path")
+	if c.req.URL == nil {
+		return ""
+	}
 	return c.req.URL.Path
 }
 
@@ -91,6 +94,9 @@ func (c *Context) Query(key string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("Query")
+	if c.req.URL == nil {
+		return ""
+	}
 	return c.req.URL.Query().Get(key)
 }
 
@@ -99,6 +105,9 @@ func (c *Context) Queries() map[string][]string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("Queries")
+	if c.req.URL == nil {
+		return nil
+	}
 	values := c.req.URL.Query()
 	if len(values) == 0 {
 		return nil
@@ -115,11 +124,14 @@ func (c *Context) RawQuery() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("RawQuery")
+	if c.req.URL == nil {
+		return ""
+	}
 	return c.req.URL.RawQuery
 }
 
 // Header returns the first value for a request header, matched
-// case-insensitively through net/http's canonicalization.
+// case-insensitively.
 func (c *Context) Header(key string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -127,7 +139,15 @@ func (c *Context) Header(key string) string {
 	if strings.EqualFold(key, "Host") {
 		return ""
 	}
-	return c.req.Header.Get(key)
+	if v := c.req.Header.Get(key); v != "" {
+		return v
+	}
+	for k, vals := range c.req.Header {
+		if strings.EqualFold(k, key) && len(vals) > 0 {
+			return vals[0]
+		}
+	}
+	return ""
 }
 
 // Headers returns a copy of the request headers keyed canonically, or nil
@@ -229,12 +249,22 @@ func (c *Context) FormFile(name string) (*multipart.FileHeader, error) {
 	return header, nil
 }
 
-// parseMultipart parses the multipart body at most once. Callers hold c.mu.
+// parseMultipart parses the multipart body at most once, ignoring any malformed
+// query escapes in URL.RawQuery. Callers hold c.mu.
 func (c *Context) parseMultipart() error {
 	if c.req.MultipartForm != nil {
 		return nil
 	}
-	return c.req.ParseMultipartForm(defaultMultipartMemory)
+	req := *c.req
+	if req.URL != nil && req.URL.RawQuery != "" {
+		u := *req.URL
+		u.RawQuery = ""
+		req.URL = &u
+	}
+	err := req.ParseMultipartForm(defaultMultipartMemory)
+	c.req.PostForm = req.PostForm
+	c.req.MultipartForm = req.MultipartForm
+	return err
 }
 
 // BodyRaw returns the whole request body.
@@ -246,7 +276,7 @@ func (c *Context) BodyRaw() ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("BodyRaw")
-	if c.req.Body == nil {
+	if c.req.Body == nil || c.req.Body == http.NoBody {
 		return nil, nil
 	}
 	body, err := io.ReadAll(c.req.Body)
@@ -268,8 +298,28 @@ func (c *Context) BodyReader() io.ReadCloser {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.note("BodyReader")
-	if c.req.Body != nil {
-		return c.req.Body
+	if c.req.Body == nil || c.req.Body == http.NoBody {
+		return http.NoBody
 	}
-	return http.NoBody
+	return lockedBodyReader{c: c}
+}
+
+type lockedBodyReader struct{ c *Context }
+
+func (r lockedBodyReader) Read(p []byte) (int, error) {
+	r.c.mu.Lock()
+	defer r.c.mu.Unlock()
+	if r.c.req.Body == nil {
+		return 0, io.EOF
+	}
+	return r.c.req.Body.Read(p)
+}
+
+func (r lockedBodyReader) Close() error {
+	r.c.mu.Lock()
+	defer r.c.mu.Unlock()
+	if r.c.req.Body == nil {
+		return nil
+	}
+	return r.c.req.Body.Close()
 }

@@ -42,7 +42,7 @@ func Close(ctx context.Context, server *http.Server) error {
 	if err == nil {
 		return nil
 	}
-	if ctx.Err() == nil {
+	if ctxErr := ctx.Err(); ctxErr == nil || !errors.Is(err, ctxErr) {
 		// Shutdown failed for a reason other than the caller's context — a
 		// listener or connection close error, say. Force-close anyway so
 		// nothing keeps serving, but report the original cause.

@@ -315,13 +315,16 @@ func (l *goldenLedger) checkOrphans(t *testing.T, fsys fs.FS) {
 	}
 }
 
-// partialRun reports whether -run or -skip may have filtered out cases, in
-// which case a golden file the run did not reach proves nothing. A -run
-// pattern without a slash selects top-level tests only, so every case below
-// the one calling Run still runs.
-func partialRun() (string, bool) {
-	if f := flag.Lookup("test.run"); f != nil && strings.Contains(f.Value.String(), "/") {
-		return "-run selects individual cases; the orphan check needs them all", true
+// partialRun reports whether -run or -skip may have filtered out cases below
+// root, in which case a golden file the run did not reach proves nothing.
+func partialRun(root string) (string, bool) {
+	if f := flag.Lookup("test.run"); f != nil {
+		rootDepth := strings.Count(root, "/")
+		for _, part := range strings.Split(f.Value.String(), "|") {
+			if strings.Count(part, "/") > rootDepth {
+				return "-run selects individual cases; the orphan check needs them all", true
+			}
+		}
 	}
 	if f := flag.Lookup("test.skip"); f != nil && f.Value.String() != "" {
 		return "-skip may exclude cases; the orphan check needs them all", true

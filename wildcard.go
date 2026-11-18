@@ -62,7 +62,7 @@ func FixWildcardPathIfNeed(r RouterFeatureProvider, path string) (fixedPath stri
 		return path, ""
 	}
 
-	if r.SupportsRouterFeature(RouterFeatureNamedWildcard) {
+	if r != nil && r.SupportsRouterFeature(RouterFeatureNamedWildcard) {
 		return path, param
 	}
 

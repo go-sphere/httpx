@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -184,6 +186,88 @@ func TestStdxContextEdges(t *testing.T) {
 		b.WriteString(rec.Header().Get("Content-Type"))
 		if b.String() != "" {
 			t.Fatalf("preset empty Content-Type overwritten with %q", b.String())
+		}
+	})
+
+	t.Run("PostCommitRedirectAndNilReaderAndStream204AndNilBind", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c := FromStd(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		_ = c.Text(http.StatusOK, "first")
+		if err := c.Redirect(http.StatusFound, "/to"); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Body.String() != "first" || rec.Header().Get("Location") != "" {
+			t.Fatalf("post-commit Redirect wrote body=%q Location=%q", rec.Body.String(), rec.Header().Get("Location"))
+		}
+
+		rec2 := httptest.NewRecorder()
+		c2 := FromStd(rec2, httptest.NewRequest(http.MethodGet, "/", nil))
+		if err := c2.DataFromReader(http.StatusOK, "text/plain", nil, 10); err != nil {
+			t.Fatal(err)
+		}
+		if cl := rec2.Header().Get("Content-Length"); cl != "" {
+			t.Fatalf("DataFromReader(nil, 10) Content-Length = %q, want empty", cl)
+		}
+
+		rec3 := httptest.NewRecorder()
+		c3 := FromStd(rec3, httptest.NewRequest(http.MethodGet, "/", nil)).(httpx.Streamer)
+		if err := c3.Stream(http.StatusNoContent, "text/plain", func(w io.Writer) error {
+			_, err := io.WriteString(w, "ignored")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if rec3.Body.Len() != 0 {
+			t.Fatalf("Stream(204) body = %q, want empty", rec3.Body.String())
+		}
+
+		c4 := FromStd(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
+		for _, fn := range []func(any) error{c4.BindJSON, c4.BindQuery, c4.BindForm, c4.BindURI, c4.BindHeader} {
+			if _, status, _ := httpx.ParseError(fn(nil)); status != http.StatusBadRequest {
+				t.Fatalf("bind(nil) status = %d, want 400", status)
+			}
+		}
+
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		_ = mw.WriteField("k", "v")
+		_ = mw.Close()
+		mpReq := httptest.NewRequest(http.MethodPost, "/?bad=%ZZ", &body)
+		mpReq.Header.Set("Content-Type", mw.FormDataContentType())
+		mpCtx := FromStd(httptest.NewRecorder(), mpReq)
+		if mf, err := mpCtx.MultipartForm(); err != nil || len(mf.Value["k"]) != 1 || mf.Value["k"][0] != "v" {
+			t.Fatalf("MultipartForm with bad RawQuery = (%v, %v)", mf, err)
+		}
+	})
+
+	t.Run("AdaptStdMiddlewarePropagatesMarkWritten", func(t *testing.T) {
+		engine, r := newTestEngine(t)
+		var committed bool
+		var code int
+		r.Use(func(next httpx.Handler) httpx.Handler {
+			return func(ctx httpx.Context) error {
+				err := next(ctx)
+				committed = ctx.Committed()
+				code = ctx.StatusCode()
+				return err
+			}
+		})
+		r.Use(AdaptStdMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				next.ServeHTTP(w, req)
+			})
+		}))
+		r.GET("/mw", func(ctx httpx.Context) error {
+			native, ok := httpx.AsNativeContext[*Native](ctx)
+			if !ok {
+				return errors.New("missing Native")
+			}
+			native.MarkWritten(http.StatusAccepted)
+			return errors.New("must not render over MarkWritten")
+		})
+		rec := serve(engine, getReq("/mw"))
+		if !committed || code != http.StatusAccepted || rec.Body.Len() != 0 {
+			t.Fatalf("MarkWritten propagation: committed=%v code=%d body=%q", committed, code, rec.Body.String())
 		}
 	})
 }

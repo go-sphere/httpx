@@ -36,8 +36,9 @@ func casesRouteFallback(t *testing.T, r runner) {
 		r.assertGolden(t, register, httptest.NewRequest(http.MethodGet, "http://example.com/items/1", nil))
 	})
 
-	// HEAD is a method like any other: a GET route does not answer it, and the
-	// 405 does not advertise it in Allow.
+	// HEAD and OPTIONS without an explicit route on a matched path are rejected
+	// as 405 Method Not Allowed like any other unregistered method, and Allow
+	// does not advertise them.
 	t.Run("HeadWithoutRouteIsNotAllowed", func(t *testing.T) {
 		got := r.serve(t, func(router httpx.Router) {
 			router.GET("/head/items", func(ctx httpx.Context) error {
@@ -49,6 +50,20 @@ func casesRouteFallback(t *testing.T, r runner) {
 		}
 		if allow := got.Headers.Get("Allow"); strings.Contains(allow, http.MethodHead) {
 			t.Errorf("Allow = %q, want no HEAD: no HEAD route is registered", allow)
+		}
+	})
+
+	t.Run("OptionsWithoutRouteIsNotAllowed", func(t *testing.T) {
+		got := r.serve(t, func(router httpx.Router) {
+			router.GET("/options/items", func(ctx httpx.Context) error {
+				return ctx.Text(http.StatusOK, "listed")
+			})
+		}, httptest.NewRequest(http.MethodOptions, "http://example.com/options/items", nil))
+		if got.Status != http.StatusMethodNotAllowed {
+			t.Fatalf("OPTIONS /options/items: status = %d, want 405; body=%q", got.Status, got.Body)
+		}
+		if allow := got.Headers.Get("Allow"); strings.Contains(allow, http.MethodOptions) {
+			t.Errorf("Allow = %q, want no OPTIONS: no OPTIONS route is registered", allow)
 		}
 	})
 

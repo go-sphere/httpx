@@ -45,13 +45,14 @@ the older data in `results/`. A generator sharing that namespace will eventually
 an archived report already used and overwrite it — which is how the first round's
 `environment.json` and `network.json` were lost.
 
-**Nothing under `results/` is tracked.** `benchmarks/` has no `go.mod`, so it belongs to the
-root module, and anything committed here ships in the module zip that every consumer of
-`github.com/go-sphere/httpx` downloads — every adapter depends on the root module. Benchmark
-samples have no business there. `BENCHMARK.md` carries the medians and the environment, and
-the archived reports carry their own tables, so the conclusions survive without the raw output.
-Re-run rather than reach for someone else's samples: benchstat across machines is meaningless
-anyway.
+**Nothing under `results/` is tracked.** `benchmarks/` has its own unpublished
+`go.mod` so the directory is excluded from the root module zip that every
+consumer of `github.com/go-sphere/httpx` downloads, and raw samples and
+compiled binaries are gitignored so they never bloat git history either.
+`BENCHMARK.md` carries the medians and the environment, and the archived
+reports carry their own tables, so the conclusions survive without the raw
+output. Re-run rather than reach for someone else's samples: benchstat across
+machines is meaningless anyway.
 
 ## Running one table
 
@@ -70,8 +71,8 @@ Judge significance with benchstat, not by the decimal places in the rendered tab
 
 ```sh
 go install golang.org/x/perf/cmd/benchstat@latest
-benchstat -row /framework,/scenario -col /mode results/latest/adapter.txt
-benchstat -row /scenario -col /adapter results/latest/suite.txt
+benchstat -row /framework,/scenario -col /mode benchmarks/results/latest/adapter.txt
+benchstat -row /scenario -col /adapter benchmarks/results/latest/suite.txt
 benchstat -filter '/mode:httpx' before.txt after.txt   # both sides must be the same benchmark source
 ```
 

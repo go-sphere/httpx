@@ -60,7 +60,8 @@
 //   - The engine starts with no gin middleware; [WithDefaultMiddleware] adds
 //     gin's Logger and Recovery.
 //   - Stop cuts connections still in flight once its context expires.
-//   - A server the adapter creates bounds header reads (10s) and idle
-//     keep-alive connections (120s); one supplied with [WithServer] is used as
+//   - A server the adapter creates bounds header reads
+//     ([DefaultReadHeaderTimeout], 10s) and idle keep-alive connections
+//     ([DefaultIdleTimeout], 120s); one supplied with [WithServer] is used as
 //     configured.
 package ginx

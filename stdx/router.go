@@ -76,6 +76,9 @@ func (r *Router) Group(prefix string, m ...httpx.Middleware) httpx.Router {
 // duplicate method and pattern, and on a parameter or wildcard whose name
 // conflicts with one already registered at the same position.
 func (r *Router) Handle(method, path string, h httpx.Handler) {
+	if strings.TrimSpace(method) == "" {
+		panic("stdx: empty HTTP method")
+	}
 	if err := httpx.ValidateWildcardPath(path); err != nil {
 		panic(err)
 	}
@@ -98,8 +101,19 @@ func (r *Router) HandleStd(method, path string, h http.Handler) {
 
 // Any registers h for path under all nine standard HTTP methods.
 func (r *Router) Any(path string, h httpx.Handler) {
+	if err := httpx.ValidateWildcardPath(path); err != nil {
+		panic(err)
+	}
+	pattern := joinPaths(r.basePath, path)
+	if err := httpx.ValidateWildcardPath(pattern); err != nil {
+		panic(err)
+	}
+	composed := r.chain.Compose(h)
 	for _, method := range anyMethods {
-		r.Handle(method, path, h)
+		r.engine.root.add(method, pattern, &route{
+			pattern: pattern,
+			handler: composed,
+		})
 	}
 }
 

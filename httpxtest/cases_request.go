@@ -267,4 +267,101 @@ func casesRequest(t *testing.T, r runner) {
 			})
 		}, req)
 	})
+
+	// Multi-source sequential binding on one DTO must bind only fields carrying
+	// an explicit tag for the active source; untagged and json-only fields must
+	// neither be overwritten across sources nor fail parsing when an input
+	// happens to share the Go field name.
+	t.Run("BindExplicitTagsOnlyAndNoCrossSourceOverwrite", func(t *testing.T) {
+		type embedded struct {
+			Embedded string `query:"emb"`
+			Role     string `json:"emb_role"`
+		}
+		type dto struct {
+			embedded
+			BodyOnly   string `json:"body_only"`
+			BadInt     int    `json:"bad_int"`
+			Name       string `query:",omitempty"`
+			Token      string `header:"X-Token"`
+			ParamOnly  string `uri:"param_only"`
+			UntaggedID string
+		}
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"http://example.com/explicit/route-ok/smuggled-id?BodyOnly=smuggled&UntaggedID=smuggled&BadInt=not-an-int&Name=alice&emb=e1&Role=admin",
+			strings.NewReader(`{"body_only":"legit","bad_int":7,"emb_role":"user"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Token", "tok-1")
+		req.Header.Set("BodyOnly", "hdr-smuggled")
+		req.Header.Set("BadInt", "not-an-int")
+		req.Header.Set("UntaggedID", "hdr-smuggled")
+
+		got := r.serve(t, func(router httpx.Router) {
+			router.POST("/explicit/:param_only/:UntaggedID", func(ctx httpx.Context) error {
+				var d dto
+				if err := ctx.BindJSON(&d); err != nil {
+					return err
+				}
+				if err := ctx.BindHeader(&d); err != nil {
+					return err
+				}
+				if err := ctx.BindQuery(&d); err != nil {
+					return err
+				}
+				if err := ctx.BindURI(&d); err != nil {
+					return err
+				}
+				return ctx.JSON(http.StatusOK, map[string]any{
+					"bodyOnly":   d.BodyOnly,
+					"badInt":     d.BadInt,
+					"name":       d.Name,
+					"token":      d.Token,
+					"paramOnly":  d.ParamOnly,
+					"untaggedID": d.UntaggedID,
+					"embedded":   d.Embedded,
+					"role":       d.Role,
+				})
+			})
+		}, req)
+		if got.Status != http.StatusOK {
+			t.Fatalf("status=%d body=%q, want 200", got.Status, got.Body)
+		}
+		wantSubstrs := []string{
+			`"bodyOnly":"legit"`,
+			`"badInt":7`,
+			`"name":"alice"`,
+			`"token":"tok-1"`,
+			`"paramOnly":"route-ok"`,
+			`"untaggedID":""`,
+			`"embedded":"e1"`,
+			`"role":"user"`,
+		}
+		for _, sub := range wantSubstrs {
+			if !strings.Contains(got.Body, sub) {
+				t.Fatalf("body=%q missing %s", got.Body, sub)
+			}
+		}
+
+		// Same guarantee for BindForm (urlencoded).
+		type formDTO struct {
+			BodyOnly string `json:"body_only"`
+			BadInt   int
+			Title    string `form:"title"`
+		}
+		formReq := httptest.NewRequest(http.MethodPost, "http://example.com/explicit-form", strings.NewReader("title=ok&BodyOnly=smuggled&BadInt=not-an-int"))
+		formReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		formGot := r.serve(t, func(router httpx.Router) {
+			router.POST("/explicit-form", func(ctx httpx.Context) error {
+				f := formDTO{BodyOnly: "keep"}
+				if err := ctx.BindForm(&f); err != nil {
+					return err
+				}
+				return ctx.Text(http.StatusOK, f.BodyOnly+"|"+f.Title)
+			})
+		}, formReq)
+		if formGot.Status != http.StatusOK || formGot.Body != "keep|ok" {
+			t.Fatalf("form status=%d body=%q, want 200 %q", formGot.Status, formGot.Body, "keep|ok")
+		}
+	})
 }

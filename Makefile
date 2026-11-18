@@ -25,7 +25,7 @@ export GOWORK := $(CURDIR)/go.work
 endif
 
 .PHONY: work deps-update tidy tidy-check fmt build test test-race lint lint-all check verify api-compat
-.PHONY: bench bench-5x bench-adapter bench-suite bench-native bench-network bench-report golden tag tag-all tag-delete help prepare-release release-check
+.PHONY: bench-adapter bench-suite bench-native bench-network bench-report golden tag tag-all tag-delete help prepare-release release-check
 
 # The workspace is the only way the repo builds before a release: every adapter
 # requires the published github.com/go-sphere/httpx, but they use symbols that
@@ -133,44 +133,39 @@ verify: check api-compat
 api-compat:
 	GO="$(GO)" ./scripts/check-api-compat.sh
 
-bench:
-	$(GO) test -run '^$$' -bench BenchmarkFramework -benchmem ./conformance/...
-
-bench-5x:
-	$(GO) test -run '^$$' -bench BenchmarkFramework -benchmem -count=5 ./conformance/...
-
 # Native versus httpx, without sockets/client allocations. Compare saved runs
 # with golang.org/x/perf/cmd/benchstat; benchmarks/README.md documents the setup.
-bench-adapter:
+bench-adapter: work
 	$(GO) test -run '^$$' -bench '^BenchmarkAdapter$$' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -cpu=4 ./conformance
 
 # The shared scenario table (httpxtest) per adapter, driven through each
 # framework's own dispatcher via Suite.Dispatch. Same sampling as bench-adapter
 # (BENCH_COUNT/BENCH_TIME) so the two are comparable.
-bench-suite:
+bench-suite: work
 	$(GO) test -run '^$$' -bench '^BenchmarkHTTPXTestSuite$$' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -cpu=4 ./conformance
 
 # The shared scenario table again, but each scenario paired with a hand-written
 # implementation on the raw framework (no httpx at all), so the delta is the
 # price of the abstraction on identical behavior.
-bench-native:
+bench-native: work
 	$(GO) test -run '^$$' -bench '^BenchmarkNativeVsHTTPX$$' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -cpu=4 ./conformance
 
 # Requires Vegeta on PATH or in ~/go/bin. No load-test dependencies enter go.mod.
-bench-network:
+bench-network: work
 	python3 benchmarks/network.py
 
 # Every table above in one session, from one compiled binary, rendered into
 # benchmarks/BENCHMARK.md. This is the only way to get numbers that may be
 # quoted next to each other: the individual targets above are for iterating on
 # one table, and two of their runs are two different environments.
-bench-report:
+bench-report: work
 	python3 benchmarks/report.py --count $(BENCH_COUNT) --benchtime $(BENCH_TIME)
 
 tag:
 	@test -n "$(TAG)" || { echo "TAG is required: make tag TAG=v0.0.1"; exit 1; }
-	git tag -s $(TAG) -m "$(TAG)"
-	git push origin --tags
+	@test -z "$$(git status --porcelain)" || { echo "working tree is dirty; commit or stash changes before tagging"; exit 1; }
+	git tag -s "$(TAG)" -m "$(TAG)"
+	git push origin "$(TAG)"
 
 # Publication is deliberately staged: root tag, dependency preparation,
 # commit, consumer checks, and only then adapter tags. Dependency preparation
@@ -187,11 +182,12 @@ release-check:
 
 tag-all: release-check
 	@test -n "$(TAG)" || { echo "TAG is required: make tag-all TAG=v0.0.1"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "working tree is dirty; commit or stash changes before tagging"; exit 1; }
 	@set -eu; \
 	for adapter in $(TAG_ADAPTERS); do \
 		git tag -s "$$adapter/$(TAG)" -m "$$adapter/$(TAG)"; \
 	done
-	git push origin --tags
+	git push origin $(foreach a,$(TAG_ADAPTERS),"$(a)/$(TAG)")
 
 tag-delete:
 	@test -n "$(TAG)" || { echo "TAG is required: make tag-delete TAG=v0.0.1"; exit 1; }
@@ -215,7 +211,6 @@ help:
 	  '  verify                      run check plus API compatibility validation' \
 	  '  api-compat                  compare public APIs with the baseline tag' \
 	  '  golden                      rewrite and verify the shared response contracts' \
-	  '  bench | bench-5x            run conformance benchmarks' \
 	  '  bench-adapter               compare native and httpx allocations/latency' \
 	  '  bench-suite                 measure the shared scenario table per adapter' \
 	  '  bench-native                pair each scenario against a no-httpx implementation' \

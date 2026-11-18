@@ -145,9 +145,15 @@ func casesRouter(t *testing.T, r runner) {
 				t.Errorf("GET %s: status=%d body=%q, want 404", target, got.Status, got.Body)
 			}
 		}
-		got := r.serve(t, register, httptest.NewRequest(http.MethodGet, "http://example.com/exact/admin/", nil))
-		if got.Status == http.StatusOK || got.Body == "admin" {
-			t.Errorf("GET /exact/admin/: status=%d body=%q, want it not to reach the handler", got.Status, got.Body)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/exact/admin/", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/evil")
+		got := r.serve(t, register, req)
+		if got.Status != http.StatusNotFound {
+			t.Errorf("GET /exact/admin/: status=%d location=%q body=%q, want 404",
+				got.Status, got.Headers.Get("Location"), got.Body)
+		}
+		if loc := got.Headers.Get("Location"); loc != "" {
+			t.Errorf("GET /exact/admin/: Location=%q, want empty", loc)
 		}
 	})
 
@@ -221,6 +227,46 @@ func casesRouter(t *testing.T, r runner) {
 				}
 			})
 		}
+	})
+
+	t.Run("DuplicateRoutePanics", func(t *testing.T) {
+		okHandler := func(ctx httpx.Context) error { return ctx.NoContent(http.StatusNoContent) }
+		mustPanic := func(name string, fn func()) {
+			t.Helper()
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("%s: expected panic on duplicate route registration, got none", name)
+				}
+			}()
+			fn()
+		}
+
+		mustPanic("exact static", func() {
+			router := r.suite.NewEngine(t, Options{}).Group("")
+			router.GET("/dup", okHandler)
+			router.GET("/dup", okHandler)
+		})
+		mustPanic("group and root equivalent path", func() {
+			root := r.suite.NewEngine(t, Options{}).Group("")
+			root.Group("/v1").GET("/items", okHandler)
+			root.GET("/v1/items", okHandler)
+		})
+		mustPanic("conflicting param names", func() {
+			router := r.suite.NewEngine(t, Options{}).Group("")
+			router.GET("/users/:id", okHandler)
+			router.GET("/users/:uid", okHandler)
+		})
+		mustPanic("conflicting wildcard names", func() {
+			router := r.suite.NewEngine(t, Options{}).Group("")
+			router.GET("/files/*a", okHandler)
+			router.GET("/files/*b", okHandler)
+		})
+
+		router := r.suite.NewEngine(t, Options{}).Group("")
+		router.GET("/multi", okHandler)
+		router.POST("/multi", okHandler)
+		router.GET("/wild/*path", okHandler)
+		router.POST("/wild/*path", okHandler)
 	})
 }
 

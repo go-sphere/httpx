@@ -2,17 +2,83 @@ package hertzx
 
 import (
 	"fmt"
+	"net/textproto"
 	"net/url"
+	"reflect"
+	"strings"
 
 	"github.com/go-playground/form/v4"
 )
 
-var formDecoder = newFormDecoder()
+var (
+	formDecoder   = newExplicitDecoder("form", false)
+	queryDecoder  = newExplicitDecoder("query", false)
+	headerDecoder = newExplicitDecoder("header", true)
+)
 
-func newFormDecoder() *form.Decoder {
+func newExplicitDecoder(tag string, canonicalHeader bool) *form.Decoder {
 	decoder := form.NewDecoder()
-	decoder.SetTagName("form")
+	decoder.SetTagName(tag)
+	decoder.RegisterTagNameFunc(func(f reflect.StructField) string {
+		raw, ok := f.Tag.Lookup(tag)
+		if !ok {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if f.Anonymous && ft.Kind() == reflect.Struct {
+				return ""
+			}
+			return "-"
+		}
+		if raw == "-" || raw == "" {
+			return "-"
+		}
+		name, opts, hasOpts := strings.Cut(raw, ",")
+		if name == "-" {
+			return "-"
+		}
+		if name == "" {
+			name = f.Name
+		}
+		if canonicalHeader {
+			name = textproto.CanonicalMIMEHeaderKey(name)
+		}
+		if hasOpts {
+			return name + "," + opts
+		}
+		return name
+	})
 	return decoder
+}
+
+func (c *hertzContext) bindQueryValues(dst any) error {
+	args := c.ctx.QueryArgs()
+	if args.Len() == 0 {
+		return nil
+	}
+	values := make(url.Values, args.Len())
+	args.VisitAll(func(k, v []byte) {
+		key := string(k)
+		values[key] = append(values[key], string(v))
+	})
+	return decodeFormValues(queryDecoder, dst, values)
+}
+
+func (c *hertzContext) bindHeaderValues(dst any) error {
+	values := make(url.Values)
+	c.ctx.Request.Header.VisitAll(func(k, v []byte) {
+		key := string(k)
+		if strings.EqualFold(key, "Host") {
+			return
+		}
+		canon := textproto.CanonicalMIMEHeaderKey(key)
+		values[canon] = append(values[canon], string(v))
+	})
+	if len(values) == 0 {
+		return nil
+	}
+	return decodeFormValues(headerDecoder, dst, values)
 }
 
 // bindFormBody decodes the fields of a urlencoded or multipart form body into

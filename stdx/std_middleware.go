@@ -55,26 +55,41 @@ func AdaptStdMiddleware(middleware func(http.Handler) http.Handler) httpx.Middle
 			var (
 				mu        sync.Mutex
 				completed bool
+				timedOut  bool
 				result    error
 			)
+			origReq := parent.req
 			inner := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				child.req = req
 				child.rw = responseWriter{ResponseWriter: w, status: parentStatus, written: parentWritten}
 				err := next(child)
 				mu.Lock()
-				completed, result = true, err
+				to := timedOut
+				if !to {
+					completed, result = true, err
+				}
 				mu.Unlock()
+				if to {
+					removeReplacedMultipartForm(origReq, child.req)
+				}
 			})
-			middleware(inner).ServeHTTP(recorder, parent.req)
+			middleware(inner).ServeHTTP(recorder, origReq)
 			// Only a completed continuation can be merged. A timed-out continuation
-			// stays isolated and becomes garbage once its handler eventually exits.
+			// stays isolated and cleans up any multipart temp files when it exits.
 			mu.Lock()
 			merge, nextErr := completed, result
+			if !completed {
+				timedOut = true
+			}
 			mu.Unlock()
 			if merge {
 				parent.req, parent.keys = child.req, child.keys
 				if !recorder.written {
-					parent.rw.status = child.rw.status
+					if child.rw.written {
+						parent.rw.markWritten(child.rw.status)
+					} else {
+						parent.rw.status = child.rw.status
+					}
 				}
 			}
 			if recorder.written {

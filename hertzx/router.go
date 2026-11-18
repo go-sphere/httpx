@@ -110,9 +110,20 @@ func (r *Router) mustValidWildcard(relPath string) {
 	if err := httpx.ValidateWildcardPath(relPath); err != nil {
 		panic(err)
 	}
-	if err := httpx.ValidateWildcardPath(path.Join(r.group.BasePath(), relPath)); err != nil {
+	if err := httpx.ValidateWildcardPath(joinPaths(r.group.BasePath(), relPath)); err != nil {
 		panic(err)
 	}
+}
+
+func joinPaths(absolutePath, relativePath string) string {
+	if relativePath == "" {
+		return absolutePath
+	}
+	finalPath := path.Join(absolutePath, relativePath)
+	if len(relativePath) > 0 && relativePath[len(relativePath)-1] == '/' && (len(finalPath) == 0 || finalPath[len(finalPath)-1] != '/') {
+		return finalPath + "/"
+	}
+	return finalPath
 }
 
 // Static serves the directory root at prefix; it is StaticFS with
@@ -125,7 +136,7 @@ func (r *Router) Static(prefix, root string) {
 // ordinary route, so middleware on this scope wraps static requests too.
 func (r *Router) StaticFS(prefix string, fsys fs.FS) {
 	pattern := httpx.StaticRoutePattern(prefix)
-	leaf := stdLeaf(httpx.StaticFileHandler(path.Join(r.group.BasePath(), prefix), fsys))
+	leaf := stdLeaf(httpx.StaticFileHandler(joinPaths(r.group.BasePath(), prefix), fsys))
 	r.Handle(http.MethodGet, pattern, leaf)
 	r.Handle(http.MethodHead, pattern, leaf)
 }

@@ -115,9 +115,9 @@ func TestServerTimeoutDefaults(t *testing.T) {
 		"default":  NewConfig(),
 		"WithAddr": NewConfig(WithAddr(":9999")),
 	} {
-		if conf.server.ReadHeaderTimeout != defaultReadHeaderTimeout || conf.server.IdleTimeout != defaultIdleTimeout {
+		if conf.server.ReadHeaderTimeout != DefaultReadHeaderTimeout || conf.server.IdleTimeout != DefaultIdleTimeout {
 			t.Errorf("%s: ReadHeaderTimeout=%v IdleTimeout=%v, want %v and %v", name,
-				conf.server.ReadHeaderTimeout, conf.server.IdleTimeout, defaultReadHeaderTimeout, defaultIdleTimeout)
+				conf.server.ReadHeaderTimeout, conf.server.IdleTimeout, DefaultReadHeaderTimeout, DefaultIdleTimeout)
 		}
 		if conf.server.ReadTimeout != 0 || conf.server.WriteTimeout != 0 {
 			t.Errorf("%s: a whole-request timeout would cut uploads and streams", name)
@@ -127,5 +127,57 @@ func TestServerTimeoutDefaults(t *testing.T) {
 	conf := NewConfig(WithServer(own), WithAddr(":9999"))
 	if conf.server != own || own.ReadHeaderTimeout != 0 || own.IdleTimeout != 0 {
 		t.Errorf("WithServer's server was changed beyond Addr: %+v", own)
+	}
+}
+
+func TestWithTrustedProxiesIPv4MappedIPv6NotWidened(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	engine := New(WithTrustedProxies("::ffff:192.0.2.1"))
+	var got string
+	engine.Group("").GET("/ip", func(ctx httpx.Context) error {
+		got = ctx.ClientIP()
+		return ctx.NoContent(http.StatusNoContent)
+	})
+	// Untrusted peer 198.51.100.10 must NOT be trusted to supply X-Forwarded-For.
+	req := httptest.NewRequest(http.MethodGet, "/ip", nil)
+	req.RemoteAddr = "198.51.100.10:1234"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	resp, err := engine.(httpx.TestRequester).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got != "198.51.100.10" {
+		t.Fatalf("ClientIP = %q, want 198.51.100.10 (IPv4-mapped IPv6 proxy widened!)", got)
+	}
+
+	// Trusted peer 192.0.2.1 MUST still be honored.
+	req2 := httptest.NewRequest(http.MethodGet, "/ip", nil)
+	req2.RemoteAddr = "192.0.2.1:1234"
+	req2.Header.Set("X-Forwarded-For", "1.2.3.4")
+	resp2, err := engine.(httpx.TestRequester).Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if got != "1.2.3.4" {
+		t.Fatalf("ClientIP from trusted IPv4 peer = %q, want 1.2.3.4", got)
+	}
+}
+
+func TestServeHTTPAndTimeoutConstants(t *testing.T) {
+	if DefaultReadHeaderTimeout != 10*time.Second || DefaultIdleTimeout != 120*time.Second {
+		t.Fatalf("timeouts = (%v, %v), want (10s, 120s)", DefaultReadHeaderTimeout, DefaultIdleTimeout)
+	}
+	gin.SetMode(gin.ReleaseMode)
+	engine := New().(*Engine)
+	var h http.Handler = engine
+	engine.Group("").GET("/hello", func(ctx httpx.Context) error {
+		return ctx.Text(http.StatusOK, "world")
+	})
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/hello", nil))
+	if rr.Code != http.StatusOK || rr.Body.String() != "world" {
+		t.Fatalf("ServeHTTP = %d %q, want 200 %q", rr.Code, rr.Body.String(), "world")
 	}
 }

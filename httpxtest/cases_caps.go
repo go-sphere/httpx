@@ -99,14 +99,21 @@ func casesCaps(t *testing.T, r runner) {
 	// handler probe the same answers, or middleware written against the outer
 	// answer breaks when moved inward.
 	t.Run("CapabilitiesAreTheSameAtEveryDepth", func(t *testing.T) {
-		type probe struct{ native, streamer, flusher bool }
-		want := probe{native: true, streamer: true, flusher: r.suite.Caps.Flusher}
+		type probe struct{ native, streamer, flusher, headerEditor bool }
+		var want probe
+		var wantSet bool
 		seen := map[string]probe{}
 		record := func(where string, ctx httpx.Context) {
 			_, native := ctx.(httpx.NativeContextProvider)
 			_, streamer := httpx.AsStreamer(ctx)
 			_, flusher := httpx.AsFlusher(ctx)
-			seen[where] = probe{native: native, streamer: streamer, flusher: flusher}
+			_, headerEditor := httpx.AsResponseHeaderEditor(ctx)
+			p := probe{native: native, streamer: streamer, flusher: flusher, headerEditor: headerEditor}
+			if !wantSet {
+				want = probe{native: true, streamer: true, flusher: r.suite.Caps.Flusher, headerEditor: headerEditor}
+				wantSet = true
+			}
+			seen[where] = p
 		}
 		layer := func(where string) httpx.Middleware {
 			return func(next httpx.Handler) httpx.Handler {

@@ -122,7 +122,7 @@ func Run(t *testing.T, s Suite) {
 		if casesFailed {
 			t.Skip("a case failed, so a golden file it did not reach is not evidence of an orphan")
 		}
-		if reason, partial := partialRun(); partial {
+		if reason, partial := partialRun(r.root); partial {
 			t.Skip(reason)
 		}
 		r.ledger.checkOrphans(t, goldenFS)

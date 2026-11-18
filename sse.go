@@ -123,6 +123,7 @@ func (e *SSEEvent) encode(buf *bytes.Buffer) error {
 type SSEWriter struct {
 	w   io.Writer
 	buf bytes.Buffer
+	enc *json.Encoder
 }
 
 // NewSSEWriter returns an SSEWriter that encodes events onto w. Handlers
@@ -146,31 +147,46 @@ func (s *SSEWriter) Send(e *SSEEvent) error {
 	return s.flushBuf()
 }
 
+// SendEvent sends an event with the given type and string payload; an empty
+// event means the default "message" type. Unlike [SSEWriter.Send] with an
+// empty [SSEEvent], an empty data payload still emits a "data: " line so
+// standard EventSource clients dispatch the event with an empty string.
+func (s *SSEWriter) SendEvent(event, data string) error {
+	s.buf.Reset()
+	if err := writeEventHeader(&s.buf, "", event, 0); err != nil {
+		return err
+	}
+	writeLines(&s.buf, "data: ", data)
+	s.buf.WriteByte('\n')
+	return s.flushBuf()
+}
+
 // SendData sends an event of the default "message" type with the given
-// payload. It is shorthand for Send(&SSEEvent{Data: data}).
+// payload. It is shorthand for SendEvent("", data); unlike
+// Send(&SSEEvent{Data: ""}), SendData("") emits "data: \n\n" so standard
+// EventSource clients still dispatch a message event.
 func (s *SSEWriter) SendData(data string) error {
-	return s.Send(&SSEEvent{Data: data})
+	return s.SendEvent("", data)
 }
 
 // SendJSON marshals v as JSON and sends it as the payload of an event with
 // the given type; an empty event means the default "message" type. JSON
 // escapes line breaks, so the payload always encodes as a single data line.
 func (s *SSEWriter) SendJSON(event string, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
 	s.buf.Reset()
 	if err := writeEventHeader(&s.buf, "", event, 0); err != nil {
 		return err
 	}
-	if !bytes.ContainsAny(data, "\r\n") {
-		s.buf.WriteString("data: ")
-		s.buf.Write(data)
-		s.buf.WriteByte('\n')
-	} else {
-		writeLines(&s.buf, "data: ", string(data))
+	s.buf.WriteString("data: ")
+	if s.enc == nil {
+		s.enc = json.NewEncoder(&s.buf)
 	}
+	if err := s.enc.Encode(v); err != nil {
+		s.enc = nil
+		s.buf.Reset()
+		return err
+	}
+	// json.Encoder.Encode ends with one '\n'; append the blank line separating events.
 	s.buf.WriteByte('\n')
 	return s.flushBuf()
 }
@@ -187,8 +203,18 @@ func (s *SSEWriter) Comment(text string) error {
 }
 
 func (s *SSEWriter) flushBuf() error {
-	_, err := s.w.Write(s.buf.Bytes())
-	return err
+	if s.w == nil {
+		return errors.New("httpx: SSE writer is nil")
+	}
+	b := s.buf.Bytes()
+	n, err := s.w.Write(b)
+	if err != nil {
+		return err
+	}
+	if n < len(b) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 // ServerSentEvents commits a 200 "text/event-stream" response and invokes fn
