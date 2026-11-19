@@ -121,3 +121,65 @@ func TestLimitRequestBodySlowlorisReturns413WithoutWaitingConformance(t *testing
 		})
 	}
 }
+
+// A client that streams a body far over the limit, without waiting for
+// Expect: 100-continue, must read the 413 rather than fail writing the body
+// into a connection the server has already closed. The server has to keep the
+// connection open for the client's reads while it refuses the body.
+func TestStreamedOversizedBodyGets413Conformance(t *testing.T) {
+	const (
+		limit = 1 << 20
+		size  = 3 * limit
+		runs  = 30
+	)
+	for _, a := range adapters() {
+		t.Run(a.Name, func(t *testing.T) {
+			engine, addr := a.serve(t, serveConfig{maxBodySize: limit})
+			engine.Group("").POST("/upload", func(ctx httpx.Context) error {
+				raw, err := ctx.BodyRaw()
+				if err != nil {
+					return err
+				}
+				return ctx.Text(http.StatusOK, fmt.Sprint(len(raw)))
+			})
+			startServing(t, engine, addr)
+
+			// Keep-alive, as clients normally are: a request carrying
+			// Connection: close makes net/http close at once whatever the handler does.
+			transport := &http.Transport{}
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Timeout: 10 * time.Second, Transport: transport}
+			failures := 0
+			var lastErr error
+			for range runs {
+				req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/upload", io.LimitReader(zeroReader{}, size))
+				if err != nil {
+					t.Fatalf("build request: %v", err)
+				}
+				req.ContentLength = size
+				resp, err := client.Do(req)
+				if err != nil {
+					failures++
+					lastErr = err
+					continue
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusRequestEntityTooLarge {
+					t.Fatalf("status = %d, want 413", resp.StatusCode)
+				}
+			}
+			if failures > 0 {
+				t.Fatalf("%d of %d requests failed instead of reading the 413, last: %v", failures, runs, lastErr)
+			}
+		})
+	}
+}
+
+// zeroReader yields an endless stream of zero bytes.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}

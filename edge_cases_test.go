@@ -15,6 +15,7 @@ import (
 func TestLimitRequestBodyOverContentLengthSetsConnectionClose(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("12345678901234567890"))
 	rec := httptest.NewRecorder()
+	origBody := req.Body
 
 	err := LimitRequestBody(rec, req, 10)
 	var mbe *http.MaxBytesError
@@ -27,8 +28,10 @@ func TestLimitRequestBodyOverContentLengthSetsConnectionClose(t *testing.T) {
 	if got := rec.Header().Get("Connection"); got != "close" {
 		t.Fatalf("Connection header = %q, want %q", got, "close")
 	}
-	if _, readErr := io.ReadAll(req.Body); !errors.As(readErr, &mbe) {
-		t.Fatalf("reading wrapped body err = %v, want *http.MaxBytesError", readErr)
+	// net/http picks how to close the connection from its own body type, so a
+	// refused request keeps the body it arrived with.
+	if req.Body != origBody {
+		t.Fatal("a refused request's body was replaced; net/http could no longer tell it is unread")
 	}
 
 	reqNilW := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("12345678901234567890"))

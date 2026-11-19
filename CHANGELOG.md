@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `LimitRequestBody` (so `WithMaxBodySize` on `stdx`, `ginx` and `echox`): a
+  client streaming a body far over the limit read a connection reset instead of
+  the 413 on Go 1.26, because a refused request's body was wrapped in
+  `http.MaxBytesReader`, which hid it from net/http's decision to half-close
+  and linger before closing. A refused request (declared `Content-Length`
+  above the limit) now keeps the body it arrived with; the answer is still sent
+  at once with `Connection: close` and the body is still not read. The caller
+  must not read the body of a refused request.
+
 ## v0.0.7 (2026-11-19)
 
 ### Breaking changes
