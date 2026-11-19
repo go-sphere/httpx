@@ -14,12 +14,12 @@ replace (
 require (
 	github.com/cloudwego/hertz v0.10.6
 	github.com/gin-gonic/gin v1.12.0
-	github.com/go-sphere/httpx v0.0.6
-	github.com/go-sphere/httpx/echox v0.0.6
-	github.com/go-sphere/httpx/fiberx v0.0.6
-	github.com/go-sphere/httpx/ginx v0.0.6
-	github.com/go-sphere/httpx/hertzx v0.0.6
-	github.com/go-sphere/httpx/stdx v0.0.6
+	github.com/go-sphere/httpx v0.0.7
+	github.com/go-sphere/httpx/echox v0.0.7
+	github.com/go-sphere/httpx/fiberx v0.0.7
+	github.com/go-sphere/httpx/ginx v0.0.7
+	github.com/go-sphere/httpx/hertzx v0.0.7
+	github.com/go-sphere/httpx/stdx v0.0.7
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/labstack/echo/v4 v4.16.5
 	github.com/valyala/fasthttp v1.74.0
